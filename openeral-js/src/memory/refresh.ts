@@ -5,23 +5,24 @@ import { rankMemoryChunks, readDirtyPathSet, selectTopChunks } from './rank.js';
 import { renderMemoryIndex, renderTopicFile, slugifyQuery } from './render.js';
 import { resolveProjectContext } from './resolve.js';
 import type { MemoryChunk, MemoryFileSpec, MemoryRefreshOptions, MemoryRefreshResult, MemorySourceKind, RankedMemoryChunk } from './types.js';
+import type { MemoryDocumentTemplate } from './render.js';
 
-interface MemoryDocumentTemplate {
-  filename: string;
-  name: string;
-  description: string;
-  type: string;
+interface RefreshTemplate extends MemoryDocumentTemplate {
   preferKinds?: MemorySourceKind[];
+  limit?: number;
 }
 
-const DEFAULT_TEMPLATES: Array<MemoryDocumentTemplate & { query: string; limit?: number }> = [
+const DEFAULT_TEMPLATES: Array<RefreshTemplate & { query: string }> = [
   {
     filename: 'project-overview.md',
     name: 'Project overview',
     description: 'Goals, architecture, and important project context',
     type: 'project',
-    query: 'project overview architecture goals design README CLAUDE MEMORY project',
-    preferKinds: ['memory', 'instruction', 'doc', 'config'],
+    query: 'project overview architecture goals design claude code persistence stringcost openeral',
+    preferKinds: ['instruction', 'doc', 'config'],
+    limit: 3,
+    sectionOrder: ['facts', 'pitfalls'],
+    limits: { facts: 3, pitfalls: 3 },
   },
   {
     filename: 'build-and-test.md',
@@ -29,15 +30,10 @@ const DEFAULT_TEMPLATES: Array<MemoryDocumentTemplate & { query: string; limit?:
     description: 'Repeated install, build, run, and verification commands',
     type: 'workflow',
     query: 'build test install run pnpm npm npx node docker openshell verify check integration e2e',
-    preferKinds: ['memory', 'instruction', 'doc', 'config'],
-  },
-  {
-    filename: 'debugging.md',
-    name: 'Debugging',
-    description: 'Known failure modes, diagnostics, and troubleshooting clues',
-    type: 'debugging',
-    query: 'debug troubleshooting error failure bug issue warning diagnose gotcha fix',
-    preferKinds: ['memory', 'instruction', 'doc', 'config'],
+    preferKinds: ['instruction', 'doc', 'config'],
+    limit: 3,
+    sectionOrder: ['commands', 'pitfalls'],
+    limits: { commands: 5, pitfalls: 3 },
   },
   {
     filename: 'style-and-rules.md',
@@ -45,7 +41,10 @@ const DEFAULT_TEMPLATES: Array<MemoryDocumentTemplate & { query: string; limit?:
     description: 'Non-negotiable coding rules, safety constraints, and conventions',
     type: 'rules',
     query: 'style rules convention prefer always never must do not safety constraint feedback',
-    preferKinds: ['memory', 'instruction', 'doc', 'config'],
+    preferKinds: ['instruction', 'doc', 'config'],
+    limit: 3,
+    sectionOrder: ['pitfalls', 'facts'],
+    limits: { pitfalls: 5, facts: 2 },
   },
   {
     filename: 'workflow.md',
@@ -53,8 +52,19 @@ const DEFAULT_TEMPLATES: Array<MemoryDocumentTemplate & { query: string; limit?:
     description: 'Operational flow, launch steps, and recurring task sequences',
     type: 'workflow',
     query: 'workflow process steps launch session persistence shell openshell setup command sequence',
-    preferKinds: ['memory', 'instruction', 'doc', 'config'],
+    preferKinds: ['instruction', 'doc', 'config'],
+    limit: 3,
+    sectionOrder: ['commands', 'facts', 'pitfalls'],
+    limits: { commands: 4, facts: 2, pitfalls: 2 },
   },
+];
+
+const LOW_SIGNAL_MEMORY_PATHS = [
+  'pnpm-lock.yaml',
+  'package-lock.json',
+  'yarn.lock',
+  'Cargo.lock',
+  'bun.lockb',
 ];
 
 function hasMarkdownFiles(dirPath: string): boolean {
@@ -97,6 +107,11 @@ function uniqueTopSources(chunks: RankedMemoryChunk[], limit = 12): RankedMemory
     .slice(0, limit);
 }
 
+function isLowSignalMemoryPath(relPath: string): boolean {
+  return LOW_SIGNAL_MEMORY_PATHS.some((suffix) => relPath.endsWith(suffix))
+    || relPath.startsWith('.github/workflows/');
+}
+
 function selectPreferredChunks(
   ranked: RankedMemoryChunk[],
   opts?: { limit?: number; maxPerFile?: number; preferKinds?: MemorySourceKind[] },
@@ -126,18 +141,27 @@ function buildDefaultMemoryFiles(
 ): { docs: MemoryFileSpec[]; topSources: RankedMemoryChunk[] } {
   const docs: MemoryFileSpec[] = [];
   const selected: RankedMemoryChunk[] = [];
+  const claimedPaths = new Set<string>();
+  const candidateChunks = chunks.filter((chunk) => (
+    chunk.kind !== 'memory' &&
+    chunk.kind !== 'code' &&
+    !isLowSignalMemoryPath(chunk.relPath)
+  ));
 
   for (const template of DEFAULT_TEMPLATES) {
-    const ranked = rankMemoryChunks(chunks, template.query, { now, dirtyPaths });
-    const top = selectPreferredChunks(ranked, {
-      limit: template.limit ?? 8,
-      maxPerFile: 2,
+    const ranked = rankMemoryChunks(candidateChunks, template.query, { now, dirtyPaths });
+    const top = selectTemplateChunks(ranked, claimedPaths, {
+      limit: template.limit ?? 3,
+      maxPerFile: 1,
       preferKinds: template.preferKinds,
     });
     const doc = renderTopicFile(template, top);
     if (doc) {
       docs.push(doc);
       selected.push(...top);
+      for (const chunk of top) {
+        claimedPaths.add(chunk.absPath);
+      }
     }
   }
 
@@ -164,6 +188,38 @@ function buildFocusMemoryFile(
     docs: doc ? [doc] : [],
     topSources: uniqueTopSources(top),
   };
+}
+
+function selectTemplateChunks(
+  ranked: RankedMemoryChunk[],
+  claimedPaths: Set<string>,
+  opts?: { limit?: number; maxPerFile?: number; preferKinds?: MemorySourceKind[] },
+): RankedMemoryChunk[] {
+  const preferred = selectPreferredChunks(ranked, {
+    limit: Math.max((opts?.limit ?? 3) * 3, 12),
+    maxPerFile: opts?.maxPerFile ?? 1,
+    preferKinds: opts?.preferKinds,
+  });
+
+  const selected: RankedMemoryChunk[] = [];
+  const perFile = new Map<string, number>();
+  const passes = [false, true];
+
+  for (const allowClaimed of passes) {
+    for (const chunk of preferred) {
+      if (selected.length >= (opts?.limit ?? 3)) break;
+      if (selected.some((existing) => existing.chunkId === chunk.chunkId)) continue;
+      if (!allowClaimed && claimedPaths.has(chunk.absPath)) continue;
+
+      const count = perFile.get(chunk.absPath) ?? 0;
+      if (count >= (opts?.maxPerFile ?? 1)) continue;
+
+      selected.push(chunk);
+      perFile.set(chunk.absPath, count + 1);
+    }
+  }
+
+  return selected;
 }
 
 function writeMemoryFiles(memoryDir: string, docs: MemoryFileSpec[], query?: string): void {

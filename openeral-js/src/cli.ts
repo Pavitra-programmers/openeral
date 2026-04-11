@@ -136,10 +136,16 @@ async function savePersistentWorkspace(
   }
 }
 
-function printOptimizationSummary(report: ReturnType<typeof analyzeClaudeOptimization>): void {
+function printOptimizationSummary(
+  report: ReturnType<typeof analyzeClaudeOptimization>,
+  opts?: { mode?: 'analyze' | 'apply' },
+): void {
   const leadFinding = report.findings[0];
   const summary = `\x1b[2mopeneral: optimizer static prompt ~${report.summary.staticPromptTokens} tokens; findings ${report.findings.length}; cache ${report.summary.cacheReady ? 'ready' : 'review'}\x1b[0m\n`;
   process.stderr.write(summary);
+  if (opts?.mode === 'apply') {
+    process.stderr.write('\x1b[2mopeneral: optimizer refreshed Claude memory and saved updated optimizer reports\x1b[0m\n');
+  }
   if (leadFinding) {
     process.stderr.write(`\x1b[2mopeneral: optimizer top finding — ${leadFinding.title}\x1b[0m\n`);
   }
@@ -433,9 +439,13 @@ export async function main() {
         stringcostEnabled: !!process.env.STRINGCOST_API_KEY,
       });
     }
-    printOptimizationSummary(optimizationReport);
+    printOptimizationSummary(optimizationReport, { mode: optimizerMode });
     if (optimizationReport.findings.length > 0) {
-      process.stderr.write('\x1b[2mopeneral: run `openeral optimize apply` to write curated memory and optimizer reports\x1b[0m\n');
+      if (optimizerMode === 'apply') {
+        process.stderr.write('\x1b[2mopeneral: run `openeral optimize analyze` if you want to inspect the current post-apply state again later\x1b[0m\n');
+      } else {
+        process.stderr.write('\x1b[2mopeneral: run `openeral optimize apply` to write curated memory and optimizer reports\x1b[0m\n');
+      }
     }
   }
 

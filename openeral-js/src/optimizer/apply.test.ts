@@ -47,6 +47,13 @@ describe('applyClaudeOptimization', () => {
       sessionId: 'session-apply',
       stringcostEnabled: true,
     });
+    const second = await applyClaudeOptimization({
+      homeDir,
+      projectRoot,
+      workspaceId: 'workspace-apply',
+      sessionId: 'session-apply-2',
+      stringcostEnabled: true,
+    });
 
     const context = resolveProjectContext({ homeDir, projectRoot });
     const memoryIndexPath = join(context.memoryDir, 'MEMORY.md');
@@ -56,8 +63,13 @@ describe('applyClaudeOptimization', () => {
     expect(existsSync(costPath)).toBe(true);
     expect(existsSync(result.reportPaths.markdown)).toBe(true);
     expect(existsSync(result.reportPaths.json)).toBe(true);
+    expect(result.report.summary.memoryFileCount).toBeGreaterThan(0);
+    expect(result.report.summary.memoryTokens).toBeLessThan(2200);
+    expect(second.report.summary.memoryTokens).toBeLessThanOrEqual(result.report.summary.memoryTokens + 50);
+    expect(second.report.summary.duplicateLineCount).toBeLessThanOrEqual(result.report.summary.duplicateLineCount + 2);
     expect(readFileSync(costPath, 'utf8')).toContain('## Stringcost');
     expect(readFileSync(result.reportPaths.markdown, 'utf8')).toContain('## Findings');
+    expect(readFileSync(result.reportPaths.markdown, 'utf8')).toContain('Memory files:');
     expect(readFileSync(memoryIndexPath, 'utf8')).toContain('cost-efficiency.md');
   });
 });

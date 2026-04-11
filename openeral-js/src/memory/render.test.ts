@@ -41,6 +41,22 @@ describe('memory rendering', () => {
     expect(doc!.content).toContain('`README.md`');
   });
 
+  it('supports compact template-specific sections', () => {
+    const doc = renderTopicFile({
+      filename: 'style-and-rules.md',
+      name: 'Style and rules',
+      description: 'Rules',
+      type: 'rules',
+      sectionOrder: ['pitfalls'],
+      limits: { pitfalls: 1 },
+    }, [makeChunk()]);
+
+    expect(doc).toBeDefined();
+    expect(doc!.content).toContain('## Pitfalls');
+    expect(doc!.content).not.toContain('## Commands');
+    expect(doc!.content).not.toContain('## Files');
+  });
+
   it('renders a focus fallback when no ranked material exists', () => {
     const doc = renderTopicFile({
       filename: 'focus-openshell.md',

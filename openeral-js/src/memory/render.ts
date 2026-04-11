@@ -1,11 +1,15 @@
 import { basename } from 'node:path';
 import type { MemoryFileSpec, RankedMemoryChunk } from './types.js';
 
+export type MemorySection = 'facts' | 'commands' | 'files' | 'pitfalls';
+
 export interface MemoryDocumentTemplate {
   filename: string;
   name: string;
   description: string;
   type: string;
+  sectionOrder?: MemorySection[];
+  limits?: Partial<Record<MemorySection, number>>;
 }
 
 function trimSentence(text: string): string {
@@ -38,6 +42,10 @@ function extractCommands(chunks: RankedMemoryChunk[]): string[] {
   }
 
   return [...commands].slice(0, 8);
+}
+
+function limited(items: string[], limit = 4): string[] {
+  return items.slice(0, limit);
 }
 
 function extractPitfalls(chunks: RankedMemoryChunk[]): string[] {
@@ -105,10 +113,11 @@ export function renderTopicFile(
   chunks: RankedMemoryChunk[],
   opts?: { query?: string },
 ): MemoryFileSpec | undefined {
-  const facts = extractFacts(chunks);
-  const commands = extractCommands(chunks);
-  const files = extractFiles(chunks);
-  const pitfalls = extractPitfalls(chunks);
+  const sectionOrder = template.sectionOrder ?? ['facts', 'commands', 'pitfalls'];
+  const facts = limited(extractFacts(chunks), template.limits?.facts ?? 3);
+  const commands = limited(extractCommands(chunks), template.limits?.commands ?? 4);
+  const files = limited(extractFiles(chunks), template.limits?.files ?? 3);
+  const pitfalls = limited(extractPitfalls(chunks), template.limits?.pitfalls ?? 4);
 
   if (facts.length === 0 && commands.length === 0 && files.length === 0 && pitfalls.length === 0) {
     if (!opts?.query) return undefined;
@@ -128,10 +137,17 @@ export function renderTopicFile(
     body.push(`Query: \`${opts.query}\``, '');
   }
 
-  body.push(...section('Key Facts', facts));
-  body.push(...section('Commands', commands, (item) => `- \`${item}\``));
-  body.push(...section('Files', files, (item) => `- \`${item}\``));
-  body.push(...section('Pitfalls', pitfalls));
+  for (const sectionName of sectionOrder) {
+    if (sectionName === 'facts') {
+      body.push(...section('Key Facts', facts));
+    } else if (sectionName === 'commands') {
+      body.push(...section('Commands', commands, (item) => `- \`${item}\``));
+    } else if (sectionName === 'files') {
+      body.push(...section('Files', files, (item) => `- \`${item}\``));
+    } else if (sectionName === 'pitfalls') {
+      body.push(...section('Pitfalls', pitfalls));
+    }
+  }
 
   return {
     name: template.filename,

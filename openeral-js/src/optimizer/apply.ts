@@ -12,8 +12,8 @@ function reportReplacer(_key: string, value: unknown): unknown {
 export async function applyClaudeOptimization(
   opts: ApplyClaudeOptimizationOptions,
 ): Promise<ApplyClaudeOptimizationResult> {
-  const report = analyzeClaudeOptimization(opts);
-  const extraDocs = [renderOptimizationMemoryFile(report)];
+  const preApplyReport = analyzeClaudeOptimization(opts);
+  const extraDocs = [renderOptimizationMemoryFile(preApplyReport)];
   const memory = await refreshClaudeMemory({
     homeDir: opts.homeDir,
     cwd: opts.cwd,
@@ -28,6 +28,7 @@ export async function applyClaudeOptimization(
     markdown: join(reportDir, 'latest.md'),
     json: join(reportDir, 'latest.json'),
   };
+  const report = opts.dryRun ? preApplyReport : analyzeClaudeOptimization(opts);
 
   const writtenPaths = [
     ...memory.writtenFiles.map((name) => join(report.context.memoryDir, name)),
