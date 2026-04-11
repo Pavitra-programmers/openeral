@@ -19,6 +19,17 @@
 
 import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync, existsSync, chmodSync } from 'node:fs';
+import { hostname } from 'node:os';
+import { join } from 'node:path';
+import type pg from 'pg';
+import { createPool } from './db/pool.js';
+import { runMigrations } from './db/migrations.js';
+import { refreshClaudeMemory } from './memory/refresh.js';
+import { analyzeClaudeOptimization } from './optimizer/analyze.js';
+import { applyClaudeOptimization } from './optimizer/apply.js';
+import { renderOptimizationReport } from './optimizer/render.js';
+import { buildOpeneralSessionId } from './stringcost.js';
+import { syncToFs, syncFromFs, watchAndSync } from './sync.js';
 
 function writePgHelper(path: string): void {
   // pg helper reads DATABASE_URL from the environment at runtime.
@@ -38,16 +49,101 @@ fi
   writeFileSync(path, script);
   chmodSync(path, 0o755);
 }
-import { hostname } from 'node:os';
-import { join } from 'node:path';
-import { createPool } from './db/pool.js';
-import { runMigrations } from './db/migrations.js';
-import { syncToFs, syncFromFs, watchAndSync } from './sync.js';
 
-type ParsedArgs = 
+type ParsedArgs =
   | { kind: 'launch'; workspaceId: string; claudeArgs: string[] }
-  | { kind: 'memory-refresh'; workspaceId: string; projectRoot: string; query: string; dryRun: boolean; backup: boolean }
+  | { kind: 'memory-refresh'; workspaceId: string; projectRoot: string; query: string; dryRun: boolean; backup: boolean; json: boolean }
+  | { kind: 'optimize-analyze'; workspaceId: string; projectRoot: string; json: boolean }
+  | { kind: 'optimize-apply'; workspaceId: string; projectRoot: string; dryRun: boolean; backup: boolean; json: boolean }
   | { kind: 'help' };
+
+function defaultWorkspaceId(): string {
+  return process.env.OPENERAL_WORKSPACE_ID || hostname();
+}
+
+function defaultHomeDir(workspaceId: string): string {
+  return process.env.OPENERAL_HOME || `/tmp/openeral-${workspaceId}`;
+}
+
+function normalizeProjectRoot(value: string): string | undefined {
+  return value.trim() ? value : undefined;
+}
+
+function readOptimizerMode(): 'analyze' | 'apply' | 'off' {
+  const raw = (process.env.OPENERAL_OPTIMIZER || 'analyze').trim().toLowerCase();
+  if (raw === 'apply') return 'apply';
+  if (raw === 'off') return 'off';
+  return 'analyze';
+}
+
+async function ensurePersistentWorkspace(
+  databaseUrl: string,
+  workspaceId: string,
+  homeDir: string,
+): Promise<pg.Pool> {
+  const pool = createPool(databaseUrl);
+
+  process.stderr.write('\x1b[2mopeneral: running migrations...\x1b[0m\n');
+  await runMigrations(pool);
+
+  await pool.query(
+    `INSERT INTO _openeral.workspace_config (id, display_name, config)
+     VALUES ($1, $2, '{}'::jsonb)
+     ON CONFLICT (id) DO NOTHING`,
+    [workspaceId, workspaceId],
+  );
+
+  process.stderr.write('\x1b[2mopeneral: syncing workspace...\x1b[0m\n');
+  const synced = await syncToFs(pool, workspaceId, homeDir);
+  process.stderr.write(`\x1b[2mopeneral: restored ${synced} files\x1b[0m\n`);
+
+  const pgHelper = join(homeDir, '.local', 'bin', 'pg');
+  mkdirSync(join(homeDir, '.local', 'bin'), { recursive: true });
+  writePgHelper(pgHelper);
+
+  const claudeMdPath = join(homeDir, 'CLAUDE.md');
+  if (!existsSync(claudeMdPath)) {
+    writeFileSync(claudeMdPath, `# OpenEral
+
+Your home directory persists across sessions.
+
+## Database
+
+Query the connected database:
+
+    pg "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
+    pg "SELECT * FROM public.users LIMIT 5"
+    pg "\\d public.users"
+
+The \`pg\` command uses psql if available, otherwise Node.js pg.
+`);
+  }
+
+  return pool;
+}
+
+async function savePersistentWorkspace(
+  pool: pg.Pool,
+  workspaceId: string,
+  homeDir: string,
+): Promise<void> {
+  process.stderr.write('\n\x1b[2mopeneral: saving workspace...\x1b[0m\n');
+  try {
+    const saved = await syncFromFs(pool, workspaceId, homeDir);
+    process.stderr.write(`\x1b[2mopeneral: saved ${saved} files\x1b[0m\n`);
+  } catch (err: any) {
+    process.stderr.write(`\x1b[31mopeneral: sync failed: ${err.message}\x1b[0m\n`);
+  }
+}
+
+function printOptimizationSummary(report: ReturnType<typeof analyzeClaudeOptimization>): void {
+  const leadFinding = report.findings[0];
+  const summary = `\x1b[2mopeneral: optimizer static prompt ~${report.summary.staticPromptTokens} tokens; findings ${report.findings.length}; cache ${report.summary.cacheReady ? 'ready' : 'review'}\x1b[0m\n`;
+  process.stderr.write(summary);
+  if (leadFinding) {
+    process.stderr.write(`\x1b[2mopeneral: optimizer top finding — ${leadFinding.title}\x1b[0m\n`);
+  }
+}
 
 export function parseCliArgs(args: string[]): ParsedArgs {
   // Check for help
@@ -62,11 +158,12 @@ export function parseCliArgs(args: string[]): ParsedArgs {
 
   // Check for memory refresh command
   if (args[0] === 'memory' && args[1] === 'refresh') {
-    let workspaceId = process.env.OPENERAL_WORKSPACE_ID || hostname();
+    let workspaceId = defaultWorkspaceId();
     let projectRoot = '';
     let query = '';
     let dryRun = false;
     let backup = true;
+    let json = false;
 
     for (let i = 2; i < args.length; i++) {
       if ((args[i] === '--workspace' || args[i] === '-w') && args[i + 1]) {
@@ -79,14 +176,58 @@ export function parseCliArgs(args: string[]): ParsedArgs {
         dryRun = true;
       } else if (args[i] === '--no-backup') {
         backup = false;
+      } else if (args[i] === '--json') {
+        json = true;
       }
     }
 
-    return { kind: 'memory-refresh', workspaceId, projectRoot, query, dryRun, backup };
+    return { kind: 'memory-refresh', workspaceId, projectRoot, query, dryRun, backup, json };
+  }
+
+  if (args[0] === 'optimize' && args[1] === 'analyze') {
+    let workspaceId = defaultWorkspaceId();
+    let projectRoot = '';
+    let json = false;
+
+    for (let i = 2; i < args.length; i++) {
+      if ((args[i] === '--workspace' || args[i] === '-w') && args[i + 1]) {
+        workspaceId = args[++i];
+      } else if (args[i] === '--project-root' && args[i + 1]) {
+        projectRoot = args[++i];
+      } else if (args[i] === '--json') {
+        json = true;
+      }
+    }
+
+    return { kind: 'optimize-analyze', workspaceId, projectRoot, json };
+  }
+
+  if (args[0] === 'optimize' && args[1] === 'apply') {
+    let workspaceId = defaultWorkspaceId();
+    let projectRoot = '';
+    let dryRun = false;
+    let backup = true;
+    let json = false;
+
+    for (let i = 2; i < args.length; i++) {
+      if ((args[i] === '--workspace' || args[i] === '-w') && args[i + 1]) {
+        workspaceId = args[++i];
+      } else if (args[i] === '--project-root' && args[i + 1]) {
+        projectRoot = args[++i];
+      } else if (args[i] === '--dry-run') {
+        dryRun = true;
+      } else if (args[i] === '--no-backup') {
+        backup = false;
+      } else if (args[i] === '--json') {
+        json = true;
+      }
+    }
+
+    return { kind: 'optimize-apply', workspaceId, projectRoot, dryRun, backup, json };
   }
 
   // Default: launch mode
-  let workspaceId = process.env.OPENERAL_WORKSPACE_ID || hostname();
+  let workspaceId = defaultWorkspaceId();
   let claudeArgs: string[] = [];
 
   // Split on -- to separate openeral args from claude args
@@ -107,6 +248,8 @@ function printHelp(): void {
   console.log(`Usage:
   openeral [options] [-- claude-args]    Launch Claude Code with persistent home
   openeral memory refresh [options]      Refresh memory system
+  openeral optimize analyze [options]    Audit Claude prompt/token efficiency
+  openeral optimize apply [options]      Write optimizer memory + reports
 
 Launch Options:
   --workspace, -w <id>    Workspace ID (default: hostname)
@@ -118,12 +261,27 @@ Memory Refresh Options:
   --query <text>          Search query
   --dry-run               Preview changes without applying
   --no-backup             Skip backup creation
+  --json                  Emit JSON instead of text
+
+Optimize Analyze Options:
+  --workspace, -w <id>    Workspace ID
+  --project-root <path>   Project root directory
+  --json                  Emit JSON instead of text
+
+Optimize Apply Options:
+  --workspace, -w <id>    Workspace ID
+  --project-root <path>   Project root directory
+  --dry-run               Preview changes without applying
+  --no-backup             Skip backup creation
+  --json                  Emit JSON instead of text
 
 Environment Variables:
   DATABASE_URL            PostgreSQL connection string (required for persistence)
   ANTHROPIC_API_KEY       Claude API key (required)
+  STRINGCOST_API_KEY      Enables Stringcost tracking + optimizer metadata
   OPENERAL_WORKSPACE_ID   Default workspace ID
   OPENERAL_HOME           Home directory path
+  OPENERAL_OPTIMIZER      analyze | apply | off (default: analyze)
 `);
 }
 
@@ -135,17 +293,103 @@ export async function main() {
     return;
   }
 
-  if (parsed.kind === 'memory-refresh') {
-    process.stderr.write('\x1b[31mopeneral: memory refresh not yet implemented\x1b[0m\n');
-    process.exit(1);
-  }
-
-  // Launch mode
-  const { workspaceId, claudeArgs } = parsed;
-
-  // --- Validate env ---
   const databaseUrl = process.env.DATABASE_URL;
   const persistenceEnabled = !!databaseUrl;
+  const homeDir = defaultHomeDir(parsed.workspaceId);
+  mkdirSync(homeDir, { recursive: true });
+
+  let pool: pg.Pool | null = null;
+  if (databaseUrl) {
+    pool = await ensurePersistentWorkspace(databaseUrl, parsed.workspaceId, homeDir);
+  }
+
+  if (parsed.kind === 'memory-refresh') {
+    const result = await refreshClaudeMemory({
+      homeDir,
+      cwd: process.cwd(),
+      projectRoot: normalizeProjectRoot(parsed.projectRoot),
+      query: parsed.query,
+      dryRun: parsed.dryRun,
+      backup: parsed.backup,
+    });
+
+    if (pool) {
+      if (!parsed.dryRun) {
+        await savePersistentWorkspace(pool, parsed.workspaceId, homeDir);
+      }
+      await pool.end();
+      pool = null;
+    }
+
+    if (parsed.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log(`mode=${result.mode}`);
+      console.log(`memory_dir=${result.context.memoryDir}`);
+      console.log(`planned_files=${result.plannedFiles.join(',')}`);
+      if (result.backupDir) console.log(`backup_dir=${result.backupDir}`);
+    }
+    return;
+  }
+
+  if (parsed.kind === 'optimize-analyze') {
+    const sessionId = buildOpeneralSessionId(parsed.workspaceId);
+    const report = analyzeClaudeOptimization({
+      homeDir,
+      cwd: process.cwd(),
+      projectRoot: normalizeProjectRoot(parsed.projectRoot),
+      workspaceId: parsed.workspaceId,
+      sessionId,
+      stringcostEnabled: !!process.env.STRINGCOST_API_KEY,
+    });
+
+    if (pool) {
+      await pool.end();
+      pool = null;
+    }
+
+    if (parsed.json) {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      process.stdout.write(renderOptimizationReport(report));
+    }
+    return;
+  }
+
+  if (parsed.kind === 'optimize-apply') {
+    const sessionId = buildOpeneralSessionId(parsed.workspaceId);
+    const result = await applyClaudeOptimization({
+      homeDir,
+      cwd: process.cwd(),
+      projectRoot: normalizeProjectRoot(parsed.projectRoot),
+      workspaceId: parsed.workspaceId,
+      sessionId,
+      stringcostEnabled: !!process.env.STRINGCOST_API_KEY,
+      dryRun: parsed.dryRun,
+      backup: parsed.backup,
+    });
+
+    if (pool) {
+      if (!parsed.dryRun) {
+        await savePersistentWorkspace(pool, parsed.workspaceId, homeDir);
+      }
+      await pool.end();
+      pool = null;
+    }
+
+    if (parsed.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      process.stdout.write(renderOptimizationReport(result.report));
+      if (!parsed.dryRun) {
+        process.stdout.write(`report_markdown=${result.reportPaths.markdown}\n`);
+        process.stdout.write(`report_json=${result.reportPaths.json}\n`);
+      }
+    }
+    return;
+  }
+
+  const { workspaceId, claudeArgs } = parsed;
 
   if (!persistenceEnabled) {
     process.stderr.write(
@@ -160,62 +404,42 @@ export async function main() {
     );
   }
 
-  // --- Setup home directory ---
-  const homeDir = process.env.OPENERAL_HOME || `/tmp/openeral-${workspaceId}`;
-  mkdirSync(homeDir, { recursive: true });
-
   process.stderr.write(`\x1b[2mopeneral: workspace  ${workspaceId}\x1b[0m\n`);
   process.stderr.write(`\x1b[2mopeneral: home       ${homeDir}\x1b[0m\n`);
   process.stderr.write(`\x1b[2mopeneral: persist    ${persistenceEnabled ? 'PostgreSQL' : 'local only'}\x1b[0m\n`);
 
-  // --- Database setup (only if DATABASE_URL is set) ---
-  let pool: import('pg').Pool | null = null;
   let stopWatch: (() => void) | null = null;
+  let optimizationReport: ReturnType<typeof analyzeClaudeOptimization> | null = null;
+  const optimizerMode = readOptimizerMode();
 
-  if (persistenceEnabled) {
-    pool = createPool(databaseUrl);
-
-    process.stderr.write('\x1b[2mopeneral: running migrations...\x1b[0m\n');
-    await runMigrations(pool);
-
-    // Ensure workspace config exists
-    await pool.query(
-      `INSERT INTO _openeral.workspace_config (id, display_name, config)
-       VALUES ($1, $2, '{}'::jsonb)
-       ON CONFLICT (id) DO NOTHING`,
-      [workspaceId, workspaceId],
-    );
-
-    // Sync from PostgreSQL → filesystem
-    process.stderr.write('\x1b[2mopeneral: syncing workspace...\x1b[0m\n');
-    const synced = await syncToFs(pool, workspaceId, homeDir);
-    process.stderr.write(`\x1b[2mopeneral: restored ${synced} files\x1b[0m\n`);
-
-    // Write pg helper
-    const pgHelper = join(homeDir, '.local', 'bin', 'pg');
-    mkdirSync(join(homeDir, '.local', 'bin'), { recursive: true });
-    writePgHelper(pgHelper);
-
-    // Write CLAUDE.md
-    const claudeMdPath = join(homeDir, 'CLAUDE.md');
-    if (!existsSync(claudeMdPath)) {
-      writeFileSync(claudeMdPath, `# OpenEral
-
-Your home directory persists across sessions.
-
-## Database
-
-Query the connected database:
-
-    pg "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
-    pg "SELECT * FROM public.users LIMIT 5"
-    pg "\\d public.users"
-
-The \`pg\` command uses psql if available, otherwise Node.js pg.
-`);
+  if (optimizerMode !== 'off') {
+    const sessionId = buildOpeneralSessionId(workspaceId);
+    if (optimizerMode === 'apply') {
+      const applied = await applyClaudeOptimization({
+        homeDir,
+        cwd: process.cwd(),
+        workspaceId,
+        sessionId,
+        stringcostEnabled: !!process.env.STRINGCOST_API_KEY,
+        backup: false,
+      });
+      optimizationReport = applied.report;
+    } else {
+      optimizationReport = analyzeClaudeOptimization({
+        homeDir,
+        cwd: process.cwd(),
+        workspaceId,
+        sessionId,
+        stringcostEnabled: !!process.env.STRINGCOST_API_KEY,
+      });
     }
+    printOptimizationSummary(optimizationReport);
+    if (optimizationReport.findings.length > 0) {
+      process.stderr.write('\x1b[2mopeneral: run `openeral optimize apply` to write curated memory and optimizer reports\x1b[0m\n');
+    }
+  }
 
-    // Start file watcher
+  if (pool) {
     process.stderr.write('\x1b[2mopeneral: watching for changes...\x1b[0m\n');
     stopWatch = watchAndSync(pool, workspaceId, homeDir);
   }
@@ -249,8 +473,8 @@ The \`pg\` command uses psql if available, otherwise Node.js pg.
           path: ['/v1/messages'],
           expires_in: -1,
           max_uses: -1,
-          tags: ['openeral'],
-          metadata: { source: 'openeral' },
+          tags: optimizationReport?.stringcost.session.tags ?? ['openeral'],
+          metadata: optimizationReport?.stringcost.session.metadata ?? { source: 'openeral' },
         }),
         signal: controller.signal,
       });
@@ -291,13 +515,7 @@ The \`pg\` command uses psql if available, otherwise Node.js pg.
   child.on('exit', async (code) => {
     if (pool && stopWatch) {
       stopWatch();
-      process.stderr.write('\n\x1b[2mopeneral: saving workspace...\x1b[0m\n');
-      try {
-        const saved = await syncFromFs(pool, workspaceId, homeDir);
-        process.stderr.write(`\x1b[2mopeneral: saved ${saved} files\x1b[0m\n`);
-      } catch (err: any) {
-        process.stderr.write(`\x1b[31mopeneral: sync failed: ${err.message}\x1b[0m\n`);
-      }
+      await savePersistentWorkspace(pool, workspaceId, homeDir);
       await pool.end();
     }
     process.exit(code ?? 0);

@@ -44,6 +44,7 @@ export interface MemoryRefreshOptions {
   dryRun?: boolean;
   backup?: boolean;
   now?: Date;
+  extraDocs?: MemoryFileSpec[];
 }
 
 export interface MemoryRefreshResult {

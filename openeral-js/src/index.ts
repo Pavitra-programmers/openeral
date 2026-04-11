@@ -39,6 +39,25 @@ export { runMigrations } from './db/migrations.js';
 export { analyzeCommand, analyzeCommandSync } from './safety.js';
 export type { AnalysisResult, BashInvocation } from './safety.js';
 
+// Claude optimizer and Stringcost helpers
+export { analyzeClaudeOptimization } from './optimizer/analyze.js';
+export { applyClaudeOptimization } from './optimizer/apply.js';
+export { renderOptimizationReport, renderOptimizationMemoryFile } from './optimizer/render.js';
+export { buildOpeneralSessionId, buildStringcostSessionContext } from './stringcost.js';
+export type {
+  AnalyzeClaudeOptimizationOptions,
+  ApplyClaudeOptimizationOptions,
+  ApplyClaudeOptimizationResult,
+  ClaudeOptimizationReport,
+  OptimizationCheck,
+  OptimizationCheckStatus,
+  OptimizationFinding,
+  OptimizationSeverity,
+  OptimizationSummary,
+  OptimizationSurface,
+  StringcostSessionContext,
+} from './optimizer/types.js';
+
 // Types
 export type {
   SchemaInfo,

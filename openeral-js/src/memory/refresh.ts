@@ -198,14 +198,15 @@ export async function refreshClaudeMemory(opts: MemoryRefreshOptions): Promise<M
     ? buildDefaultMemoryFiles(allChunks, now, dirtyPaths)
     : buildFocusMemoryFile(allChunks, trimmedQuery!, now, dirtyPaths);
 
-  const plannedFiles = ['MEMORY.md', ...docs.map((doc) => doc.name)];
+  const allDocs = [...docs, ...(opts.extraDocs ?? [])];
+  const plannedFiles = ['MEMORY.md', ...allDocs.map((doc) => doc.name)];
 
   let backupDir: string | undefined;
   if (!opts.dryRun) {
     if (opts.backup !== false) {
       backupDir = createBackup(context.memoryDir, context.backupBaseDir, now);
     }
-    writeMemoryFiles(context.memoryDir, docs, mode === 'focus' ? trimmedQuery : undefined);
+    writeMemoryFiles(context.memoryDir, allDocs, mode === 'focus' ? trimmedQuery : undefined);
   }
 
   return {

@@ -34,9 +34,11 @@ TypeScript package. Two filesystem implementations on just-bash's `IFileSystem` 
 Supporting modules:
 
 - **sync** (`src/sync.ts`) — bidirectional sync between PostgreSQL and real filesystem. Used by the CLI for Claude Code, which needs real files for its Read/Write/Edit tools.
+- **memory** (`src/memory/`) — Claude project memory refresh, ranking, and rendering for compact native memory files inside the isolated home.
+- **optimizer** (`src/optimizer/`) — Clawptimizer-style prompt audits, StringCost metadata shaping, and cost-efficiency report generation for Claude Code sessions.
 - **safety** (`src/safety.ts`) — command analysis via just-bash's `parse()` AST. Classifies commands as safe/destructive.
 - **shell** (`src/shell.ts`) — `createOpeneralShell()` factory. Composes MountableFs + custom `pg` command + execution limits.
-- **cli** (`src/cli.ts`) — `npx openeral` entry point. Sync + file watcher + Claude Code launcher.
+- **cli** (`src/cli.ts`) — `npx openeral` entry point. Sync + file watcher + Claude Code launcher, memory refresh, and optimizer workflows.
 
 ### Sandbox (`sandboxes/openeral/`)
 

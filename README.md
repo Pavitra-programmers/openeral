@@ -65,6 +65,28 @@ npx openeral memory refresh --query "openshell proxy and policy"
 
 This rewrites the native Claude memory directory for the current project under `~/.claude/projects/<project>/memory/` inside the OpenEral home, with a backup in `.openeral-memory-backups/` unless `--no-backup` is set. The ranking is lexical + freshness-based and does not require embeddings or extra providers.
 
+### Optimize Claude prompt usage
+
+Print a Clawptimizer-style audit for the current Claude project:
+
+```bash
+npx openeral optimize analyze
+```
+
+Write curated optimizer memory plus saved reports inside the OpenEral home:
+
+```bash
+npx openeral optimize apply
+```
+
+This stays entirely inside the existing OpenEral + StringCost path:
+
+- no new proxy layer
+- no extra infrastructure
+- StringCost tags each Claude session by workspace, project, and session ID
+- OpenEral audits token-heavy prompt surfaces, duplicate instructions, volatile cache-breaking text, and large docs that are likely to be reread
+- `optimize apply` rewrites Claude memory with a `cost-efficiency.md` guide and stores reports under `~/.openeral/optimizer/`
+
 ### Via OpenShell
 
 ```bash
@@ -121,6 +143,7 @@ Claude's API traffic routes through StringCost for cost tracking. The OpenShell 
 
 - **Isolated home** — Claude Code runs in its own `$HOME`, separate from your system
 - **Cost tracking** (with `STRINGCOST_API_KEY`) — automatic API cost metering via [StringCost](https://github.com/arakoodev/stringcost)
+- **Prompt optimizer** — Clawptimizer-style audits plus Claude memory compaction for prompt, caching, and batching efficiency
 - **Persistent home** (with `DATABASE_URL`) — files survive across sessions, backed by PostgreSQL
 - **Database access** (with `DATABASE_URL`) — `pg "SELECT * FROM users LIMIT 5"` from Claude's bash
 - **Automatic sync** (with `DATABASE_URL`) — file changes sync to PostgreSQL in the background
@@ -180,6 +203,7 @@ The `pg` command is automatically available — OpenEral writes a `CLAUDE.md` th
 | `DATABASE_URL` | (optional) | PostgreSQL connection string — enables persistence and `pg` |
 | `OPENERAL_WORKSPACE_ID` | hostname | Workspace identifier |
 | `OPENERAL_HOME` | `/tmp/openeral-<id>` | Local workspace directory |
+| `OPENERAL_OPTIMIZER` | `analyze` | `analyze`, `apply`, or `off` for launch-time optimizer behavior |
 
 ## How it works
 
@@ -245,6 +269,8 @@ openeral-js/                  # TypeScript package
   src/pg-fs/                  # Read-only /db filesystem
   src/workspace-fs/           # Read-write /home/agent filesystem
   src/db/                     # SQL queries, migrations
+  src/memory/                 # Claude memory refresh and curation
+  src/optimizer/              # Prompt audits + cost-efficiency report generation
   src/safety.ts               # Command safety analysis
   lint.mjs                    # 29 structural lint rules
 

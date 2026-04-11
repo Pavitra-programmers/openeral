@@ -29,6 +29,8 @@ DATABASE_URL='...' ANTHROPIC_API_KEY='...' bash ../tests/test_claude_e2e.sh
   - `src/pg-fs/` — PgFs: read-only IFileSystem backed by SQL queries
   - `src/workspace-fs/` — WorkspaceFs: read-write IFileSystem backed by workspace_files
   - `src/db/` — SQL queries, migrations, pool, types
+  - `src/memory/` — Claude memory refresh, ranking, and rendering
+  - `src/optimizer/` — prompt audits, StringCost metadata, and cost-efficiency report generation
   - `src/safety.ts` — command safety analysis via just-bash parse() AST
   - `src/shell.ts` — createOpeneralShell(), createToolHandler()
   - `src/index.ts` — public API
@@ -43,6 +45,7 @@ DATABASE_URL='...' ANTHROPIC_API_KEY='...' bash ../tests/test_claude_e2e.sh
 ## Conventions
 
 - Persistence is optional — CLI works without DATABASE_URL (local-only mode)
+- StringCost integration stays on the existing presign/proxy path — do not add a second proxy layer
 - IFileSystem implementations are path-based (no inodes)
 - `parsePath()` returns a `PgNode` discriminated union
 - SQL queries use `quoteIdent()` for identifiers, `$N` params for values, `::text` casts
@@ -50,6 +53,7 @@ DATABASE_URL='...' ANTHROPIC_API_KEY='...' bash ../tests/test_claude_e2e.sh
 - WorkspaceFs receives complete content per writeFile() — no write-back buffering
 - Command safety: just-bash parse() AST walk with regex fallback
 - `pg` command: SQL with parens or quotes must be double-quoted
+- `openeral optimize analyze|apply` is the Claude-facing optimizer flow; it should write only inside the OpenEral home and existing persistence model
 
 ## Hard Rules
 
