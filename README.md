@@ -133,7 +133,7 @@ openshell sandbox connect "$OPENERAL_WORKSPACE"
 claude
 ```
 
-For PostgreSQL-only launches, OpenEral reads `/sandbox/db-url`, stores it inside the sandbox under `/tmp/openeral/database-url`, creates the `_openeral` schema, runs migrations, seeds the workspace, and hydrates `/home/agent/.claude/**` plus `/home/agent/.openeral/**`. When you later run `claude`, `pg`, or `openeral memory refresh`, OpenEral lazily starts a detached sync daemon. Arbitrary checked-out source code remains sandbox-local. In Supabase, switch the Table Editor schema selector to `_openeral` to inspect the rows.
+For PostgreSQL-only launches, OpenEral reads `/sandbox/db-url`, stores it inside the sandbox under `/tmp/openeral/database-url`, creates the `_openeral` schema, runs migrations, seeds the workspace, and hydrates `/home/agent/.claude/**` plus `/home/agent/.openeral/**` when the init marker is missing or stale. When you later run `claude`, `pg`, or `openeral memory refresh`, OpenEral lazily starts a detached sync daemon. Arbitrary checked-out source code remains sandbox-local. In Supabase, switch the Table Editor schema selector to `_openeral` to inspect the rows.
 
 Do not pass the database URL through an OpenShell generic provider. PostgreSQL is raw TCP, so the credential must be delivered by `--upload`.
 

@@ -1,10 +1,76 @@
-import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { afterEach, describe, it, expect } from 'vitest';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { getDatabaseConnection, stopEmbeddedDatabase } from './db/embedded.js';
+import { runMigrations } from './db/migrations.js';
+import { syncFromFs, syncToFs } from './sync.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const syncSrc = readFileSync(join(__dirname, 'sync.ts'), 'utf8');
+const originalDatabaseUrl = process.env.DATABASE_URL;
+const originalDataDir = process.env.OPENERAL_DATA_DIR;
+const tempPaths: string[] = [];
+
+afterEach(async () => {
+  await stopEmbeddedDatabase();
+  for (const path of tempPaths.splice(0)) {
+    rmSync(path, { recursive: true, force: true });
+  }
+  if (originalDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+  else process.env.DATABASE_URL = originalDatabaseUrl;
+  if (originalDataDir === undefined) delete process.env.OPENERAL_DATA_DIR;
+  else process.env.OPENERAL_DATA_DIR = originalDataDir;
+});
+
+async function createTestPool() {
+  delete process.env.DATABASE_URL;
+  const dataDir = mkdtempSync(join(tmpdir(), 'openeral-sync-db-'));
+  tempPaths.push(dataDir);
+  process.env.OPENERAL_DATA_DIR = dataDir;
+  const { pool } = await getDatabaseConnection();
+  await runMigrations(pool);
+  return pool;
+}
+
+function makeTempDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'openeral-sync-fs-'));
+  tempPaths.push(dir);
+  return dir;
+}
+
+function parentPathOf(path: string): string {
+  if (path === '/') return '';
+  const idx = path.lastIndexOf('/');
+  return idx <= 0 ? '/' : path.slice(0, idx);
+}
+
+function nameOf(path: string): string {
+  if (path === '/') return '';
+  return path.slice(path.lastIndexOf('/') + 1);
+}
+
+async function seedWorkspace(pool: any, workspaceId: string): Promise<void> {
+  await pool.query(
+    `INSERT INTO _openeral.workspace_config (id, display_name, config)
+     VALUES ($1, $2, '{}'::jsonb)
+     ON CONFLICT (id) DO NOTHING`,
+    [workspaceId, workspaceId],
+  );
+}
+
+async function seedFile(pool: any, workspaceId: string, path: string, content: string): Promise<void> {
+  const now = (BigInt(Date.now()) * 1_000_000n).toString();
+  const bytes = Buffer.from(content);
+  await pool.query(
+    `INSERT INTO _openeral.workspace_files
+     (workspace_id, path, parent_path, name, is_dir, content, mode, size, mtime_ns, ctime_ns, atime_ns, nlink, uid, gid)
+     VALUES ($1, $2, $3, $4, false, $5, $6, $7, $8, $8, $8, 1, 1000, 1000)
+     ON CONFLICT (workspace_id, path) DO UPDATE SET content = $5, size = $7`,
+    [workspaceId, path, parentPathOf(path), nameOf(path), bytes, 0o100644, bytes.length, now],
+  );
+}
 
 describe('sync.ts structural checks', () => {
   it('syncFromFs tracks seen paths for deletion', () => {
@@ -94,5 +160,46 @@ describe('sync.ts structural checks', () => {
     expect(watchBody).toContain('const pathPrefix = normalizePathPrefix(opts?.pathPrefix)');
     expect(watchBody).toContain('watchDir');
     expect(watchBody).toContain('syncFromFs(pool, workspaceId, dir, { excludeDirs, pathPrefix })');
+  });
+});
+
+describe('sync.ts behavior', () => {
+  it('confines syncFromFs deletions to the requested pathPrefix', async () => {
+    const pool = await createTestPool();
+    const workspaceId = 'sync-delete-prefix';
+    const root = makeTempDir();
+    mkdirSync(join(root, '.claude'), { recursive: true });
+    writeFileSync(join(root, '.claude', 'keep.md'), 'new keep');
+
+    await seedWorkspace(pool, workspaceId);
+    await seedFile(pool, workspaceId, '/.claude/old.md', 'old');
+    await seedFile(pool, workspaceId, '/.claude/keep.md', 'old keep');
+    await seedFile(pool, workspaceId, '/src/code.ts', 'const ok = true;');
+
+    await syncFromFs(pool as any, workspaceId, root, { pathPrefix: '/.claude' });
+
+    const { rows } = await pool.query(
+      `SELECT path FROM _openeral.workspace_files WHERE workspace_id = $1 ORDER BY path`,
+      [workspaceId],
+    );
+    const paths = rows.map((row: any) => row.path);
+    expect(paths).not.toContain('/.claude/old.md');
+    expect(paths).toContain('/.claude/keep.md');
+    expect(paths).toContain('/src/code.ts');
+  });
+
+  it('confines syncToFs hydration to the requested pathPrefix', async () => {
+    const pool = await createTestPool();
+    const workspaceId = 'sync-hydrate-prefix';
+    const root = makeTempDir();
+
+    await seedWorkspace(pool, workspaceId);
+    await seedFile(pool, workspaceId, '/.claude/x.md', 'x');
+    await seedFile(pool, workspaceId, '/unrelated/y.md', 'y');
+
+    await syncToFs(pool as any, workspaceId, root, { pathPrefix: '/.claude' });
+
+    expect(readFileSync(join(root, '.claude', 'x.md'), 'utf8')).toBe('x');
+    expect(existsSync(join(root, 'unrelated'))).toBe(false);
   });
 });

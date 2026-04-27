@@ -56,6 +56,19 @@ out=$(timeout 120 docker run --rm --network host \
     fi
     echo "CHECK:socket-token-present=$([ -n "${SOCKET_TOKEN:-}" ] && echo yes || echo no)"
 
+    mkdir -p /home/agent/.claude
+    printf "local-edit" > /home/agent/.claude/reinit-keep.md
+    REINIT_OUT=$(/opt/openeral/setup.sh 2>&1)
+    case "$REINIT_OUT" in
+      *"skipping PostgreSQL hydration"*) echo "CHECK:reinit-skip-hydration=ok" ;;
+      *) echo "CHECK:reinit-skip-hydration=FAIL" ;;
+    esac
+    if [ "$(cat /home/agent/.claude/reinit-keep.md 2>/dev/null || true)" = "local-edit" ]; then
+      echo "CHECK:reinit-preserves-local-edit=ok"
+    else
+      echo "CHECK:reinit-preserves-local-edit=FAIL"
+    fi
+
     /usr/local/bin/openeral-daemon-ensure
     timeout 5 /usr/local/bin/openeral-daemon-ensure && echo "CHECK:second-ensure=ok" || echo "CHECK:second-ensure=FAIL"
     HEALTH=$(node /opt/openeral/openeral-bash.mjs --health 2>/dev/null || true)
@@ -98,6 +111,8 @@ check "NPM_CONFIG_USERCONFIG"   "CHECK:npm-userconfig=/tmp/openeral-npmrc"
 check "npm reads socket.dev"    "CHECK:npm-registry=https://registry.socket.dev"
 check "user .npmrc untouched"   "CHECK:user-npmrc=absent-ok"
 check "SOCKET_TOKEN present"    "CHECK:socket-token-present=yes"
+check "reinit skips hydration"  "CHECK:reinit-skip-hydration=ok"
+check "reinit preserves local edit" "CHECK:reinit-preserves-local-edit=ok"
 check "second daemon ensure"    "CHECK:second-ensure=ok"
 check "daemon health"           "CHECK:daemon-health=.*\"workspaceId\":\"$WORKSPACE\""
 check "daemon responds"         "CHECK:daemon-response=daemon-works"

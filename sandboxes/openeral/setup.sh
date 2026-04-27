@@ -447,6 +447,28 @@ node -e "
 "
 
 if [ -n "${DATABASE_URL:-}" ]; then
+  if NODE_NO_WARNINGS=1 node -e "
+const fs = require('fs');
+const crypto = require('crypto');
+const marker = process.env.OPENERAL_INIT_MARKER || '/tmp/openeral/init.done';
+const dbFile = process.env.OPENERAL_DB_URL_FILE || '/tmp/openeral/database-url';
+const workspaceId = process.env.WORKSPACE_ID || 'default';
+let datasource = 'pglite:' + (process.env.OPENERAL_DATA_DIR || '/tmp/openeral/data');
+try {
+  if (fs.existsSync(dbFile)) {
+    const dbUrl = fs.readFileSync(dbFile, 'utf8').trim();
+    if (dbUrl) datasource = 'postgres:' + dbUrl;
+  }
+  const data = JSON.parse(fs.readFileSync(marker, 'utf8'));
+  const datasourceHash = crypto.createHash('sha256').update(datasource).digest('hex');
+  if (data && data.version === 1 && data.workspaceId === workspaceId && data.datasourceHash === datasourceHash) {
+    process.exit(0);
+  }
+} catch {}
+process.exit(1);
+"; then
+    echo "setup.sh: init marker is current; skipping PostgreSQL hydration"
+  else
   echo "setup.sh: hydrating Claude state from PostgreSQL..."
   node -e "
     import('$OPENERAL_DIR/dist/db/embedded.js').then(async ({ getDatabaseConnection }) => {
@@ -464,6 +486,7 @@ if [ -n "${DATABASE_URL:-}" ]; then
       process.exit(1);
     });
   "
+  fi
 fi
 
 if [ -n "${STRINGCOST_PROXY_URL:-}" ]; then

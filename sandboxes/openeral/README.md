@@ -65,12 +65,13 @@ claude
 ## What `setup.sh` Does
 
 1. Resolves persistence from `DATABASE_URL`, `OPENERAL_DATABASE_URL`, `POSTGRES_URL`, or uploaded `/sandbox/db-url`.
-2. Creates a normalized StringCost proxy config when `STRINGCOST_API_KEY` is attached.
+2. Creates or loads a normalized StringCost proxy config when StringCost input is available.
 3. Runs `_openeral` schema migrations.
 4. Seeds the workspace keyed by explicit `$WORKSPACE_ID` or `$OPENSHELL_SANDBOX_ID`.
-5. Hydrates `/home/agent/.claude/**` and `/home/agent/.openeral/**` from PostgreSQL when persistence is enabled.
+5. Hydrates `/home/agent/.claude/**` and `/home/agent/.openeral/**` from PostgreSQL when persistence is enabled and the init marker is missing or stale.
 6. Writes `/tmp/openeral-session.env` and `/tmp/openeral/init.done`.
-7. Exits. `claude`, `pg`, and `openeral memory refresh` lazily start the detached daemon when needed.
+7. Reapplies the current StringCost proxy after hydration so restored settings cannot point at a stale presign.
+8. Exits. `claude`, `pg`, and `openeral memory refresh` lazily start the detached daemon when needed.
 
 ## Image Contents
 
