@@ -1,18 +1,21 @@
 #!/bin/bash
 set -euo pipefail
 
-# setup.sh — OpenEral sandbox entry point
+# setup.sh — OpenEral sandbox one-shot init entry point
 #
-# Called by: openshell sandbox create ... -- openeral-start
-# (or legacy one-shot mode: ... -- openeral). Both names are /usr/local/bin
-# shims to this script.
+# Called by: openshell sandbox create ... -- openeral-init
+# (openeral/openeral-start remain compatibility shims to this script).
+#
+# OpenShell runs trailing commands over SSH after the sandbox is Ready; they are
+# not PID 1. Therefore this script must initialize and exit. Long-running
+# runtime state is owned by a detached daemon started lazily by claude/pg.
 #
 # Steps:
-#   1. Run database migrations
-#   2. Seed the workspace
-#   3. Start openeral-bash daemon
-#   4. In legacy openeral mode: exec Claude Code
-#      In openeral-start service mode: keep the daemon alive for SSH sessions
+#   1. Resolve uploaded credentials and persist the DB URL outside synced paths
+#   2. Run database migrations
+#   3. Seed the workspace
+#   4. Hydrate ~/.claude and ~/.openeral from PostgreSQL when enabled
+#   5. Write session hints/env and an init marker, then exit
 
 # OpenShell's Node HTTP proxy path currently emits an experimental Undici warning
 # in some environments. Keep setup output clean and, more importantly, keep
@@ -20,17 +23,9 @@ set -euo pipefail
 export NODE_NO_WARNINGS="${NODE_NO_WARNINGS:-1}"
 
 OPENERAL_CMD="$(basename "$0")"
-OPENERAL_SERVICE_MODE=0
-if [ "$OPENERAL_CMD" = "openeral-start" ]; then
-  OPENERAL_SERVICE_MODE=1
-fi
-if [ "${1:-}" = "--service" ]; then
-  OPENERAL_SERVICE_MODE=1
-  shift
-fi
 OPENERAL_CLI_SUBCOMMAND=0
 case "${1:-}" in
-  memory|stats|analyze|apply|optimize|presign) OPENERAL_CLI_SUBCOMMAND=1 ;;
+  init|memory|stats|analyze|apply|optimize|presign) OPENERAL_CLI_SUBCOMMAND=1 ;;
 esac
 
 # Use /opt/openeral directly if accessible, otherwise copy to /home/agent
@@ -50,22 +45,33 @@ else
   OPENERAL_DIR=/home/agent/openeral
 fi
 
-# When invoked inside an already-running sandbox, expose the openeral-js CLI
-# through the same command name used as the sandbox entrypoint.
-if [ "$OPENERAL_CLI_SUBCOMMAND" -eq 1 ]; then
-  exec env HOME="/home/agent" OPENERAL_HOME="/home/agent" \
-    node "$OPENERAL_DIR/dist/bin/openeral.js" "$@"
-fi
-
 # Workspace ID defaults to sandbox ID (set by OpenShell supervisor), but an
-# explicit WORKSPACE_ID is the documented persistence key for service mode.
+# explicit WORKSPACE_ID is the documented persistence key.
 export WORKSPACE_ID="${WORKSPACE_ID:-${OPENSHELL_SANDBOX_ID:-default}}"
 
 # Fix the PGlite data directory to a stable path so every Node.js process
-# in this script uses the same embedded database. Keep it outside /home/agent
-# so service-mode filesystem sync never recursively syncs PGlite internals.
-export OPENERAL_DATA_DIR="${OPENERAL_DATA_DIR:-/var/lib/openeral/data}"
-mkdir -p "$OPENERAL_DATA_DIR"
+# in this script uses the same embedded database. Keep runtime state outside
+# /home/agent so scoped filesystem sync never persists secrets or PGlite files.
+export OPENERAL_STATE_DIR="${OPENERAL_STATE_DIR:-/tmp/openeral}"
+export OPENERAL_DATA_DIR="${OPENERAL_DATA_DIR:-/tmp/openeral/data}"
+OPENERAL_DB_URL_FILE="${OPENERAL_DB_URL_FILE:-$OPENERAL_STATE_DIR/database-url}"
+OPENERAL_INIT_MARKER="${OPENERAL_INIT_MARKER:-$OPENERAL_STATE_DIR/init.done}"
+export OPENERAL_DB_URL_FILE OPENERAL_INIT_MARKER
+mkdir -p "$OPENERAL_STATE_DIR" "$OPENERAL_DATA_DIR"
+
+# When invoked inside an already-running sandbox, expose the openeral-js CLI
+# through the same command name used as the sandbox entrypoint. Memory refresh
+# writes under ~/.claude, so ensure the lazy sync daemon is running first.
+if [ "$OPENERAL_CLI_SUBCOMMAND" -eq 1 ]; then
+  if [ "${1:-}" = "memory" ] && command -v openeral-daemon-ensure >/dev/null 2>&1; then
+    /usr/local/bin/openeral init --ensure >/dev/null 2>&1
+    openeral-daemon-ensure >/dev/null 2>&1
+  fi
+  exec env HOME="/home/agent" OPENERAL_HOME="/home/agent" \
+    OPENERAL_STATE_DIR="$OPENERAL_STATE_DIR" OPENERAL_DATA_DIR="$OPENERAL_DATA_DIR" \
+    OPENERAL_DB_URL_FILE="$OPENERAL_DB_URL_FILE" OPENERAL_INIT_MARKER="$OPENERAL_INIT_MARKER" \
+    node "$OPENERAL_DIR/dist/bin/openeral.js" "$@"
+fi
 
 # If DATABASE_URL is provided (external PostgreSQL), propagate it so
 # getDatabaseConnection() picks it up over PGlite.
@@ -94,6 +100,8 @@ case "${DATABASE_URL:-}" in
       DB_URL_FILE=/sandbox/openeral-input/db-url
     elif [ -d /sandbox/openeral-input ]; then
       DB_URL_FILE="$(find /sandbox/openeral-input -type f -name db-url | head -1)"
+    elif [ -f "$OPENERAL_DB_URL_FILE" ]; then
+      DB_URL_FILE="$OPENERAL_DB_URL_FILE"
     fi
     if [ -n "$DB_URL_FILE" ]; then
       DATABASE_URL="$(cat "$DB_URL_FILE")"
@@ -102,6 +110,27 @@ case "${DATABASE_URL:-}" in
     fi
     ;;
 esac
+
+if [ -n "${DATABASE_URL:-}" ]; then
+  case "$DATABASE_URL" in
+    postgresql://*|postgres://*)
+      case "$DATABASE_URL" in
+        *@localhost*|*@127.0.0.1*)
+          echo "setup.sh: warning: DATABASE_URL uses localhost — this refers to the sandbox container, not the host machine. Connections may fail." >&2
+          ;;
+      esac
+      printf '%s' "$DATABASE_URL" > "$OPENERAL_DB_URL_FILE"
+      chmod 600 "$OPENERAL_DB_URL_FILE" 2>/dev/null || true
+      ;;
+    *)
+      echo "setup.sh: error: DATABASE_URL does not look like a valid PostgreSQL URL (got: $DATABASE_URL)." >&2
+      echo "setup.sh: error: deliver PostgreSQL credentials via /sandbox/db-url upload, not a generic provider placeholder." >&2
+      exit 1
+      ;;
+  esac
+else
+  rm -f "$OPENERAL_DB_URL_FILE" 2>/dev/null || true
+fi
 
 # StringCost integration.
 #
@@ -320,7 +349,9 @@ fi
 
 # Uploaded inputs can contain credentials. After they have been loaded into the
 # entrypoint environment or copied to the managed presign file, remove them.
-[ -z "${DB_URL_FILE:-}" ] || rm -f "$DB_URL_FILE" 2>/dev/null || true
+if [ -n "${DB_URL_FILE:-}" ] && [ "$DB_URL_FILE" != "$OPENERAL_DB_URL_FILE" ]; then
+  rm -f "$DB_URL_FILE" 2>/dev/null || true
+fi
 [ -z "${STRINGCOST_UPLOAD_FILE:-}" ] || rm -f "$STRINGCOST_UPLOAD_FILE" 2>/dev/null || true
 
 echo "setup.sh: running migrations..."
@@ -415,6 +446,67 @@ node -e "
   });
 "
 
+if [ -n "${DATABASE_URL:-}" ]; then
+  echo "setup.sh: hydrating Claude state from PostgreSQL..."
+  node -e "
+    import('$OPENERAL_DIR/dist/db/embedded.js').then(async ({ getDatabaseConnection }) => {
+      const { syncToFs } = await import('$OPENERAL_DIR/dist/sync.js');
+      const { pool } = await getDatabaseConnection();
+      const excludeDirs = new Set(['node_modules', '.git', '.cache', '.openeral-memory-backups']);
+      let count = 0;
+      for (const pathPrefix of ['/.claude', '/.openeral']) {
+        count += await syncToFs(pool, process.env.WORKSPACE_ID, '/home/agent', { pathPrefix, excludeDirs });
+      }
+      await pool.end();
+      console.log('setup.sh: hydrated ' + count + ' item(s)');
+    }).catch(err => {
+      console.error('setup.sh: hydration failed:', err.message);
+      process.exit(1);
+    });
+  "
+fi
+
+if [ -n "${STRINGCOST_PROXY_URL:-}" ]; then
+  # Hydration may restore an older settings file. Reapply the current presign
+  # before the init flush writes scoped state back to PostgreSQL.
+  echo "setup.sh: reapplying StringCost proxy after hydration..."
+  node -e "
+const fs = require('fs');
+const presign = '/home/agent/.openeral/presign.json';
+fs.mkdirSync('/home/agent/.openeral', {recursive: true});
+fs.writeFileSync(presign, JSON.stringify({ url: process.env.STRINGCOST_PROXY_URL, updated_at: new Date().toISOString() }, null, 2), { mode: 0o600 });
+const file = '/home/agent/.claude/settings.json';
+let s = {};
+try { s = JSON.parse(fs.readFileSync(file, 'utf8')); } catch(e) {}
+if (!s.env) s.env = {};
+s.env.ANTHROPIC_BASE_URL = process.env.STRINGCOST_PROXY_URL;
+delete s.env.ANTHROPIC_API_KEY;
+delete s.env.ANTHROPIC_AUTH_TOKEN;
+fs.mkdirSync('/home/agent/.claude', {recursive: true});
+fs.writeFileSync(file, JSON.stringify(s, null, 2));
+"
+fi
+
+if [ -n "${DATABASE_URL:-}" ]; then
+  echo "setup.sh: persisting initialized Claude state..."
+  node -e "
+    import('$OPENERAL_DIR/dist/db/embedded.js').then(async ({ getDatabaseConnection }) => {
+      const { syncFromFs } = await import('$OPENERAL_DIR/dist/sync.js');
+      const { pool } = await getDatabaseConnection();
+      const excludeDirs = new Set(['node_modules', '.git', '.cache', '.openeral-memory-backups']);
+      let count = 0;
+      for (const pathPrefix of ['/.claude', '/.openeral']) {
+        count += await syncFromFs(pool, process.env.WORKSPACE_ID, '/home/agent', { pathPrefix, excludeDirs });
+      }
+      await pool.end();
+      console.log('setup.sh: persisted ' + count + ' item(s)');
+    }).catch(err => {
+      console.error('setup.sh: init persistence failed:', err.message);
+      process.exit(1);
+    });
+  "
+fi
+
 # Configure Socket.dev registry if SOCKET_TOKEN provider is available.
 # The token value is a placeholder (openshell:resolve:env:SOCKET_TOKEN) —
 # the OpenShell proxy resolves it to the real token in auth headers.
@@ -450,14 +542,12 @@ write_session_env() {
   local session_env=/tmp/openeral-session.env
   {
     write_export HOME "/home/agent"
-    if [ "$OPENERAL_SERVICE_MODE" -eq 1 ]; then
-      write_export SHELL "/bin/bash"
-    else
-      write_export SHELL "/usr/local/bin/openeral-bash"
-    fi
+    write_export SHELL "/bin/bash"
     write_export OPENERAL_HOME "/home/agent"
     write_export OPENERAL_DIR "$OPENERAL_DIR"
+    write_export OPENERAL_STATE_DIR "$OPENERAL_STATE_DIR"
     write_export OPENERAL_DATA_DIR "$OPENERAL_DATA_DIR"
+    write_export OPENERAL_DB_URL_FILE "$OPENERAL_DB_URL_FILE"
     write_export WORKSPACE_ID "$WORKSPACE_ID"
     write_export NODE_NO_WARNINGS "$NODE_NO_WARNINGS"
     [ -z "${NPM_CONFIG_USERCONFIG:-}" ] || write_export NPM_CONFIG_USERCONFIG "$NPM_CONFIG_USERCONFIG"
@@ -465,8 +555,8 @@ write_session_env() {
       write_export ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY"
     else
       # OpenShell exposes provider secrets to sandbox processes as placeholders.
-      # In service mode, later SSH/exec sessions are separate processes, so
-      # persist the standard placeholder for Claude's wrapper to inherit.
+      # Later SSH/exec sessions are separate processes, so persist the standard
+      # placeholder for Claude's wrapper to inherit.
       write_export ANTHROPIC_API_KEY "openshell:resolve:env:ANTHROPIC_API_KEY"
     fi
     [ -z "${ANTHROPIC_BASE_URL:-}" ] || write_export ANTHROPIC_BASE_URL "$ANTHROPIC_BASE_URL"
@@ -499,62 +589,6 @@ esac
 write_session_env
 write_shell_hint
 
-echo "setup.sh: starting openeral-bash daemon..."
-if [ "$OPENERAL_SERVICE_MODE" -eq 1 ]; then
-  export OPENERAL_ENABLE_SYNC=1
-  export OPENERAL_HOME=/home/agent
-else
-  unset OPENERAL_ENABLE_SYNC
-fi
-node "$OPENERAL_DIR/openeral-bash.mjs" --daemon &
-DAEMON_PID=$!
-
-# Wait for socket to appear — PGlite WASM can take 5-15s to initialize
-_d=0
-while [ $_d -lt 300 ]; do
-  [ -S /tmp/openeral-bash.sock ] && break
-  [ $_d -eq 50 ] && echo "setup.sh: waiting for daemon to initialize (PGlite WASM)..." >&2
-  sleep 0.1
-  _d=$((_d+1))
-done
-
-if [ -S /tmp/openeral-bash.sock ]; then
-  echo "setup.sh: daemon ready (pid $DAEMON_PID)"
-  # Clean up daemon on exit
-  trap "kill $DAEMON_PID 2>/dev/null; rm -f /tmp/openeral-bash.sock" EXIT
-else
-  if [ "$OPENERAL_SERVICE_MODE" -eq 1 ]; then
-    echo "setup.sh: ERROR: daemon not ready after 30s; service mode cannot start" >&2
-    kill "$DAEMON_PID" 2>/dev/null || true
-    rm -f /tmp/openeral-bash.sock
-    exit 1
-  fi
-  echo "setup.sh: warning: daemon not ready after 30s — using standalone mode" >&2
-  unset DAEMON_PID
-  trap "rm -f /tmp/openeral-bash.sock" EXIT
-fi
-
-if [ "$OPENERAL_SERVICE_MODE" -eq 1 ] && [ -n "${STRINGCOST_PROXY_URL:-}" ]; then
-  # Hydration may have restored an older settings file from PostgreSQL. Reapply
-  # the current proxy config after hydration, then flush the scoped sync.
-  mkdir -p /home/agent/.openeral
-  node -e "
-const fs = require('fs');
-const presign = '/home/agent/.openeral/presign.json';
-fs.writeFileSync(presign, JSON.stringify({ url: process.env.STRINGCOST_PROXY_URL, updated_at: new Date().toISOString() }, null, 2), { mode: 0o600 });
-const file = '/home/agent/.claude/settings.json';
-let s = {};
-try { s = JSON.parse(fs.readFileSync(file, 'utf8')); } catch(e) {}
-if (!s.env) s.env = {};
-s.env.ANTHROPIC_BASE_URL = process.env.STRINGCOST_PROXY_URL;
-delete s.env.ANTHROPIC_API_KEY;
-delete s.env.ANTHROPIC_AUTH_TOKEN;
-fs.mkdirSync('/home/agent/.claude', {recursive: true});
-fs.writeFileSync(file, JSON.stringify(s, null, 2));
-"
-  node "$OPENERAL_DIR/openeral-bash.mjs" --flush >/dev/null 2>&1 || true
-fi
-
 # Install Claude Code if not already present in the image. Production images
 # preinstall /usr/local/bin/claude-real and expose /usr/local/bin/claude as the
 # OpenEral wrapper; this fallback keeps local/dev images usable.
@@ -574,42 +608,29 @@ if ! command -v claude-real >/dev/null 2>&1; then
   echo "setup.sh: Claude CLI installed"
 fi
 
-if [ "$OPENERAL_SERVICE_MODE" -eq 1 ]; then
-  echo ""
-  echo "OpenEral service is ready for workspace: $WORKSPACE_ID"
-  echo "Connect with: openshell sandbox connect ${OPENSHELL_SANDBOX_ID:-<name>}"
-  echo "Inside the sandbox: run 'claude' to start, '/exit' or Ctrl-D to stop, and 'claude -c' to continue."
-  echo ""
-  wait "$DAEMON_PID"
-  exit $?
-fi
+node -e "
+const fs = require('fs');
+const crypto = require('crypto');
+const marker = process.env.OPENERAL_INIT_MARKER || '/tmp/openeral/init.done';
+const dbFile = process.env.OPENERAL_DB_URL_FILE || '/tmp/openeral/database-url';
+let datasource = 'pglite:' + (process.env.OPENERAL_DATA_DIR || '/tmp/openeral/data');
+try {
+  if (fs.existsSync(dbFile)) datasource = 'postgres:' + fs.readFileSync(dbFile, 'utf8').trim();
+} catch {}
+const datasourceHash = crypto.createHash('sha256').update(datasource).digest('hex');
+fs.mkdirSync(require('path').dirname(marker), { recursive: true });
+fs.writeFileSync(marker, JSON.stringify({
+  version: 1,
+  workspaceId: process.env.WORKSPACE_ID || 'default',
+  datasourceHash,
+  completedAt: new Date().toISOString()
+}, null, 2), { mode: 0o600 });
+"
+chmod 600 "$OPENERAL_INIT_MARKER" 2>/dev/null || true
 
-# Launch Claude Code with persistent home.
-#
-# Claude Code reads ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN from process.env
-# at startup for auth-mode selection; ~/.claude/settings.json is only
-# consulted afterward. Delivering the proxy config via settings.json alone
-# lands Claude in "API Usage Billing" mode against any stale URL on disk —
-# which, if that URL still has the presign's /v1/messages suffix, produces a
-# doubled /v1/messages/v1/messages path against StringCost. Export the vars
-# here so the proxy is picked up at the auth-selection step.
-# STRINGCOST_PROXY_URL was normalized by normalize_stringcost_proxy_url above.
-#
-# The proxy path preserves ANTHROPIC_API_KEY from the claude provider for
-# Claude Code's local auth-mode selection and request signing. Do not write that
-# key to settings.json; settings only stores the proxy base URL. STRINGCOST_API_KEY
-# is only needed for presign creation, so remove it before handing control to
-# Claude Code.
-echo "setup.sh: launching Claude Code..."
-if [ -n "${STRINGCOST_PROXY_URL:-}" ]; then
-  exec env -u STRINGCOST_API_KEY -u ANTHROPIC_AUTH_TOKEN \
-    HOME=/home/agent \
-    SHELL=/usr/local/bin/openeral-bash \
-    ANTHROPIC_BASE_URL="$STRINGCOST_PROXY_URL" \
-    claude "$@"
-else
-  exec env \
-    HOME=/home/agent \
-    SHELL=/usr/local/bin/openeral-bash \
-    claude "$@"
-fi
+echo ""
+echo "OpenEral initialized for workspace: $WORKSPACE_ID"
+echo "Connect with: openshell sandbox connect ${OPENSHELL_SANDBOX_ID:-<name>}"
+echo "Inside the sandbox: run 'claude' to start, '/exit' or Ctrl-D to stop, and 'claude -c' to continue."
+echo ""
+exit 0

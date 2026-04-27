@@ -13,7 +13,7 @@
  *                to it. Otherwise, falls back to per-invocation mode (creates
  *                a fresh shell, runs the command, exits).
  *
- * Claude Code service mode uses real /bin/bash. This daemon still powers the
+ * Claude Code runtime uses real /bin/bash. This daemon still powers the
  * `pg` helper, scoped PostgreSQL sync, and custom-agent / legacy just-bash paths.
  *
  * Database: uses getDatabaseConnection() which picks up external PostgreSQL
@@ -21,12 +21,45 @@
  */
 
 import { createServer, createConnection } from 'node:net';
-import { existsSync, unlinkSync, chmodSync, mkdirSync } from 'node:fs';
+import { existsSync, unlinkSync, chmodSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 
 const SOCKET_PATH = '/tmp/openeral-bash.sock';
 const SYNC_PREFIXES = ['/.claude', '/.openeral'];
 const SYNC_EXCLUDES = new Set(['node_modules', '.git', '.cache', '.openeral-memory-backups']);
+const DATA_DIR = process.env.OPENERAL_DATA_DIR || '/tmp/openeral/data';
+const DB_URL_FILE = process.env.OPENERAL_DB_URL_FILE || '/tmp/openeral/database-url';
+const INIT_MARKER = process.env.OPENERAL_INIT_MARKER || '/tmp/openeral/init.done';
+
+function loadStoredDatabaseUrl() {
+  if (process.env.DATABASE_URL) return;
+  try {
+    if (existsSync(DB_URL_FILE)) {
+      const value = readFileSync(DB_URL_FILE, 'utf8').trim();
+      if (value) process.env.DATABASE_URL = value;
+    }
+  } catch {}
+}
+
+function currentDatasourceHash() {
+  const datasource = process.env.DATABASE_URL
+    ? `postgres:${process.env.DATABASE_URL}`
+    : `pglite:${DATA_DIR}`;
+  return createHash('sha256').update(datasource).digest('hex');
+}
+
+function initMarkerMatches(workspaceId) {
+  if (!existsSync(INIT_MARKER)) return false;
+  try {
+    const data = JSON.parse(readFileSync(INIT_MARKER, 'utf8'));
+    return data?.version === 1
+      && data?.workspaceId === workspaceId
+      && data?.datasourceHash === currentDatasourceHash();
+  } catch {
+    return false;
+  }
+}
 
 function workspaceIdFromEnv() {
   return process.env.WORKSPACE_ID || process.env.OPENSHELL_SANDBOX_ID || 'default';
@@ -61,6 +94,7 @@ async function runPgQuery(pool, sql) {
 // ---------------------------------------------------------------------------
 
 async function startDaemon() {
+  loadStoredDatabaseUrl();
   const { createOpeneralShell } = await import('/opt/openeral/dist/shell.js');
   const { getDatabaseConnection } = await import('/opt/openeral/dist/db/embedded.js');
   const { syncToFs, syncFromFs, watchAndSync } = await import('/opt/openeral/dist/sync.js');
@@ -68,6 +102,7 @@ async function startDaemon() {
   const workspaceId = workspaceIdFromEnv();
   const syncRoot = syncRootFromEnv();
   const enableSync = process.env.OPENERAL_ENABLE_SYNC === '1' && !!process.env.DATABASE_URL;
+  const hydrateOnStart = enableSync && !initMarkerMatches(workspaceId);
   const stopWatchers = [];
   let server;
   let shuttingDown = false;
@@ -102,7 +137,7 @@ async function startDaemon() {
     process.exit(code);
   }
 
-  if (enableSync) {
+  if (hydrateOnStart) {
     mkdirSync(syncRoot, { recursive: true });
     for (const pathPrefix of SYNC_PREFIXES) {
       mkdirSync(join(syncRoot, pathPrefix), { recursive: true });
@@ -111,6 +146,11 @@ async function startDaemon() {
         excludeDirs: SYNC_EXCLUDES,
       });
       process.stderr.write(`openeral-bash: hydrated ${count} item(s) under ${pathPrefix}\n`);
+    }
+  } else if (enableSync) {
+    mkdirSync(syncRoot, { recursive: true });
+    for (const pathPrefix of SYNC_PREFIXES) {
+      mkdirSync(join(syncRoot, pathPrefix), { recursive: true });
     }
   }
 
@@ -268,6 +308,7 @@ function pgViaDaemon(sql) {
 // ---------------------------------------------------------------------------
 
 async function execStandalone(command) {
+  loadStoredDatabaseUrl();
   const { createOpeneralShell } = await import('/opt/openeral/dist/shell.js');
   const { getDatabaseConnection } = await import('/opt/openeral/dist/db/embedded.js');
 
@@ -286,6 +327,7 @@ async function execStandalone(command) {
 }
 
 async function pgStandalone(sql) {
+  loadStoredDatabaseUrl();
   const { getDatabaseConnection } = await import('/opt/openeral/dist/db/embedded.js');
   const { pool } = await getDatabaseConnection();
   try {
@@ -300,6 +342,7 @@ async function pgStandalone(sql) {
 // ---------------------------------------------------------------------------
 
 async function main() {
+  loadStoredDatabaseUrl();
   const args = process.argv.slice(2);
 
   // Daemon mode
@@ -316,6 +359,12 @@ async function main() {
 
   if (args[0] === '--flush') {
     const result = await requestDaemon({ type: 'flush' });
+    process.stdout.write(JSON.stringify(result) + '\n');
+    return;
+  }
+
+  if (args[0] === '--stop') {
+    const result = await requestDaemon({ type: 'stop' });
     process.stdout.write(JSON.stringify(result) + '\n');
     return;
   }

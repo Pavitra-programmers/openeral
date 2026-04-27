@@ -33,9 +33,10 @@ openeral-js/src/
 sandboxes/openeral/
   Dockerfile                  # Stock OpenShell base + Node.js + openeral-js
   openeral-bash.mjs           # Daemon/client bridge for pg, sync, custom agents
-  openeral-claude.sh          # Claude wrapper for connected service sessions
+  openeral-daemon-ensure.sh   # Lazy detached daemon starter used by claude/pg
+  openeral-claude.sh          # Claude wrapper; parents claude-real and flushes on exit
   pg-client.mjs               # pg helper for real-bash Claude sessions
-  setup.sh                    # openeral/openeral-start sandbox entry point
+  setup.sh                    # one-shot openeral-init sandbox entry point
   policy.yaml                 # Network policy
 
 Dockerfile.openeral           # Repo-root OpenShell local-build entrypoint
@@ -61,12 +62,12 @@ openshell sandbox create \
   --name openeral-local-dev \
   --from Dockerfile.openeral \
   --provider claude --auto-providers \
-  -- env WORKSPACE_ID=openeral-local-dev openeral-start
+  -- env WORKSPACE_ID=openeral-local-dev openeral-init
 ```
 
 Do not use raw `--from openeral-sandbox:dev` unless that image has already been imported into the OpenShell gateway's containerd. Tag-shaped values are treated as image references by the sandbox pod. `--from Dockerfile.openeral` is the direct OpenShell local-build path.
 
-## Structural Lints (lint.mjs — 31 rules)
+## Structural Lints (lint.mjs — 30 rules)
 
 Key rules: imports resolve, exports match, just-bash >=2.x, PgFs throws EROFS, no write-back buffering, no FUSE in Dockerfile, no hardcoded credentials, sync persists deletions, sync preserves modes, exclude uses exact matching, syncToFs prunes stale files, syncToFs prunes before creating, pruneLocal handles type conflicts, README includes build steps, migrations use advisory lock, skill checks node_modules, no fork-specific policy fields (secret_injection/egress_via), Socket.dev endpoint has TLS terminate, Claude policy allows `claude-real`.
 
@@ -78,7 +79,8 @@ Key rules: imports resolve, exports match, just-bash >=2.x, PgFs throws EROFS, n
 - SQL uses `quoteIdent()` + `$N` params + `::text` casts
 - `pg` command: complex SQL must be double-quoted
 - Command safety: AST walk + regex fallback
-- `openeral-start` is service mode: create sandbox, connect, run `claude`, exit with `/exit` or Ctrl-D, restart with `claude -c`
+- `openeral-init` is one-shot: create sandbox, connect, run `claude`, exit with `/exit` or Ctrl-D, restart with `claude -c`
+- The daemon is lazy and detached: `openeral-daemon-ensure` starts it for `claude`, `pg`, and memory refresh paths
 - Persistence is optional — without DATABASE_URL, PGlite is scoped to the running sandbox lifetime
 - For repo-local automation, prefer `node dist/bin/openeral.js` after `pnpm build`
 - Real Claude persistence checks should use `Run:` Bash commands for `$HOME` paths; Claude file tools do not reliably expand shell variables inside the isolated home

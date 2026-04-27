@@ -66,7 +66,7 @@ openshell sandbox create \
   --name openeral-local-dev \
   --from Dockerfile.openeral \
   --provider claude --auto-providers \
-  -- env WORKSPACE_ID=openeral-local-dev openeral-start
+  -- env WORKSPACE_ID=openeral-local-dev openeral-init
 
 openshell sandbox connect openeral-local-dev
 claude
@@ -200,9 +200,10 @@ openeral-js/                  # TypeScript package
 
 sandboxes/openeral/           # OpenShell sandbox image
   Dockerfile                  # Stock base + Node.js + openeral-js
-  setup.sh                    # openeral/openeral-start sandbox entry point
+  setup.sh                    # one-shot openeral-init sandbox entry point
   openeral-bash.mjs           # daemon for pg, scoped sync, custom agents
-  openeral-claude.sh          # Claude wrapper for connected service sessions
+  openeral-daemon-ensure.sh   # lazy detached daemon starter
+  openeral-claude.sh          # Claude wrapper that flushes on exit
   pg-client.mjs               # pg helper for real-bash sessions
   policy.yaml                 # Network policy
 
@@ -233,11 +234,11 @@ ANTHROPIC_API_KEY='...' DATABASE_URL='...' bash tests/test_claude_e2e.sh
 
 ```
   ┌─────────────────────── Sandbox ─────────────────────────┐
-  │  openeral-start keeps the sandbox alive                    │
+  │  openeral-init hydrates state and exits                    │
   │                      │                                     │
   │  user connects and runs `claude` with real /bin/bash       │
   │                      │                                     │
-  │  scoped watcher syncs .claude/.openeral only ───────────┐  │
+  │  claude/pg lazily start detached scoped watcher ────────┐  │
   │  PGlite (default)  OR  pg.Pool wrapped in a CONNECT-    │  │
   │                         tunneled Duplex (with --upload) │  │
   │  ───────────────────────────────────────────────────────┘  │
@@ -251,7 +252,7 @@ ANTHROPIC_API_KEY='...' DATABASE_URL='...' bash tests/test_claude_e2e.sh
     resolved at proxy)
 ```
 
-Every outbound connection from the sandbox goes through OpenShell's HTTP CONNECT proxy at `10.200.0.1:3128` — kernel-level iptables reject any other TCP. The just-bash virtual `/db` and virtual `/home/agent` path remains available for custom agents through `createOpeneralShell()`, but Claude Code service mode uses real bash plus the `pg` helper.
+Every outbound connection from the sandbox goes through OpenShell's HTTP CONNECT proxy at `10.200.0.1:3128` — kernel-level iptables reject any other TCP. The just-bash virtual `/db` and virtual `/home/agent` path remains available for custom agents through `createOpeneralShell()`, but Claude Code runtime uses real bash plus the `pg` helper.
 
 ### How pg reaches Supabase
 
@@ -261,7 +262,7 @@ pg doesn't speak HTTP CONNECT. `openeral-js/src/db/http-connect-socket.ts` wraps
 
 OpenShell's `SecretResolver` unconditionally wraps every provider credential as an `openshell:resolve:env:*` placeholder that is only rewritten when the HTTP proxy terminates TLS and inspects request headers. pg uses raw TCP, so it can't resolve placeholders — it would try to literally connect to a host named `openshell:resolve:env:DATABASE_URL`.
 
-`openshell sandbox create --upload <path>` is the one channel that delivers bytes verbatim. For PostgreSQL-only launches, `setup.sh` reads `/sandbox/db-url`; for combined PostgreSQL + StringCost launches, it reads `/sandbox/openeral-input/db-url`. It exports `DATABASE_URL`, and everything downstream sees the real URL.
+`openshell sandbox create --upload <path>` is the one channel that delivers bytes verbatim. For PostgreSQL-only launches, `setup.sh` reads `/sandbox/db-url`; for combined PostgreSQL + StringCost launches, it reads `/sandbox/openeral-input/db-url`. It stores the URL at `/tmp/openeral/database-url` so later `claude`, `pg`, and memory refresh sessions can start the detached daemon without keeping the uploaded secret file around.
 
 `createPool()` does not set pg's `ssl` option. The tested Supabase pooler flow works with the current connection string and CONNECT tunnel; PostgreSQL deployments that require explicit pg TLS settings need future pool configuration support.
 

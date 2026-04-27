@@ -5,7 +5,7 @@ description: Query PostgreSQL with pg in OpenEral; /db virtual browsing is avail
 
 # OpenEral Navigate
 
-In Claude Code service mode, use the real shell plus the `pg` helper. The `/db` and virtual `/home/agent` mounts are custom-agent just-bash features, not Claude Code runtime mounts.
+In Claude Code runtime, use the real shell plus the `pg` helper. The `/db` and virtual `/home/agent` mounts are custom-agent just-bash features, not Claude Code runtime mounts.
 
 ## Database queries (Claude Code + custom agents)
 

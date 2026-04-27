@@ -142,6 +142,41 @@ describe('CLI launch database handling', () => {
   });
 });
 
+describe('OpenShell runtime architecture', () => {
+  const setup = readFileSync(join(__dirname, '../../sandboxes/openeral/setup.sh'), 'utf8');
+  const claudeWrapper = readFileSync(join(__dirname, '../../sandboxes/openeral/openeral-claude.sh'), 'utf8');
+  const daemon = readFileSync(join(__dirname, '../../sandboxes/openeral/openeral-bash.mjs'), 'utf8');
+  const daemonEnsure = readFileSync(join(__dirname, '../../sandboxes/openeral/openeral-daemon-ensure.sh'), 'utf8');
+  const pgClient = readFileSync(join(__dirname, '../../sandboxes/openeral/pg-client.mjs'), 'utf8');
+
+  it('keeps setup.sh as one-shot init, not a long-running service', () => {
+    expect(setup).toContain('OPENERAL_INIT_MARKER');
+    expect(setup).toContain('OpenEral initialized for workspace');
+    expect(setup).not.toContain('wait "$DAEMON_PID"');
+    expect(setup).not.toContain('launching Claude Code');
+  });
+
+  it('starts the daemon lazily from runtime entrypoints', () => {
+    expect(claudeWrapper).toContain('openeral-daemon-ensure');
+    expect(pgClient).toContain('openeral-daemon-ensure');
+  });
+
+  it('does not let the detached daemon inherit the flock descriptor', () => {
+    expect(daemonEnsure).toContain('exec 9>&-');
+  });
+
+  it('parents Claude so it can flush after Claude exits', () => {
+    expect(claudeWrapper).toContain('/usr/local/bin/claude-real "$@" &');
+    expect(claudeWrapper).toContain('/usr/local/bin/openeral-bash --flush');
+    expect(claudeWrapper).not.toContain('exec /usr/local/bin/claude-real');
+  });
+
+  it('does not rehydrate destructively once the init marker matches', () => {
+    expect(daemon).toContain('initMarkerMatches');
+    expect(daemon).toContain('hydrateOnStart');
+  });
+});
+
 describe('CLI argument parsing', () => {
   it('parses memory refresh options', () => {
     const parsed = parseCliArgs([

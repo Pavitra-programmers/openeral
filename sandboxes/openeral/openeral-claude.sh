@@ -20,4 +20,38 @@ if [ ! -x /usr/local/bin/claude-real ]; then
   exit 127
 fi
 
-exec /usr/local/bin/claude-real "$@"
+if command -v openeral >/dev/null 2>&1; then
+  openeral init --ensure
+fi
+
+if command -v openeral-daemon-ensure >/dev/null 2>&1; then
+  openeral-daemon-ensure
+fi
+
+/usr/local/bin/claude-real "$@" &
+CHILD=$!
+
+forward_int() { kill -INT "$CHILD" 2>/dev/null || true; }
+forward_term() { kill -TERM "$CHILD" 2>/dev/null || true; }
+forward_hup() { kill -HUP "$CHILD" 2>/dev/null || true; }
+
+trap forward_int INT
+trap forward_term TERM
+trap forward_hup HUP
+
+set +e
+while true; do
+  wait "$CHILD"
+  STATUS=$?
+  if kill -0 "$CHILD" 2>/dev/null; then
+    continue
+  fi
+  break
+done
+set -e
+
+trap - INT TERM HUP
+
+/usr/local/bin/openeral-bash --flush >/dev/null 2>&1 || true
+
+exit "$STATUS"

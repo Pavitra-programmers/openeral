@@ -21,7 +21,7 @@ openshell sandbox create \
   --name openeral-local-dev \
   --from Dockerfile.openeral \
   --provider claude --auto-providers \
-  -- env WORKSPACE_ID=openeral-local-dev openeral-start
+  -- env WORKSPACE_ID=openeral-local-dev openeral-init
 ```
 
 OpenShell sets the Docker build context to the Dockerfile's parent directory. Do not use `--from sandboxes/openeral/Dockerfile` for this repo; that context is too narrow for `COPY openeral-js/` and `COPY .claude/skills/`.
@@ -35,7 +35,7 @@ openshell sandbox create \
   --name openeral-demo \
   --from ghcr.io/sandys/openeral/sandbox:just-bash \
   --provider claude --auto-providers \
-  -- env WORKSPACE_ID=openeral-demo openeral-start
+  -- env WORKSPACE_ID=openeral-demo openeral-init
 
 openshell sandbox connect openeral-demo
 claude
@@ -54,7 +54,7 @@ openshell sandbox create \
   --from ghcr.io/sandys/openeral/sandbox:just-bash \
   --upload /tmp/openeral-db-url:/sandbox/db-url \
   --provider claude --auto-providers \
-  -- env WORKSPACE_ID=openeral-demo openeral-start
+  -- env WORKSPACE_ID=openeral-demo openeral-init
 
 rm -f /tmp/openeral-db-url
 
@@ -68,16 +68,17 @@ claude
 2. Creates a normalized StringCost proxy config when `STRINGCOST_API_KEY` is attached.
 3. Runs `_openeral` schema migrations.
 4. Seeds the workspace keyed by explicit `$WORKSPACE_ID` or `$OPENSHELL_SANDBOX_ID`.
-5. Starts the `openeral-bash` daemon.
-6. In `openeral-start` mode, keeps the sandbox alive so users can connect and run `claude`, stop with `/exit` or `Ctrl+D`, then restart with `claude` or `claude -c`.
-7. In legacy `openeral` mode, launches Claude Code immediately.
+5. Hydrates `/home/agent/.claude/**` and `/home/agent/.openeral/**` from PostgreSQL when persistence is enabled.
+6. Writes `/tmp/openeral-session.env` and `/tmp/openeral/init.done`.
+7. Exits. `claude`, `pg`, and `openeral memory refresh` lazily start the detached daemon when needed.
 
 ## Image Contents
 
 - Node.js 22 LTS.
 - OpenEral compiled into `/opt/openeral/dist/`.
-- `openeral-bash.mjs`, the daemon/client bridge for `pg`, custom agents, and service-mode scoped sync.
-- `setup.sh`, the sandbox entry point used by `openeral` and `openeral-start`.
-- `openeral-claude.sh`, the Claude wrapper that applies the OpenEral session environment.
+- `openeral-bash.mjs`, the daemon/client bridge for `pg`, custom agents, and scoped sync.
+- `openeral-daemon-ensure.sh`, the lazy detached daemon starter.
+- `setup.sh`, the sandbox entry point used by `openeral-init`.
+- `openeral-claude.sh`, the Claude wrapper that applies the OpenEral session environment and flushes on exit.
 - `pg-client.mjs`, the `pg` helper for real-bash Claude sessions.
 - `policy.yaml`, the OpenShell network policy at `/etc/openshell/policy.yaml`.

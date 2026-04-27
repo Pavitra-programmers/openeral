@@ -7,22 +7,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, '../..');
 const policy = readFileSync(join(repoRoot, 'sandboxes/openeral/policy.yaml'), 'utf8');
 const setup = readFileSync(join(repoRoot, 'sandboxes/openeral/setup.sh'), 'utf8');
+const claudeWrapper = readFileSync(join(repoRoot, 'sandboxes/openeral/openeral-claude.sh'), 'utf8');
 const cli = readFileSync(join(__dirname, 'cli.ts'), 'utf8');
-
-function launchBlock(source: string, marker: string): string {
-  const start = source.indexOf(marker);
-  expect(start).toBeGreaterThanOrEqual(0);
-  const end = source.indexOf('\nfi', start);
-  expect(end).toBeGreaterThan(start);
-  return source.slice(start, end + '\nfi'.length);
-}
-
-function directAuthBranch(source: string, marker: string): string {
-  const block = launchBlock(source, marker);
-  const start = block.indexOf('\nelse\n');
-  expect(start).toBeGreaterThanOrEqual(0);
-  return block.slice(start);
-}
 
 describe('proxy policy (PROXY-PLAN compliance)', () => {
   it('has no secret_injection: fields (stock SecretResolver handles it)', () => {
@@ -145,44 +131,38 @@ describe('setup.sh StringCost integration', () => {
     expect(setup).toContain('find /sandbox/openeral-input -type f -name db-url');
   });
 
-  it('exports ANTHROPIC_BASE_URL to Claude Code at exec time', () => {
+  it('exports ANTHROPIC_BASE_URL through the session env consumed by Claude', () => {
     // Claude Code reads these from process.env at startup for auth-mode
     // selection; settings.json alone isn't consulted in time.  Without the
     // exported env var, the fallback URL in settings.json wins and produces
     // doubled /v1/messages paths against StringCost.
-    const execBlock = setup.slice(setup.indexOf('launching Claude Code'));
-    expect(execBlock).toMatch(/ANTHROPIC_BASE_URL="\$STRINGCOST_PROXY_URL"/);
-    expect(execBlock).not.toMatch(/-u ANTHROPIC_API_KEY/);
-    expect(execBlock).toMatch(/-u STRINGCOST_API_KEY/);
-    expect(execBlock).toMatch(/-u ANTHROPIC_AUTH_TOKEN/);
+    expect(setup).toContain('write_export ANTHROPIC_BASE_URL "$STRINGCOST_PROXY_URL"');
+    expect(claudeWrapper).toContain('. /tmp/openeral-session.env');
+    expect(claudeWrapper).not.toMatch(/unset ANTHROPIC_API_KEY/);
+    expect(claudeWrapper).toMatch(/unset STRINGCOST_API_KEY/);
+    expect(claudeWrapper).toMatch(/unset ANTHROPIC_AUTH_TOKEN/);
   });
 
   it('does not persist API keys in Claude settings', () => {
-    const setupProxyBlock = launchBlock(setup, 'setup.sh: launching Claude Code');
-    const cliProxyBlock = launchBlock(cli, 'setup: launching Claude Code');
-    expect(setupProxyBlock).not.toMatch(/-u ANTHROPIC_API_KEY/);
-    expect(cliProxyBlock).not.toMatch(/-u ANTHROPIC_API_KEY/);
     expect(setup).toContain('delete s.env.ANTHROPIC_API_KEY');
     expect(setup).toContain('delete s.env.ANTHROPIC_AUTH_TOKEN');
-    expect(cli).toContain('delete s.env.ANTHROPIC_API_KEY');
-    expect(cli).toContain('delete s.env.ANTHROPIC_AUTH_TOKEN');
+    expect(claudeWrapper).not.toMatch(/write.*ANTHROPIC_API_KEY/);
   });
 
-  it('preserves ANTHROPIC_API_KEY in setup.sh direct-auth launches', () => {
-    const directBranch = directAuthBranch(setup, 'setup.sh: launching Claude Code');
-    expect(directBranch).toContain('exec env');
-    expect(directBranch).not.toMatch(/-u ANTHROPIC_API_KEY/);
+  it('preserves ANTHROPIC_API_KEY in direct-auth launches', () => {
+    expect(setup).toContain('write_export ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY"');
+    expect(claudeWrapper).not.toMatch(/unset ANTHROPIC_API_KEY/);
   });
 
-  it('writes an OpenShell Anthropic placeholder into service session env when provider env is absent', () => {
+  it('writes an OpenShell Anthropic placeholder into session env when provider env is absent', () => {
     expect(setup).toContain('openshell:resolve:env:ANTHROPIC_API_KEY');
     expect(setup).toContain('write_export ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY"');
     expect(setup).toContain('write_export ANTHROPIC_API_KEY "openshell:resolve:env:ANTHROPIC_API_KEY"');
   });
 
-  it('preserves ANTHROPIC_API_KEY in CLI inline direct-auth launches', () => {
-    const directBranch = directAuthBranch(cli, 'setup: launching Claude Code');
-    expect(directBranch).toContain('exec env');
-    expect(directBranch).not.toMatch(/-u ANTHROPIC_API_KEY/);
+  it('CLI inline launch delegates auth handling to the sandbox wrapper', () => {
+    expect(cli).toContain('openeral-init');
+    expect(cli).toContain('exec claude "$@"');
+    expect(cli).not.toMatch(/-u ANTHROPIC_API_KEY/);
   });
 });

@@ -35,12 +35,12 @@ openshell sandbox create \
   --name "$OPENERAL_WORKSPACE" \
   --from ghcr.io/sandys/openeral/sandbox:just-bash \
   --provider claude --auto-providers \
-  -- env WORKSPACE_ID="$OPENERAL_WORKSPACE" openeral-start
+  -- env WORKSPACE_ID="$OPENERAL_WORKSPACE" openeral-init
 
 openshell sandbox connect "$OPENERAL_WORKSPACE"
 ```
 
-Inside the connected sandbox shell, start Claude:
+`sandbox create` initializes OpenEral and exits. It does not start Claude. Inside the connected sandbox shell, start Claude:
 
 ```bash
 claude
@@ -52,7 +52,7 @@ Stop Claude and return to the sandbox shell:
 /exit
 ```
 
-`Ctrl+D` also exits Claude Code. After Claude exits, the OpenEral sandbox stays alive, so you can run shell commands:
+`Ctrl+D` also exits Claude Code. The wrapper flushes Claude state to PostgreSQL when persistence is enabled. After Claude exits, the OpenEral sandbox stays alive, so you can run shell commands:
 
 ```bash
 pg "SELECT now()"
@@ -93,7 +93,9 @@ openshell sandbox delete "$OPENERAL_WORKSPACE"
 
 The first Claude Code launch may ask you to choose a theme, accept the security notice, trust `/sandbox`, and confirm API usage billing. After that, Claude opens with `HOME=/home/agent` inside the sandbox.
 
-Without PostgreSQL, OpenEral uses embedded PGlite under `/var/lib/openeral/data`. That state lives for the running sandbox lifetime and is removed when you delete the sandbox.
+Without PostgreSQL, OpenEral uses embedded PGlite under `/tmp/openeral/data`. That state lives for the running sandbox lifetime and is removed when you delete the sandbox.
+
+For data you must not lose, exit Claude cleanly with `/exit` or `Ctrl+D` before deleting the sandbox. Clean Claude exit runs an explicit flush. `openshell sandbox delete` is forced container teardown and can lose the last debounce window of writes.
 
 ## Add PostgreSQL Persistence
 
@@ -123,7 +125,7 @@ openshell sandbox create \
   --from ghcr.io/sandys/openeral/sandbox:just-bash \
   --upload /tmp/openeral-db-url:/sandbox/db-url \
   --provider claude --auto-providers \
-  -- env WORKSPACE_ID="$OPENERAL_WORKSPACE" openeral-start
+  -- env WORKSPACE_ID="$OPENERAL_WORKSPACE" openeral-init
 
 rm -f /tmp/openeral-db-url
 
@@ -131,7 +133,7 @@ openshell sandbox connect "$OPENERAL_WORKSPACE"
 claude
 ```
 
-For PostgreSQL-only launches, OpenEral reads `/sandbox/db-url`, creates the `_openeral` schema, runs migrations, and seeds the workspace. In service mode it syncs Claude state under `/home/agent/.claude/**` and OpenEral state under `/home/agent/.openeral/**`; arbitrary checked-out source code remains sandbox-local. In Supabase, switch the Table Editor schema selector to `_openeral` to inspect the rows.
+For PostgreSQL-only launches, OpenEral reads `/sandbox/db-url`, stores it inside the sandbox under `/tmp/openeral/database-url`, creates the `_openeral` schema, runs migrations, seeds the workspace, and hydrates `/home/agent/.claude/**` plus `/home/agent/.openeral/**`. When you later run `claude`, `pg`, or `openeral memory refresh`, OpenEral lazily starts a detached sync daemon. Arbitrary checked-out source code remains sandbox-local. In Supabase, switch the Table Editor schema selector to `_openeral` to inspect the rows.
 
 Do not pass the database URL through an OpenShell generic provider. PostgreSQL is raw TCP, so the credential must be delivered by `--upload`.
 
@@ -180,7 +182,7 @@ openshell sandbox create \
   --from ghcr.io/sandys/openeral/sandbox:just-bash \
   --upload "$OPENERAL_INPUT:/sandbox/openeral-input" \
   --provider claude --provider stringcost --auto-providers \
-  -- env WORKSPACE_ID="$OPENERAL_WORKSPACE" openeral-start
+  -- env WORKSPACE_ID="$OPENERAL_WORKSPACE" openeral-init
 
 cleanup_openeral_input
 trap - EXIT

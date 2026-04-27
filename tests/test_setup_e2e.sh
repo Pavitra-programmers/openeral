@@ -26,10 +26,9 @@ echo ""
 echo "=== Building image ==="
 docker build -f sandboxes/openeral/Dockerfile -t "$IMAGE" . 2>&1 | tail -2
 
-# Create a modified setup.sh that stops before exec claude and runs checks instead
 echo ""
-echo "=== Running setup.sh (with verification instead of claude) ==="
-out=$(timeout 60 docker run --rm --network host \
+echo "=== Running setup.sh one-shot init ==="
+out=$(timeout 120 docker run --rm --network host \
   -e DATABASE_URL="$DB_URL" \
   -e WORKSPACE_ID="$WORKSPACE" \
   -e OPENSHELL_SANDBOX_ID="$WORKSPACE" \
@@ -37,75 +36,30 @@ out=$(timeout 60 docker run --rm --network host \
   --user sandbox \
   --entrypoint /bin/sh \
   "$IMAGE" -c '
-    # Run setup.sh but replace the final exec claude with verification
-    OPENERAL_DIR=/opt/openeral
+    /opt/openeral/setup.sh
+    . /tmp/openeral-session.env
 
-    export DATABASE_URL="${DATABASE_URL:-${OPENERAL_DATABASE_URL:-}}"
-    export WORKSPACE_ID="${OPENSHELL_SANDBOX_ID:-default}"
-
-    # --- Run migrations (from setup.sh) ---
-    node -e "
-      import(\"/opt/openeral/dist/db/pool.js\").then(async({createPool})=>{
-        const{runMigrations}=await import(\"/opt/openeral/dist/db/migrations.js\");
-        const p=createPool(process.env.DATABASE_URL);
-        await runMigrations(p);await p.end();console.log(\"CHECK:migrations=ok\");
-      }).catch(e=>{console.error(\"CHECK:migrations=FAIL:\"+e.message);process.exit(1)});
-    "
-
-    # --- Seed workspace (from setup.sh) ---
-    node -e "
-      import(\"/opt/openeral/dist/db/pool.js\").then(async({createPool})=>{
-        const ws=await import(\"/opt/openeral/dist/db/workspace-queries.js\");
-        const p=createPool(process.env.DATABASE_URL);
-        try{await p.query(\"INSERT INTO _openeral.workspace_config (id,display_name,config) VALUES(\\\$1,\\\$2,\\x27{}\\x27::jsonb) ON CONFLICT(id) DO NOTHING\",[process.env.WORKSPACE_ID,\"sandbox\"])}catch{}
-        await ws.seedFromConfig(p,process.env.WORKSPACE_ID,{autoDirs:[\"/\",\"/.claude\",\"/.claude/projects\"],seedFiles:{}});
-        await p.end();console.log(\"CHECK:seed=ok\");
-      }).catch(e=>{console.error(\"CHECK:seed=FAIL:\"+e.message);process.exit(1)});
-    "
-
-    # --- Socket.dev config (from setup.sh) ---
-    OPENERAL_NPMRC=/tmp/openeral-npmrc
-    rm -f "$OPENERAL_NPMRC"
-    if [ -n "${SOCKET_TOKEN:-}" ]; then
-      cat > "$OPENERAL_NPMRC" <<NPMRC
-registry=https://registry.socket.dev/npm/
-//registry.socket.dev/npm/:_authToken=${SOCKET_TOKEN}
-NPMRC
-      export NPM_CONFIG_USERCONFIG="$OPENERAL_NPMRC"
-      echo "CHECK:socket-config=ok"
-    fi
-
-    # --- Start daemon (from setup.sh) ---
-    node "$OPENERAL_DIR/openeral-bash.mjs" --daemon &
-    DPID=$!
-    for i in $(seq 1 30); do [ -S /tmp/openeral-bash.sock ] && break; sleep 0.1; done
-    if [ -S /tmp/openeral-bash.sock ]; then
-      echo "CHECK:daemon=ok"
-    else
-      echo "CHECK:daemon=FAIL"
-    fi
-
-    # === VERIFICATION (replaces exec claude) ===
-
-    # 1. HOME would be /home/agent
+    echo "CHECK:init=ok"
+    [ -f /tmp/openeral/init.done ] && echo "CHECK:init-marker=ok" || echo "CHECK:init-marker=FAIL"
+    [ -f /tmp/openeral/database-url ] && echo "CHECK:db-url-store=ok" || echo "CHECK:db-url-store=FAIL"
+    [ ! -S /tmp/openeral-bash.sock ] && echo "CHECK:no-init-daemon=ok" || echo "CHECK:no-init-daemon=FAIL"
+    grep -q "SHELL=.*bin/bash" /tmp/openeral-session.env && echo "CHECK:shell-real-bash=ok" || echo "CHECK:shell-real-bash=FAIL"
+    grep -q "DATABASE_URL" /tmp/openeral-session.env && echo "CHECK:session-db-url=LEAK" || echo "CHECK:session-db-url=absent-ok"
     echo "CHECK:home-writable=$(touch /home/agent/.check && echo ok || echo FAIL)"
-
-    # 2. NPM_CONFIG_USERCONFIG is set and npm reads it
     echo "CHECK:npm-userconfig=${NPM_CONFIG_USERCONFIG:-not-set}"
     NPM_REG=$(HOME=/home/agent npm config get registry 2>/dev/null || echo "npm-failed")
     echo "CHECK:npm-registry=$NPM_REG"
-
-    # 3. User .npmrc is untouched
     if [ -f /home/agent/.npmrc ]; then
       echo "CHECK:user-npmrc=EXISTS-SHOULD-NOT"
     else
       echo "CHECK:user-npmrc=absent-ok"
     fi
-
-    # 4. SOCKET_TOKEN is in environment (would be placeholder in real OpenShell)
     echo "CHECK:socket-token-present=$([ -n "${SOCKET_TOKEN:-}" ] && echo yes || echo no)"
 
-    # 5. openeral-bash daemon responds
+    /usr/local/bin/openeral-daemon-ensure
+    timeout 5 /usr/local/bin/openeral-daemon-ensure && echo "CHECK:second-ensure=ok" || echo "CHECK:second-ensure=FAIL"
+    HEALTH=$(node /opt/openeral/openeral-bash.mjs --health 2>/dev/null || true)
+    echo "CHECK:daemon-health=$HEALTH"
     DAEMON_RESP=$(node -e "
       const net=require(\"net\"),c=net.createConnection(\"/tmp/openeral-bash.sock\");
       let d=\"\";
@@ -115,10 +69,8 @@ NPMRC
     " 2>/dev/null || echo "daemon-failed")
     echo "CHECK:daemon-response=$DAEMON_RESP"
 
-    # 6. pg helper would be written by CLI (not setup.sh, but verify PATH logic)
     echo "CHECK:node-available=$(which node)"
-
-    kill $DPID 2>/dev/null
+    /usr/local/bin/openeral-bash --stop >/dev/null 2>&1 || true
     exit 0
   ' 2>&1)
 
@@ -135,15 +87,19 @@ check() {
   fi
 }
 
-check "migrations"              "CHECK:migrations=ok"
-check "seed"                    "CHECK:seed=ok"
-check "socket config"           "CHECK:socket-config=ok"
-check "daemon"                  "CHECK:daemon=ok"
+check "init completed"          "CHECK:init=ok"
+check "init marker"             "CHECK:init-marker=ok"
+check "db url store"            "CHECK:db-url-store=ok"
+check "init does not start daemon" "CHECK:no-init-daemon=ok"
+check "session uses real bash"   "CHECK:shell-real-bash=ok"
+check "session env no db url"    "CHECK:session-db-url=absent-ok"
 check "home writable"           "CHECK:home-writable=ok"
 check "NPM_CONFIG_USERCONFIG"   "CHECK:npm-userconfig=/tmp/openeral-npmrc"
 check "npm reads socket.dev"    "CHECK:npm-registry=https://registry.socket.dev"
 check "user .npmrc untouched"   "CHECK:user-npmrc=absent-ok"
 check "SOCKET_TOKEN present"    "CHECK:socket-token-present=yes"
+check "second daemon ensure"    "CHECK:second-ensure=ok"
+check "daemon health"           "CHECK:daemon-health=.*\"workspaceId\":\"$WORKSPACE\""
 check "daemon responds"         "CHECK:daemon-response=daemon-works"
 
 # Cleanup

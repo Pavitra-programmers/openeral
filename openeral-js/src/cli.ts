@@ -4,8 +4,8 @@
  * openeral CLI — run Claude Code inside an OpenShell sandbox.
  *
  * `npx openeral` launches an OpenShell sandbox from the openeral image.
- * Inside the sandbox, setup.sh runs migrations, seeds the workspace,
- * starts the openeral-bash daemon, then execs `claude`.
+ * Inside the sandbox, openeral-init runs migrations, seeds/hydrates the
+ * workspace, then Claude starts through a wrapper that lazily starts the daemon.
  *
  * Usage:
  *   npx openeral                      # interactive Claude Code (published image)
@@ -40,6 +40,7 @@ import { homedir, tmpdir } from 'node:os';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, copyFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 
 // ---------------------------------------------------------------------------
 // Presign persistence — store one permanent presign in ~/.config/openeral/
@@ -227,6 +228,7 @@ function printHelp(): void {
   openeral --dev [options] [-- args]     Launch Claude Code (local dev image)
   openeral presign                        Show the current StringCost presign
   openeral presign renew                  Create and store a new StringCost presign
+  openeral init [--ensure]                Initialize or verify sandbox state
   openeral stats [options]                Show API usage statistics
   openeral analyze [options]              Analyze session history and suggest optimizations
   openeral apply [options]                Apply optimization suggestions to project files
@@ -334,6 +336,121 @@ export async function downloadOrgSkills(homeDir: string, apiKey: string): Promis
   }
 
   return skills.length;
+}
+
+// ---------------------------------------------------------------------------
+// In-sandbox init marker
+// ---------------------------------------------------------------------------
+
+function sandboxWorkspaceId(): string {
+  return process.env.WORKSPACE_ID || process.env.OPENSHELL_SANDBOX_ID || process.env.OPENERAL_WORKSPACE_ID || 'default';
+}
+
+function openeralStateDir(): string {
+  return process.env.OPENERAL_STATE_DIR || '/tmp/openeral';
+}
+
+function openeralDataDir(): string {
+  return process.env.OPENERAL_DATA_DIR || '/tmp/openeral/data';
+}
+
+function openeralDbUrlFile(): string {
+  return process.env.OPENERAL_DB_URL_FILE || join(openeralStateDir(), 'database-url');
+}
+
+function openeralInitMarker(): string {
+  return process.env.OPENERAL_INIT_MARKER || join(openeralStateDir(), 'init.done');
+}
+
+function storedDatabaseUrl(): string {
+  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
+  const dbFile = openeralDbUrlFile();
+  if (!existsSync(dbFile)) return '';
+  try {
+    return readFileSync(dbFile, 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+
+function currentDatasourceHash(): string {
+  const dbUrl = storedDatabaseUrl();
+  const datasource = dbUrl ? `postgres:${dbUrl}` : `pglite:${openeralDataDir()}`;
+  return createHash('sha256').update(datasource).digest('hex');
+}
+
+function initMarkerMatches(): boolean {
+  const marker = openeralInitMarker();
+  if (!existsSync(marker)) return false;
+  try {
+    const data = JSON.parse(readFileSync(marker, 'utf8')) as {
+      version?: number;
+      workspaceId?: string;
+      datasourceHash?: string;
+    };
+    return data.version === 1
+      && data.workspaceId === sandboxWorkspaceId()
+      && data.datasourceHash === currentDatasourceHash();
+  } catch {
+    return false;
+  }
+}
+
+function refreshClaudeProxySettings(): void {
+  const baseUrl = process.env.ANTHROPIC_BASE_URL;
+  if (!baseUrl) return;
+
+  const home = process.env.HOME || '/home/agent';
+  const settingsPath = join(home, '.claude', 'settings.json');
+  mkdirSync(dirname(settingsPath), { recursive: true });
+
+  let settings: Record<string, any> = {};
+  if (existsSync(settingsPath)) {
+    try {
+      settings = JSON.parse(readFileSync(settingsPath, 'utf8')) as Record<string, any>;
+    } catch {
+      settings = {};
+    }
+  }
+  settings.env = settings.env && typeof settings.env === 'object' ? settings.env : {};
+  settings.env.ANTHROPIC_BASE_URL = baseUrl;
+  delete settings.env.ANTHROPIC_API_KEY;
+  delete settings.env.ANTHROPIC_AUTH_TOKEN;
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+}
+
+async function cmdInit(args: string[]): Promise<void> {
+  const ensure = args.includes('--ensure');
+  if (ensure && initMarkerMatches()) {
+    refreshClaudeProxySettings();
+    process.stderr.write('\x1b[2mopeneral: init already complete\x1b[0m\n');
+    return;
+  }
+
+  const setupPath = '/opt/openeral/setup.sh';
+  if (!existsSync(setupPath)) {
+    if (ensure) {
+      throw new Error(`init marker is missing or stale, and ${setupPath} is not available`);
+    }
+    throw new Error(`${setupPath} is required for in-sandbox init`);
+  }
+
+  const result = spawnSync(setupPath, [], {
+    stdio: 'inherit',
+    env: {
+      ...process.env,
+      HOME: process.env.HOME || '/home/agent',
+      OPENERAL_HOME: process.env.OPENERAL_HOME || '/home/agent',
+      OPENERAL_STATE_DIR: openeralStateDir(),
+      OPENERAL_DATA_DIR: openeralDataDir(),
+      OPENERAL_DB_URL_FILE: openeralDbUrlFile(),
+      WORKSPACE_ID: sandboxWorkspaceId(),
+    },
+  });
+
+  if (result.error) throw result.error;
+  const status = result.status ?? 1;
+  if (status !== 0) process.exit(status);
 }
 
 // ---------------------------------------------------------------------------
@@ -1325,8 +1442,8 @@ async function cmdPresignRenew(): Promise<void> {
  * Flow:
  *   1. Ensure the OpenShell gateway is running (idempotent).
  *   2. Create a sandbox from the openeral image and attach to it.
- *      setup.sh runs migrations, seeds the workspace, starts the
- *      openeral-bash daemon, then execs `claude`.
+ *      openeral-init runs migrations, seeds/hydrates the workspace, then
+ *      the Claude wrapper lazily starts the daemon.
  */
 async function launchViaSandbox(workspaceId: string, claudeArgs: string[], devMode = false): Promise<void> {
   const sandboxImage = devMode
@@ -1664,66 +1781,12 @@ async function launchViaSandbox(workspaceId: string, claudeArgs: string[], devMo
     }
   }
 
-  const setupScript = `
+  const runtimeScript = `
 set -e
-
-OPENERAL_DIR=/opt/openeral
-
-export WORKSPACE_ID="\${OPENSHELL_SANDBOX_ID:-default}"
-export DATABASE_URL="\${DATABASE_URL:-\${OPENERAL_DATABASE_URL:-\${POSTGRES_URL:-}}}"
-case "\${DATABASE_URL:-}" in
-  ''|openshell:resolve:env:*)
-    if [ -f /sandbox/db-url ]; then
-      DATABASE_URL="$(cat /sandbox/db-url)"
-      export DATABASE_URL
-      echo "setup: loaded DATABASE_URL from uploaded /sandbox/db-url"
-    elif [ -d /sandbox/db-url ]; then
-      first="$(find /sandbox/db-url -maxdepth 1 -type f | head -1)"
-      if [ -n "$first" ]; then
-        DATABASE_URL="$(cat "$first")"
-        export DATABASE_URL
-        echo "setup: loaded DATABASE_URL from uploaded $first"
-      fi
-    fi
-    ;;
-esac
-
-# Guard against literal placeholder strings that openshell may inject when a
-# generic provider credential expansion fails (e.g. the literal text
-# "\${DATABASE_URL}" instead of the actual connection string).
-# Also catch URLs that use localhost/127.0.0.1 — these refer to the sandbox
-# container itself, not the host machine.
-if [ -n "\${DATABASE_URL:-}" ]; then
-  case "\${DATABASE_URL}" in
-    postgresql://*|postgres://*)
-      # Looks like a real URL — check for localhost
-      case "\${DATABASE_URL}" in
-        *@localhost*|*@127.0.0.1*)
-          echo "setup: warning: DATABASE_URL uses localhost — this refers to the sandbox container, not the host machine. Connections may fail." >&2
-          ;;
-      esac
-      ;;
-    *)
-      echo "setup: error: DATABASE_URL does not look like a valid PostgreSQL URL (got: \${DATABASE_URL})." >&2
-      echo "setup: error: deliver PostgreSQL credentials via /sandbox/db-url upload, not a generic provider placeholder." >&2
-      exit 1
-      ;;
-  esac
-fi
-
-# StringCost proxy URL (passed as environment variable from host)
+export WORKSPACE_ID="${workspaceId}"
 export STRINGCOST_PROXY_URL="${stringcostUrl || ''}"
-
-# StringCost integration - if STRINGCOST_PROXY_URL is set, use it as ANTHROPIC_BASE_URL
-if [ -n "\${STRINGCOST_PROXY_URL:-}" ]; then
-  export ANTHROPIC_BASE_URL="\${STRINGCOST_PROXY_URL}"
-  echo "setup: using StringCost proxy at \${ANTHROPIC_BASE_URL}"
-fi
-
-mkdir -p /home/agent/.claude /home/agent/.claude/projects /home/agent/.openeral/data
-
-${skillsBase64 ? `# Write org skills downloaded from StringCost (base64-encoded JSON bundle)
-node -e "
+openeral-init
+${skillsBase64 ? `node -e "
 const s=JSON.parse(Buffer.from('${skillsBase64}','base64').toString());
 const{mkdirSync,writeFileSync}=require('fs');
 s.forEach(function(x){
@@ -1732,143 +1795,11 @@ s.forEach(function(x){
   writeFileSync(d+'/SKILL.md',x.content);
 });
 console.log('setup: wrote '+s.length+' org skill'+(s.length===1?'':'s'));
-"
-` : '# No org skills (STRINGCOST_API_KEY not set or bundle download skipped)'}
-
-# Stable PGlite data directory — must be set before starting the daemon so that
-# getDatabaseConnection() in embedded.js uses /home/agent regardless of what HOME
-# is set to in the sandbox process at daemon startup time.
-export OPENERAL_DATA_DIR="/home/agent/.openeral/data"
-
-if [ -n "\${DATABASE_URL:-}" ]; then
-  echo "setup: running migrations..."
-  node -e "
-    import('$OPENERAL_DIR/dist/db/pool.js').then(async ({ createPool }) => {
-      const { runMigrations } = await import('$OPENERAL_DIR/dist/db/migrations.js');
-      const pool = createPool(process.env.DATABASE_URL);
-      await runMigrations(pool);
-      await pool.end();
-      console.log('setup: migrations complete');
-    }).catch(err => {
-      console.error('setup: migration failed:', err.message);
-      process.exit(1);
-    });
-  "
-
-  echo "setup: seeding workspace \$WORKSPACE_ID..."
-  node -e "
-    import('$OPENERAL_DIR/dist/db/pool.js').then(async ({ createPool }) => {
-      const ws = await import('$OPENERAL_DIR/dist/db/workspace-queries.js');
-      const pool = createPool(process.env.DATABASE_URL);
-      try {
-        await pool.query(
-          \\"INSERT INTO _openeral.workspace_config (id, display_name, config) VALUES (\\\\$1, \\\\$2, '{}'::jsonb) ON CONFLICT (id) DO NOTHING\\",
-          [process.env.WORKSPACE_ID, 'sandbox']
-        );
-      } catch {}
-      await ws.seedFromConfig(pool, process.env.WORKSPACE_ID, {
-        autoDirs: ['/', '/.claude', '/.claude/projects'],
-        seedFiles: {},
-      });
-      await pool.end();
-      console.log('setup: workspace seeded');
-    }).catch(err => {
-      console.error('setup: seed failed:', err.message);
-      process.exit(1);
-    });
-  "
-else
-  echo "setup: no DATABASE_URL — running in local-only mode (no persistence)"
-fi
-
-# Write StringCost proxy config directly into Claude Code settings.json so
-# it takes effect regardless of how the sandbox injects environment variables.
-if [ -n "\${STRINGCOST_PROXY_URL:-}" ]; then
-  node -e "
-const fs = require('fs');
-const file = '/home/agent/.claude/settings.json';
-let s = {};
-try { s = JSON.parse(fs.readFileSync(file, 'utf8')); } catch(e) {}
-if (!s.env) s.env = {};
-s.env.ANTHROPIC_BASE_URL = process.env.STRINGCOST_PROXY_URL;
-delete s.env.ANTHROPIC_API_KEY;
-delete s.env.ANTHROPIC_AUTH_TOKEN;
-fs.mkdirSync('/home/agent/.claude', {recursive: true});
-fs.writeFileSync(file, JSON.stringify(s, null, 2));
-console.log('setup: StringCost proxy written to ~/.claude/settings.json');
-"
-fi
-
-OPENERAL_NPMRC=/tmp/openeral-npmrc
-rm -f "$OPENERAL_NPMRC"
-if [ -n "\${SOCKET_TOKEN:-}" ]; then
-  echo "setup: configuring npm to use Socket.dev registry..."
-  cat > "$OPENERAL_NPMRC" <<'NPMRC'
-registry=https://registry.socket.dev/npm/
-//registry.socket.dev/npm/:_authToken=\${SOCKET_TOKEN}
-NPMRC
-  export NPM_CONFIG_USERCONFIG="$OPENERAL_NPMRC"
-fi
-
-echo "setup: starting openeral-bash daemon..."
-node "$OPENERAL_DIR/openeral-bash.mjs" --daemon &
-DAEMON_PID=$!
-
-_d=0
-while [ $_d -lt 300 ]; do
-  [ -S /tmp/openeral-bash.sock ] && break
-  [ $_d -eq 50 ] && echo "setup: waiting for daemon to initialize (PGlite WASM)..." >&2
-  sleep 0.1
-  _d=$((_d+1))
-done
-
-if [ -S /tmp/openeral-bash.sock ]; then
-  echo "setup: daemon ready (pid $DAEMON_PID)"
-  trap "kill $DAEMON_PID 2>/dev/null; rm -f /tmp/openeral-bash.sock" EXIT
-else
-  echo "setup: warning: daemon not ready after 30s — using standalone mode" >&2
-  unset DAEMON_PID
-  trap "rm -f /tmp/openeral-bash.sock" EXIT
-fi
-
-# Install Claude Code if not already present in the image
-if ! command -v claude >/dev/null 2>&1; then
-  echo "setup: Claude CLI not found, installing (this may take a few minutes)..."
-  npm install -g @anthropic-ai/claude-code
-  if ! command -v claude >/dev/null 2>&1; then
-    echo "setup: ERROR: Claude CLI install failed" >&2
-    exit 1
-  fi
-  echo "setup: Claude CLI installed"
-fi
-
-echo "setup: launching Claude Code..."
-# When a proxy is in use, export ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN here
-# instead of relying on settings.json alone: Claude Code reads these from
-# process.env at startup for auth-mode selection, so settings-only delivery
-# lands it in "API Usage Billing" mode against any stale URL on disk.
-# stringcostUrl was normalized by stringCostProxyBaseUrl() on the host.
-#
-# The proxy path preserves ANTHROPIC_API_KEY from the claude provider for
-# Claude Code's local auth-mode selection and request signing. Do not write that
-# key to settings.json; settings only stores the proxy base URL. STRINGCOST_API_KEY
-# is only needed for presign creation, so remove it before handing control to
-# Claude Code.
-if [ -n "\${STRINGCOST_PROXY_URL:-}" ]; then
-  exec env -u STRINGCOST_API_KEY -u ANTHROPIC_AUTH_TOKEN \
-    HOME=/home/agent \
-    SHELL=/usr/local/bin/openeral-bash \
-    ANTHROPIC_BASE_URL="\${STRINGCOST_PROXY_URL}" \
-    claude "$@"
-else
-  exec env \
-    HOME=/home/agent \
-    SHELL=/usr/local/bin/openeral-bash \
-    claude "$@"
-fi
+"` : '# No org skills (STRINGCOST_API_KEY not set or bundle download skipped)'}
+exec claude "$@"
 `;
 
-  sandboxArgs.push('--', 'bash', '-c', setupScript, '--', ...claudeArgs);
+  sandboxArgs.push('--', 'bash', '-c', runtimeScript, '--', ...claudeArgs);
 
   // Pre-flight: verify DATABASE_URL is reachable from the host before launching.
   // A bad URL causes the migration step inside the sandbox to fail, which puts
@@ -2005,6 +1936,16 @@ export async function main() {
       await cmdPresignRenew();
     } else {
       await cmdPresignShow();
+    }
+    return;
+  }
+
+  if (ownArgs[0] === 'init') {
+    try {
+      await cmdInit(ownArgs.slice(1));
+    } catch (err: any) {
+      process.stderr.write(`\x1b[31mopeneral: init failed: ${err?.message || err}\x1b[0m\n`);
+      process.exit(1);
     }
     return;
   }

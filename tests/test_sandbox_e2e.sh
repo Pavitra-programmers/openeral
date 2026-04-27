@@ -4,7 +4,7 @@ set -euo pipefail
 # test_sandbox_e2e.sh — Docker-based image verification for the openeral sandbox.
 #
 # Builds the image, runs individual checks inside it as the sandbox user.
-# Validates image shape, permissions, npm config, migrations, and daemon.
+# Validates image shape, permissions, npm config, migrations, and lazy daemon startup.
 #
 # NOTE: This does NOT exercise OpenShell's proxy, policy enforcement, or
 # SecretResolver — those require a running OpenShell gateway. This test
@@ -120,18 +120,18 @@ else
 fi
 
 echo ""
-echo "=== Test 6: openeral-bash daemon starts ==="
+echo "=== Test 6: openeral-daemon-ensure starts the daemon ==="
 out=$(timeout 30 docker run --rm --network host \
   -e DATABASE_URL="$DB_URL" \
   -e WORKSPACE_ID="e2e-sandbox-$$" \
   --user sandbox \
   --entrypoint /bin/sh \
   "$IMAGE" -c '
-    node /opt/openeral/openeral-bash.mjs --daemon &
-    DPID=$!
-    for i in $(seq 1 30); do [ -S /tmp/openeral-bash.sock ] && break; sleep 0.1; done
+    /usr/local/bin/openeral-daemon-ensure
     if [ -S /tmp/openeral-bash.sock ]; then
       echo "daemon-ok"
+      node /opt/openeral/openeral-bash.mjs --health
+      timeout 5 /usr/local/bin/openeral-daemon-ensure && echo "second-ensure-ok" || echo "second-ensure-failed"
       node -e "
         const net=require(\"net\"),c=net.createConnection(\"/tmp/openeral-bash.sock\");
         let d=\"\";
@@ -142,13 +142,18 @@ out=$(timeout 30 docker run --rm --network host \
     else
       echo "daemon-failed"
     fi
-    kill $DPID 2>/dev/null
+    /usr/local/bin/openeral-bash --stop >/dev/null 2>&1 || true
     exit 0
   ' 2>&1 || echo "timeout")
 if echo "$out" | grep -q 'daemon-ok'; then
   pass "daemon started"
 else
   fail "daemon failed: $out"
+fi
+if echo "$out" | grep -q 'second-ensure-ok'; then
+  pass "second daemon ensure returns without lock hang"
+else
+  fail "second daemon ensure failed or hung: $out"
 fi
 if echo "$out" | grep -q 'hello-e2e'; then
   pass "daemon responds to commands"
@@ -182,24 +187,25 @@ else
 fi
 
 echo ""
-echo "=== Test 9: service-mode wrappers are present ==="
+echo "=== Test 9: runtime wrappers are present ==="
 out=$(run_in_image '
-  [ -x /usr/local/bin/openeral-start ] && echo "start-ok" || echo "start-missing"
+  [ -x /usr/local/bin/openeral-init ] && echo "init-ok" || echo "init-missing"
+  [ -x /usr/local/bin/openeral-daemon-ensure ] && echo "daemon-ensure-ok" || echo "daemon-ensure-missing"
   [ -x /usr/local/bin/claude ] && echo "claude-wrapper-ok" || echo "claude-wrapper-missing"
   [ -x /usr/local/bin/claude-real ] && echo "claude-real-ok" || echo "claude-real-missing"
   [ -x /usr/local/bin/pg ] && echo "pg-ok" || echo "pg-missing"
 ')
-if echo "$out" | grep -q 'start-ok' && echo "$out" | grep -q 'claude-wrapper-ok' && echo "$out" | grep -q 'claude-real-ok' && echo "$out" | grep -q 'pg-ok'; then
-  pass "service-mode wrappers present"
+if echo "$out" | grep -q 'init-ok' && echo "$out" | grep -q 'daemon-ensure-ok' && echo "$out" | grep -q 'claude-wrapper-ok' && echo "$out" | grep -q 'claude-real-ok' && echo "$out" | grep -q 'pg-ok'; then
+  pass "runtime wrappers present"
 else
-  fail "service-mode wrappers missing: $out"
+  fail "runtime wrappers missing: $out"
 fi
 
 echo ""
 echo "=== Test 10: PGlite data dir is outside /home/agent and writable ==="
 out=$(run_in_image '
-  [ -d /var/lib/openeral/data ] && echo "data-dir-ok" || echo "data-dir-missing"
-  touch /var/lib/openeral/data/.permcheck && echo "data-write-ok" || echo "data-write-fail"
+  [ -d /tmp/openeral/data ] && echo "data-dir-ok" || echo "data-dir-missing"
+  touch /tmp/openeral/data/.permcheck && echo "data-write-ok" || echo "data-write-fail"
 ')
 if echo "$out" | grep -q 'data-dir-ok' && echo "$out" | grep -q 'data-write-ok'; then
   pass "PGlite data dir writable"

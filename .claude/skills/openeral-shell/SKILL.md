@@ -103,13 +103,13 @@ openshell sandbox create \
   --from ghcr.io/sandys/openeral/sandbox:just-bash \
   $UPLOAD_ARGS \
   $PROVIDERS --auto-providers \
-  -- env WORKSPACE_ID="$OPENERAL_WORKSPACE" openeral-start
+  -- env WORKSPACE_ID="$OPENERAL_WORKSPACE" openeral-init
 
 cleanup_openeral_input
 trap - EXIT
 ```
 
-The `stringcost` provider from Step 3 is attached only when `STRINGCOST_API_KEY` is set. The upload directory is used because OpenShell accepts one `--upload` flag; `setup.sh` reads `/sandbox/openeral-input/db-url` and `/sandbox/openeral-input/presign.json` when present.
+The `stringcost` provider from Step 3 is attached only when `STRINGCOST_API_KEY` is set. The upload directory is used because OpenShell accepts one `--upload` flag; `setup.sh` reads `/sandbox/openeral-input/db-url` and `/sandbox/openeral-input/presign.json` when present. `openeral-init` initializes and exits; it does not start Claude.
 
 ### Step 5: Connect and run Claude
 
@@ -123,14 +123,15 @@ Inside the connected sandbox shell:
 claude
 ```
 
-To stop Claude but keep the sandbox alive, type `/exit` at the Claude prompt or press `Ctrl+D`. You will return to the sandbox shell. Start Claude again with `claude`, or continue the most recent conversation with `claude -c`.
+To stop Claude but keep the sandbox alive, type `/exit` at the Claude prompt or press `Ctrl+D`. You will return to the sandbox shell. Clean Claude exit runs an explicit persistence flush. Start Claude again with `claude`, or continue the most recent conversation with `claude -c`.
 
 ## What happens after launch
 
 - Claude Code starts only when the user runs `claude` inside the connected sandbox shell.
+- `claude`, `pg`, and `openeral memory refresh` lazily start the detached OpenEral daemon if it is not already running.
 - Claude Code starts with `HOME` pointing to the isolated sandbox workspace.
 - **Workspace persistence**:
-  - Without `DATABASE_URL`: embedded PGlite runs under `/var/lib/openeral/data`. Files survive restarts/reconnects within the running sandbox's lifetime; lost when the sandbox is deleted.
+  - Without `DATABASE_URL`: embedded PGlite runs under `/tmp/openeral/data`. Files survive restarts/reconnects within the running sandbox's lifetime; lost when the sandbox is deleted.
   - With `DATABASE_URL` or `POSTGRES_URL` delivered via `/sandbox/openeral-input/db-url`: pg tunnels through OpenShell's HTTP CONNECT proxy (via `openeral-js/src/db/http-connect-socket.ts`) to Supabase / Neon / RDS. Claude state under `/home/agent/.claude/**` and OpenEral state under `/home/agent/.openeral/**` survive sandbox delete when the same `WORKSPACE_ID` is reused. Arbitrary checked-out source code remains sandbox-local. The host must be allowlisted in the image's `postgres` network policy — common Supabase poolers are pre-allowlisted.
 - **With `STRINGCOST_API_KEY`**: Claude's API calls route through the uploaded StringCost presign for billing and usage metering.
 - **First Claude launch**: Claude Code may ask for theme, security acknowledgement, trust for `/sandbox`, and API usage billing. This is expected first-run setup.
@@ -143,6 +144,8 @@ openshell sandbox connect <name>                  # open an interactive shell
 openshell sandbox exec -n <name> -- pg "SELECT 1" # run one-off command
 openshell sandbox delete <name>                   # stop and remove
 ```
+
+Before deleting a sandbox that uses PostgreSQL persistence, exit Claude with `/exit` or `Ctrl+D`. `sandbox delete` is forced container teardown and can lose the last debounce window of writes.
 
 Run one-off commands with `sandbox exec`:
 
