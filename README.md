@@ -244,6 +244,19 @@ Keep the `HOME=/home/agent` prefix. OpenShell SSH starts in `/sandbox`, while Op
 
 **Migration fails with `EAI_AGAIN` or a placeholder-looking database URL** - do not use a generic `db` provider for PostgreSQL. Upload the connection string file with `--upload /tmp/openeral-db-url:/sandbox/db-url`.
 
+## OpenWork
+
+The [`openwork/`](./openwork) subdirectory contains the full source of [OpenWork](https://github.com/different-ai/openwork) — the open-source, local-first desktop app and CLI for AI-assisted workflows, built on top of OpenCode.
+
+OpenWork provides:
+
+- **Desktop app / CLI host**: run OpenCode + OpenWork server with a full UI or headless via `openwork-orchestrator`.
+- **Sessions & live streaming**: create sessions, send prompts, and receive real-time SSE updates.
+- **Permissions & templates**: surface and respond to permission requests; save and re-run common workflows.
+- **Skills manager**: install, list, and import `.opencode/skills` modules.
+
+Run `pnpm install` inside `openwork/` after cloning to restore dependencies.
+
 ## Contributing
 
 Architecture, image customization, source-development workflows, and tests are documented in [BUILD.md](./BUILD.md).
