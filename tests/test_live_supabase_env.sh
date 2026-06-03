@@ -1,0 +1,624 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$repo_root"
+
+if [ -f ./.env ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . ./.env
+  set +a
+fi
+
+for cmd in docker psql python3; do
+  command -v "$cmd" >/dev/null 2>&1 || {
+    echo "Missing required command: $cmd" >&2
+    exit 1
+  }
+done
+
+resolve_openshell_bin() {
+  if [ -n "${OPENSHELL_BIN:-}" ]; then
+    printf '%s\n' "$OPENSHELL_BIN"
+    return 0
+  fi
+
+  if [ -x "$repo_root/.tmp/openshell-target/release/openshell" ]; then
+    printf '%s\n' "$repo_root/.tmp/openshell-target/release/openshell"
+    return 0
+  fi
+
+  command -v openshell
+}
+
+OPENSHELL_BIN="$(resolve_openshell_bin)"
+DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
+if [ -n "${OPENSHELL_RUNNER_IMAGE:-}" ]; then
+  RUNNER_IMAGE="$OPENSHELL_RUNNER_IMAGE"
+elif docker image inspect openeral/openshell-cli-runner:dev >/dev/null 2>&1; then
+  RUNNER_IMAGE="openeral/openshell-cli-runner:dev"
+else
+  RUNNER_IMAGE="openshell/ci:dev"
+fi
+run_cli_uses_runner=false
+if [ -f "$OPENSHELL_BIN" ] && docker image inspect "$RUNNER_IMAGE" >/dev/null 2>&1; then
+  run_cli_uses_runner=true
+fi
+runner_state_dir="$repo_root/.tmp/openshell-cli"
+mkdir -p "$runner_state_dir"
+
+: "${OPENERAL_DATABASE_URL:?Missing OPENERAL_DATABASE_URL in environment or .env}"
+: "${ANTHROPIC_API_KEY:?Missing ANTHROPIC_API_KEY in environment or .env}"
+
+run_id="$(date -u +%Y%m%d%H%M%S)"
+host_project_probe_rel=".tmp/openeral-project-mount-${run_id}.txt"
+host_project_probe_host="$repo_root/$host_project_probe_rel"
+gateway_name="${OPENSHELL_GATEWAY_NAME:-openeral-supabase-${run_id}}"
+gateway_host="${OPENSHELL_GATEWAY_HOST:-host.docker.internal}"
+cluster_container="openshell-cluster-${gateway_name}"
+sandbox_name="${OPENERAL_SUPABASE_SANDBOX_NAME:-openeral-supabase-${run_id}}"
+db_provider="${OPENERAL_SUPABASE_DB_PROVIDER:-openeral-db-${gateway_name}}"
+claude_provider="${OPENERAL_SUPABASE_CLAUDE_PROVIDER:-openeral-claude-${gateway_name}}"
+sandbox_source_image="${OPENERAL_SUPABASE_SANDBOX_SOURCE_IMAGE:-ghcr.io/nvidia/openshell-community/sandboxes/base:latest}"
+sandbox_image="${OPENERAL_SUPABASE_SANDBOX_IMAGE:-$sandbox_source_image}"
+policy_path="${OPENERAL_SUPABASE_POLICY_PATH:-$repo_root/sandboxes/openeral/policy.yaml}"
+policy_path_arg="$policy_path"
+if [ "$run_cli_uses_runner" = true ]; then
+  case "$policy_path_arg" in
+    "$repo_root"/*)
+      policy_path_arg="/workspace${policy_path_arg#"$repo_root"}"
+      ;;
+  esac
+fi
+local_registry_container="${OPENERAL_LOCAL_REGISTRY_CONTAINER:-openeral-registry}"
+
+cluster_image="${OPENSHELL_CLUSTER_IMAGE:-127.0.0.1:5000/openeral/cluster:dev}"
+cluster_source_image="${OPENERAL_CLUSTER_SOURCE_IMAGE:-openeral/cluster:dev}"
+registry_host="${OPENSHELL_REGISTRY_HOST:-127.0.0.1:5000}"
+registry_endpoint="${OPENSHELL_REGISTRY_ENDPOINT:-172.17.0.1:5000}"
+registry_insecure="${OPENSHELL_REGISTRY_INSECURE:-true}"
+image_repo_base="${IMAGE_REPO_BASE:-127.0.0.1:5000/openeral}"
+image_tag="${IMAGE_TAG:-dev}"
+push_images="${OPENSHELL_PUSH_IMAGES:-}"
+gateway_registry_image="${OPENERAL_GATEWAY_REGISTRY_IMAGE:-${image_repo_base}/gateway:${image_tag}}"
+supervisor_registry_image="${OPENERAL_SUPERVISOR_REGISTRY_IMAGE:-${image_repo_base}/supervisor:${image_tag}}"
+sandbox_registry_image="${OPENERAL_SUPABASE_SANDBOX_REGISTRY_IMAGE:-${image_repo_base}/sandbox-base:latest}"
+gateway_source_image="${OPENERAL_GATEWAY_SOURCE_IMAGE:-openshell/gateway:dev}"
+supervisor_source_image="${OPENERAL_SUPERVISOR_SOURCE_IMAGE:-openshell/supervisor:dev}"
+claude_exec_timeout="${OPENERAL_CLAUDE_EXEC_TIMEOUT_SECS:-240}"
+keep_cluster_on_failure="${OPENERAL_KEEP_CLUSTER_ON_FAILURE:-0}"
+preload_timeout_secs="${OPENERAL_PRELOAD_TIMEOUT_SECS:-180}"
+
+dump_failure_state() {
+  echo "== failure dump: cluster/container state ==" >&2
+  docker ps --format '{{.Names}}\t{{.Status}}' | rg 'openshell|openeral-registry' -n >&2 || true
+
+  if ! docker ps --format '{{.Names}}' | grep -qx "$cluster_container"; then
+    echo "Cluster container ${cluster_container} is not running; skipping kubectl dumps" >&2
+    return 0
+  fi
+
+  echo "== failure dump: pods ==" >&2
+  docker exec "$cluster_container" kubectl -n openshell get pods -o wide >&2 || true
+
+  echo "== failure dump: sandbox CR ==" >&2
+  docker exec "$cluster_container" \
+    kubectl -n openshell get "sandboxes.agents.x-k8s.io/${sandbox_name}" -o yaml >&2 || true
+
+  echo "== failure dump: openshell-0 logs ==" >&2
+  docker exec "$cluster_container" \
+    kubectl -n openshell logs pod/openshell-0 --tail=200 >&2 || true
+
+  echo "== failure dump: sandbox pod logs ==" >&2
+  docker exec "$cluster_container" \
+    kubectl -n openshell logs "pod/${sandbox_name}" --all-containers=true --tail=200 >&2 || true
+
+  echo "== failure dump: csi controller logs ==" >&2
+  docker exec "$cluster_container" \
+    kubectl -n openshell logs deploy/openeral-csi-controller --all-containers=true --tail=200 >&2 || true
+
+  echo "== failure dump: csi node logs ==" >&2
+  docker exec "$cluster_container" \
+    kubectl -n openshell logs daemonset/openeral-csi-node --all-containers=true --tail=200 >&2 || true
+}
+
+pick_port() {
+  python3 - "$@" <<'PY'
+import random
+import socket
+import sys
+
+start = int(sys.argv[1])
+end = int(sys.argv[2])
+ports = list(range(start, end + 1))
+random.shuffle(ports)
+for port in ports:
+    sock = socket.socket()
+    try:
+        sock.bind(("127.0.0.1", port))
+    except OSError:
+        sock.close()
+        continue
+    print(port)
+    sock.close()
+    break
+PY
+}
+
+gateway_port="${OPENSHELL_GATEWAY_PORT:-$(pick_port 18080 18180)}"
+
+check_local_image() {
+  local image="$1"
+  docker image inspect "$image" >/dev/null 2>&1 || {
+    echo "Required local image not found: $image" >&2
+    exit 1
+  }
+}
+
+if [ -n "$push_images" ]; then
+  old_ifs="$IFS"
+  IFS=','
+  for image in $push_images; do
+    image="${image## }"
+    image="${image%% }"
+    [ -n "$image" ] || continue
+    check_local_image "$image"
+  done
+  IFS="$old_ifs"
+fi
+case "$registry_host" in
+  127.0.0.1:5000|localhost:5000)
+    check_local_image "$cluster_source_image"
+    check_local_image "$gateway_source_image"
+    check_local_image "$supervisor_source_image"
+    ;;
+  *)
+    check_local_image "$cluster_image"
+    ;;
+esac
+
+ensure_local_registry() {
+  case "$registry_host" in
+    127.0.0.1:5000|localhost:5000)
+      if docker ps --format '{{.Names}}' | grep -qx "$local_registry_container"; then
+        :
+      elif docker ps -a --format '{{.Names}}' | grep -qx "$local_registry_container"; then
+        docker start "$local_registry_container" >/dev/null
+      else
+        docker run -d --name "$local_registry_container" -p 5000:5000 registry:2 >/dev/null
+      fi
+
+      python3 - <<'PY'
+import sys
+import time
+import urllib.request
+
+url = "http://127.0.0.1:5000/v2/"
+last_error = None
+for _ in range(30):
+    try:
+        with urllib.request.urlopen(url, timeout=1) as response:
+            if response.status in (200, 401):
+                sys.exit(0)
+    except Exception as exc:  # noqa: BLE001
+        last_error = exc
+        time.sleep(1)
+
+raise SystemExit(f"Local registry did not become ready: {last_error}")
+PY
+
+      docker tag "$cluster_source_image" "$cluster_image"
+      docker tag "$gateway_source_image" "$gateway_registry_image"
+      docker tag "$supervisor_source_image" "$supervisor_registry_image"
+      if [ "$sandbox_image" = "$sandbox_source_image" ]; then
+        docker image inspect "$sandbox_source_image" >/dev/null 2>&1 || docker pull "$sandbox_source_image" >/dev/null
+        docker tag "$sandbox_source_image" "$sandbox_registry_image"
+        docker push "$sandbox_registry_image" >/dev/null
+        sandbox_image="$sandbox_registry_image"
+      fi
+      docker push "$cluster_image" >/dev/null
+      docker push "$gateway_registry_image" >/dev/null
+      docker push "$supervisor_registry_image" >/dev/null
+      ;;
+  esac
+}
+
+run_cli() {
+  if [ "$run_cli_uses_runner" = true ]; then
+    runner_bin="$OPENSHELL_BIN"
+    case "$runner_bin" in
+      "$repo_root"/*)
+        runner_bin="/workspace${runner_bin#"$repo_root"}"
+        ;;
+    esac
+    docker run --rm \
+      --user "$(id -u):$(id -g)" \
+      --group-add "$DOCKER_GID" \
+      --add-host host.docker.internal:host-gateway \
+      -v /var/run/docker.sock:/var/run/docker.sock \
+      -v "$repo_root:/workspace" \
+      -v "$runner_state_dir:/state" \
+      -w /workspace \
+      -e HOME=/state/home \
+      -e XDG_CONFIG_HOME=/state/config \
+      -e OPENSHELL_CLUSTER_IMAGE="$cluster_image" \
+      -e OPENSHELL_REGISTRY_HOST="$registry_host" \
+      -e OPENSHELL_REGISTRY_ENDPOINT="$registry_endpoint" \
+      -e OPENSHELL_REGISTRY_INSECURE="$registry_insecure" \
+      -e IMAGE_REPO_BASE="$image_repo_base" \
+      -e IMAGE_TAG="$image_tag" \
+      -e OPENSHELL_PUSH_IMAGES="$push_images" \
+      -e OPENERAL_HOST_PROJECT_ROOT="$repo_root" \
+      -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
+      -e OPENERAL_DATABASE_URL="${OPENERAL_DATABASE_URL:-}" \
+      -e DATABASE_URL="${DATABASE_URL:-}" \
+      -e OPENERAL_SUPABASE_POLICY_PATH="$policy_path_arg" \
+      "$RUNNER_IMAGE" \
+      "$runner_bin" "$@"
+  else
+    OPENSHELL_CLUSTER_IMAGE="$cluster_image" \
+    OPENSHELL_REGISTRY_HOST="$registry_host" \
+    OPENSHELL_REGISTRY_ENDPOINT="$registry_endpoint" \
+    OPENSHELL_REGISTRY_INSECURE="$registry_insecure" \
+    IMAGE_REPO_BASE="$image_repo_base" \
+    IMAGE_TAG="$image_tag" \
+    OPENSHELL_PUSH_IMAGES="$push_images" \
+    OPENERAL_HOST_PROJECT_ROOT="$repo_root" \
+    "$OPENSHELL_BIN" "$@"
+  fi
+}
+
+assert_no_claude_config_warning() {
+  local stderr_file="$1"
+  if grep -qiE 'claude\.json.*(missing|not found|backup|reset)|(missing|not found|backup|reset).*claude\.json' "$stderr_file"; then
+    echo "Claude reported config reset or missing .claude.json" >&2
+    cat "$stderr_file" >&2
+    exit 1
+  fi
+}
+
+cleanup() {
+  local status=$?
+  set +e
+  if [ "$status" -ne 0 ]; then
+    dump_failure_state || true
+    if [ "$keep_cluster_on_failure" = "1" ]; then
+      echo "Preserving gateway ${gateway_name} and sandbox ${sandbox_name} for inspection" >&2
+      return
+    fi
+  fi
+  rm -f "$host_project_probe_host"
+  run_cli sandbox delete --gateway "$gateway_name" "$sandbox_name" >/dev/null 2>&1 || true
+  run_cli gateway destroy --name "$gateway_name" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+wait_for_sandbox_ready() {
+  local timeout="${1:-180s}"
+
+  docker exec "$cluster_container" \
+    kubectl -n openshell wait \
+      --for=jsonpath='{.status.conditions[?(@.type=="Ready")].status}'=True \
+      "sandbox.agents.x-k8s.io/${sandbox_name}" \
+      --timeout="$timeout" >/dev/null
+
+  docker exec "$cluster_container" \
+    kubectl -n openshell wait \
+      --for=condition=Ready \
+      "pod/${sandbox_name}" \
+      --timeout="$timeout" >/dev/null
+}
+
+wait_for_exec_ready() {
+  local tries=60
+  local i
+  for i in $(seq 1 "$tries"); do
+    if run_cli sandbox exec --gateway "$gateway_name" --name "$sandbox_name" --no-tty /bin/true >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+
+  echo "Sandbox exec did not become ready for ${sandbox_name}" >&2
+  docker exec "$cluster_container" kubectl -n openshell describe "pod/${sandbox_name}" >&2 || true
+  exit 1
+}
+
+stabilize_gateway_runtime() {
+  case "$registry_host" in
+    127.0.0.1:5000|localhost:5000)
+      docker exec "$cluster_container" \
+        kubectl -n openshell set image statefulset/openshell \
+          "helm-chart=${gateway_registry_image}" >/dev/null
+      docker exec "$cluster_container" \
+        kubectl -n openshell set env statefulset/openshell \
+          "OPENSHELL_SUPERVISOR_IMAGE=${supervisor_registry_image}" \
+          "OPENSHELL_K8S_SKIP_WORKSPACE_SEED=true" >/dev/null
+      docker exec "$cluster_container" \
+        kubectl -n openshell rollout status statefulset/openshell --timeout=180s >/dev/null
+      ;;
+  esac
+
+  gateway_pod_image="$(
+    docker exec "$cluster_container" \
+      kubectl -n openshell get pod openshell-0 -o jsonpath='{.spec.containers[0].image}'
+  )"
+  [ "$gateway_pod_image" = "$gateway_registry_image" ] || {
+    echo "Gateway pod is using unexpected image: $gateway_pod_image" >&2
+    exit 1
+  }
+
+  gateway_env="$(
+    docker exec "$cluster_container" \
+      kubectl -n openshell get pod openshell-0 -o jsonpath='{range .spec.containers[0].env[*]}{.name}={.value}{"\n"}{end}'
+  )"
+  printf '%s\n' "$gateway_env" | grep -F "OPENSHELL_SUPERVISOR_IMAGE=${supervisor_registry_image}" >/dev/null || {
+    echo "Gateway pod is missing OPENSHELL_SUPERVISOR_IMAGE=${supervisor_registry_image}" >&2
+    exit 1
+  }
+  printf '%s\n' "$gateway_env" | grep -F "OPENSHELL_K8S_SKIP_WORKSPACE_SEED=true" >/dev/null || {
+    echo "Gateway pod is missing OPENSHELL_K8S_SKIP_WORKSPACE_SEED=true" >&2
+    exit 1
+  }
+}
+
+preload_sandbox_image() {
+  if timeout "${preload_timeout_secs}" \
+    docker exec "$cluster_container" sh -lc "crictl pull '$sandbox_image' >/dev/null"; then
+    return 0
+  fi
+
+  echo "Sandbox image preload did not finish within ${preload_timeout_secs}s; continuing without preload" >&2
+}
+
+echo "== preflight psql =="
+psql "$OPENERAL_DATABASE_URL" -Atqc 'select 1'
+
+echo "== openshell version =="
+run_cli --version
+
+echo "== local registry =="
+ensure_local_registry
+
+echo "== gateway start =="
+run_cli gateway start \
+  --name "$gateway_name" \
+  --port "$gateway_port" \
+  --gateway-host "$gateway_host" \
+  --recreate
+
+run_cli gateway info
+stabilize_gateway_runtime
+
+echo "== preload sandbox image =="
+preload_sandbox_image
+
+echo "== provider create db =="
+DATABASE_URL="$OPENERAL_DATABASE_URL" \
+run_cli provider create \
+  --gateway "$gateway_name" \
+  --name "$db_provider" \
+  --type generic \
+  --credential DATABASE_URL
+
+echo "== provider create claude =="
+ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+run_cli provider create \
+  --gateway "$gateway_name" \
+  --name "$claude_provider" \
+  --type generic \
+  --credential ANTHROPIC_API_KEY
+
+create_log="$(mktemp)"
+
+echo "== sandbox create =="
+if ! DATABASE_URL="$OPENERAL_DATABASE_URL" ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  run_cli sandbox create \
+    --gateway "$gateway_name" \
+    --name "$sandbox_name" \
+    --from "$sandbox_image" \
+    --provider "$db_provider" \
+    --provider "$claude_provider" \
+    --policy "$policy_path_arg" \
+    --no-auto-providers \
+    --no-tty -- /bin/true >"$create_log" 2>&1; then
+  cat "$create_log" >&2
+fi
+rm -f "$create_log"
+
+sandbox_yaml="$(
+  docker exec "$cluster_container" \
+    kubectl -n openshell get "sandboxes.agents.x-k8s.io/${sandbox_name}" -o yaml
+)"
+printf '%s\n' "$sandbox_yaml" | grep -q 'name: workspace-init' && {
+  echo "Sandbox CR still contains workspace-init" >&2
+  exit 1
+}
+
+wait_for_sandbox_ready
+wait_for_exec_ready
+
+echo "== ls /sandbox =="
+run_cli sandbox exec --gateway "$gateway_name" --name "$sandbox_name" --no-tty /bin/ls -la /sandbox
+
+echo "== verify /.db exists =="
+run_cli sandbox exec --gateway "$gateway_name" --name "$sandbox_name" --no-tty /usr/bin/test -d /sandbox/.db
+
+echo "== verify provider env placeholder =="
+provider_env="$(
+  run_cli sandbox exec --gateway "$gateway_name" --name "$sandbox_name" --no-tty /usr/bin/env
+)"
+printf '%s\n' "$provider_env"
+printf '%s\n' "$provider_env" | grep -q '^ANTHROPIC_API_KEY=openshell:resolve:env:ANTHROPIC_API_KEY$'
+printf '%s\n' "$provider_env" | grep -q '^HOME=/home/agent$'
+printf '%s\n' "$provider_env" | grep -q '^CLAUDE_CONFIG_DIR=/home/agent/.claude$'
+printf '%s\n' "$provider_env" | grep -q '^PWD=/sandbox/project$'
+
+echo "== verify Claude config directory mount =="
+run_cli sandbox exec --gateway "$gateway_name" --name "$sandbox_name" --no-tty \
+  /usr/bin/python3 -c "from pathlib import Path; p = Path('/home/agent/.claude'); legacy = Path('/home/agent/.claude.json'); assert p.is_dir(); assert not p.is_symlink(); assert Path('/home/agent/.claude/.claude.json').is_file(); assert not legacy.exists(); assert not legacy.is_symlink()"
+run_cli sandbox exec --gateway "$gateway_name" --name "$sandbox_name" --no-tty \
+  /bin/sh -lc "awk '\$2 == \"/home/agent/.claude\" { found=1 } END { exit(found ? 0 : 1) }' /proc/mounts"
+
+echo "== verify /sandbox/project host mount =="
+rm -f "$host_project_probe_host"
+run_cli sandbox exec --gateway "$gateway_name" --name "$sandbox_name" --no-tty \
+  /usr/bin/python3 -c "from pathlib import Path; p = Path('/sandbox/project/$host_project_probe_rel'); p.parent.mkdir(parents=True, exist_ok=True); p.write_text('project-ok')"
+run_cli sandbox exec --gateway "$gateway_name" --name "$sandbox_name" --no-tty \
+  /bin/cat "/sandbox/project/$host_project_probe_rel"
+[ -f "$host_project_probe_host" ]
+grep -q '^project-ok$' "$host_project_probe_host"
+
+echo "== verify host project writes stay out of postgres =="
+project_row_count="$(
+psql "$OPENERAL_DATABASE_URL" -Atqc \
+  "SELECT count(*)
+   FROM _openeral.workspace_files
+   WHERE workspace_id LIKE '%:${sandbox_name}' AND path = '/project/${host_project_probe_rel}';"
+)"
+printf '%s\n' "$project_row_count"
+[ "${project_row_count:-0}" -eq 0 ]
+
+echo "== write durable claude state file =="
+run_cli sandbox exec --gateway "$gateway_name" --name "$sandbox_name" --no-tty \
+  /usr/bin/python3 -c "from pathlib import Path; p = Path('/sandbox/.claude/openeral-smoke.txt'); p.parent.mkdir(parents=True, exist_ok=True); p.write_text('persist-ok')"
+run_cli sandbox exec --gateway "$gateway_name" --name "$sandbox_name" --no-tty /bin/cat /sandbox/.claude/openeral-smoke.txt
+
+echo "== verify /.db write denied =="
+if run_cli sandbox exec --gateway "$gateway_name" --name "$sandbox_name" --no-tty \
+  /usr/bin/python3 -c "from pathlib import Path; Path('/sandbox/.db/should_fail').write_text('x')"; then
+  echo "Unexpected success writing under /sandbox/.db" >&2
+  exit 1
+fi
+
+echo "== postgres workspace row =="
+workspace_row="$(
+psql "$OPENERAL_DATABASE_URL" -Atqc \
+  "SELECT workspace_id || '|' || path || '|' || convert_from(content, 'UTF8')
+   FROM _openeral.workspace_files
+   WHERE workspace_id LIKE '%:${sandbox_name}' AND path = '/.claude/openeral-smoke.txt'
+   ORDER BY workspace_id DESC
+   LIMIT 1;"
+)"
+printf '%s\n' "$workspace_row"
+printf '%s\n' "$workspace_row" | grep -q '|/.claude/openeral-smoke.txt|persist-ok'
+
+echo "== claude =="
+claude_stdout="$(mktemp)"
+claude_stderr="$(mktemp)"
+if ! run_cli sandbox exec --gateway "$gateway_name" --name "$sandbox_name" \
+  --timeout "$claude_exec_timeout" --no-tty \
+  /bin/sh -lc "claude -p 'Reply with READY and nothing else.' < /dev/null" \
+  >"$claude_stdout" 2>"$claude_stderr"; then
+  cat "$claude_stdout"
+  cat "$claude_stderr" >&2
+  rm -f "$claude_stdout" "$claude_stderr"
+  exit 1
+fi
+cat "$claude_stdout"
+cat "$claude_stderr" >&2
+grep -q 'READY' "$claude_stdout"
+assert_no_claude_config_warning "$claude_stderr"
+rm -f "$claude_stdout" "$claude_stderr"
+
+echo "== claude row count =="
+claude_rows="$(
+psql "$OPENERAL_DATABASE_URL" -Atqc \
+  "SELECT count(*)
+   FROM _openeral.workspace_files
+   WHERE workspace_id LIKE '%:${sandbox_name}' AND path LIKE '/.claude%';"
+)"
+printf '%s\n' "$claude_rows"
+[ "${claude_rows:-0}" -gt 0 ]
+
+echo "== write Claude config semantic marker =="
+run_cli sandbox exec --gateway "$gateway_name" --name "$sandbox_name" --no-tty \
+  /usr/bin/env OPENERAL_SMOKE_ID="$run_id" \
+  /usr/bin/python3 -c "import json, os; from pathlib import Path; p = Path('/home/agent/.claude/.claude.json'); data = json.loads(p.read_text() or '{}'); data.setdefault('openeralSmoke', {})['runId'] = os.environ['OPENERAL_SMOKE_ID']; p.write_text(json.dumps(data, sort_keys=True) + '\n')"
+
+echo "== Claude config marker row =="
+claude_config_marker="$(
+psql "$OPENERAL_DATABASE_URL" -Atqc \
+  "SELECT convert_from(content, 'UTF8')::jsonb #>> '{openeralSmoke,runId}'
+   FROM _openeral.workspace_files
+   WHERE workspace_id LIKE '%:${sandbox_name}' AND path = '/.claude/.claude.json'
+   ORDER BY workspace_id DESC
+   LIMIT 1;"
+)"
+printf '%s\n' "$claude_config_marker"
+[ "$claude_config_marker" = "$run_id" ]
+
+echo "== recreate same sandbox name =="
+run_cli sandbox delete --gateway "$gateway_name" "$sandbox_name" >/dev/null || true
+sleep 2
+
+recreate_log="$(mktemp)"
+if ! DATABASE_URL="$OPENERAL_DATABASE_URL" ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  run_cli sandbox create \
+    --gateway "$gateway_name" \
+    --name "$sandbox_name" \
+    --from "$sandbox_image" \
+    --provider "$db_provider" \
+    --provider "$claude_provider" \
+    --policy "$policy_path_arg" \
+    --no-auto-providers \
+    --no-tty -- /bin/true >"$recreate_log" 2>&1; then
+  cat "$recreate_log" >&2
+fi
+rm -f "$recreate_log"
+
+wait_for_sandbox_ready
+wait_for_exec_ready
+
+echo "== persisted claude file after recreate =="
+run_cli sandbox exec --gateway "$gateway_name" --name "$sandbox_name" --no-tty /bin/cat /sandbox/.claude/openeral-smoke.txt
+
+echo "== persisted Claude config directory after recreate =="
+run_cli sandbox exec --gateway "$gateway_name" --name "$sandbox_name" --no-tty \
+  /usr/bin/python3 -c "from pathlib import Path; p = Path('/home/agent/.claude'); legacy = Path('/home/agent/.claude.json'); assert p.is_dir(); assert not p.is_symlink(); assert Path('/home/agent/.claude/.claude.json').is_file(); assert not legacy.exists(); assert not legacy.is_symlink()"
+run_cli sandbox exec --gateway "$gateway_name" --name "$sandbox_name" --no-tty \
+  /usr/bin/env OPENERAL_SMOKE_ID="$run_id" \
+  /usr/bin/python3 -c "import json, os; from pathlib import Path; data = json.loads(Path('/home/agent/.claude/.claude.json').read_text() or '{}'); assert data.get('openeralSmoke', {}).get('runId') == os.environ['OPENERAL_SMOKE_ID']"
+
+echo "== persisted claude rows after recreate =="
+persisted_claude_rows="$(
+psql "$OPENERAL_DATABASE_URL" -Atqc \
+  "SELECT count(*)
+   FROM _openeral.workspace_files
+   WHERE workspace_id LIKE '%:${sandbox_name}' AND path LIKE '/.claude%';"
+)"
+printf '%s\n' "$persisted_claude_rows"
+[ "${persisted_claude_rows:-0}" -gt 0 ]
+
+echo "== persisted Claude config marker after recreate =="
+persisted_claude_config_marker="$(
+psql "$OPENERAL_DATABASE_URL" -Atqc \
+  "SELECT convert_from(content, 'UTF8')::jsonb #>> '{openeralSmoke,runId}'
+   FROM _openeral.workspace_files
+   WHERE workspace_id LIKE '%:${sandbox_name}' AND path = '/.claude/.claude.json'
+   ORDER BY workspace_id DESC
+   LIMIT 1;"
+)"
+printf '%s\n' "$persisted_claude_config_marker"
+[ "$persisted_claude_config_marker" = "$run_id" ]
+
+echo "== claude after recreate =="
+claude_stdout="$(mktemp)"
+claude_stderr="$(mktemp)"
+if ! run_cli sandbox exec --gateway "$gateway_name" --name "$sandbox_name" \
+  --timeout "$claude_exec_timeout" --no-tty \
+  /bin/sh -lc "claude -p 'Reply with READY-AGAIN and nothing else.' < /dev/null" \
+  >"$claude_stdout" 2>"$claude_stderr"; then
+  cat "$claude_stdout"
+  cat "$claude_stderr" >&2
+  rm -f "$claude_stdout" "$claude_stderr"
+  exit 1
+fi
+cat "$claude_stdout"
+cat "$claude_stderr" >&2
+grep -q 'READY-AGAIN' "$claude_stdout"
+assert_no_claude_config_warning "$claude_stderr"
+rm -f "$claude_stdout" "$claude_stderr"
+
+echo "Supabase .env validation passed"

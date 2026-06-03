@@ -250,13 +250,12 @@ The [`openwork/`](./openwork) subdirectory contains the source of [OpenWork](htt
 
 OpenWork provides sessions, live SSE streaming, permissions, templates, and a skills manager. The non-opensource `ee/` directory has been removed; everything here is MIT-licensed.
 
-To restore dependencies after cloning: `cd openwork && pnpm install`
+To restore dependencies after cloning, see [openwork/README.md](./openwork/README.md).
 
 To sync openwork to a newer version:
 ```bash
 git fetch https://github.com/Pavitra-programmers/openwork feat/openshell-integration
 git read-tree --prefix=openwork/ -u FETCH_HEAD
-git commit -m "chore: sync openwork"
 ```
 
 ## Contributing
