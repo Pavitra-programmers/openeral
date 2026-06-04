@@ -1,0 +1,10 @@
+version: 2
+updates:
+  # Keep SHA-pinned GitHub Actions current. The release workflows pin every
+  # third-party action to a full commit SHA for supply-chain safety, which
+  # means they don't auto-receive upstream fixes — Dependabot opens PRs that
+  # bump the SHA (and the trailing version comment) when a new release lands.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
