@@ -59,6 +59,41 @@ DATABASE_URL='...' ANTHROPIC_API_KEY='...' bash ../tests/test_claude_e2e.sh
 - Command safety: just-bash parse() AST walk with regex fallback
 - `pg` command: SQL with parens or quotes must be double-quoted
 
+## Agent Selection (Claude Code vs OpenClaw)
+
+The sandbox supports two agents controlled by `OPENERAL_AGENT`:
+
+- `claude` (default) — Claude Code. Seeds `/.claude` and `/.claude/projects`, writes StringCost proxy to `~/.claude/settings.json`, execs `claude`.
+- `openclaw` — OpenClaw. Seeds `/.config` only (no `/.claude`), reads `ANTHROPIC_API_KEY` from env (loaded from the uploaded `/sandbox/anthropic-api-key` file), execs `openclaw` directly. OpenClaw brings up its own embedded gateway.
+
+`OPENERAL_AGENT` is never set directly by users. It is injected into the sandbox by OpenShell's provider framework: the `openclaw` generic provider carries `--credential "OPENERAL_AGENT=openclaw"`.
+
+The workspace schema (`_openeral`) is shared — both agents read and write the same `workspace_files` table.
+
+### StringCost integration
+
+StringCost is supported for **both agents**. The presign is stored at `~/.openeral/presign.json` with `metadata.labels: ['openeral', '<agent>']` — `claude-code` or `openclaw` — and is created against `STRINGCOST_API_BASE` (defaults to `https://app.stringcost.com`; override for local stacks). The proxy URL regex accepts both `https://proxy.stringcost.com/...` and self-hosted shapes (`http(s)://<host>/stringcost-proxy/t/...`).
+
+How each agent consumes the proxy URL:
+
+- **Claude Code** — `setup.sh` writes `ANTHROPIC_BASE_URL` into `~/.claude/settings.json` and passes it explicitly in the `exec` env.
+- **OpenClaw** — `setup.sh` exports `ANTHROPIC_BASE_URL` so the background openclaw gateway inherits it, writes it into `~/.openclaw/openclaw.json`'s `env` block (re-applied after the gateway's own config rewrite), and passes it explicitly in the openclaw `exec` env. The real `ANTHROPIC_API_KEY` is retained in `auth-profiles.json` because `openclaw onboard` requires a key value; StringCost ignores the inbound `x-api-key` since auth is via the proxy URL token.
+
+Both flows also persist `ANTHROPIC_BASE_URL` to `/home/agent/.openeral/env.sh`, which the sandbox `.bashrc` sources on reconnect.
+
+When adding features that differ by agent, gate on `OPENERAL_AGENT` in `setup.sh` (bash) and `process.env.OPENERAL_AGENT` in Node.js.
+
+## Build & test for OpenClaw
+
+```bash
+# Verify setup.sh handles both agents (no Docker required)
+bash -n sandboxes/openeral/setup.sh
+grep -q 'OPENERAL_AGENT' sandboxes/openeral/setup.sh
+
+# Full OpenClaw setup path (requires Docker + PostgreSQL)
+DATABASE_URL='...' OPENERAL_AGENT=openclaw bash tests/test_setup_e2e.sh
+```
+
 ## Hard Rules
 
 - **Never fix forward from the middle.** Stop and restart the flow from scratch.
