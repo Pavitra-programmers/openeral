@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, ExternalLink, Loader2, MessageSquare, Pencil, RotateCcw, Settings, Trash2 } from "lucide-react";
+import { AlertTriangle, ExternalLink, Loader2, MessageSquare, Pencil, Power, RotateCcw, Settings, Trash2 } from "lucide-react";
 
 import type { SandboxProfile } from "../../../../app/lib/desktop";
 import { Button } from "../../../design-system/button";
@@ -85,9 +85,18 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
   // Buffer to hold PTY bytes that arrive before xterm.js finishes
   // mounting and the data subscription is set up.
   const earlyBufferRef = useRef<string[]>([]);
+  // True when the current unmount is an explicit "end session" / delete
+  // (kill the PTY) rather than navigation (detach + keep the PTY alive so
+  // returning replays the buffer). cleanup() reads this to choose between
+  // openeralPtyDetach and openeralPtyClose.
+  const explicitEndRef = useRef(false);
 
   const [sandboxName, setSandboxName] = useState<string | null>(null);
   const [phase, setPhase] = useState<Phase>("starting");
+  // True only while a FIRST-TIME bootstrap is running (image pull / sandbox
+  // create / fresh connect). A lossless re-attach to an already-running PTY
+  // leaves this false so the 3-step bootstrap overlay never flashes.
+  const [isFreshBootstrap, setIsFreshBootstrap] = useState(false);
   const [bootstrapMessage, setBootstrapMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [popoutBusy, setPopoutBusy] = useState(false);
@@ -127,7 +136,47 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
   const handleLaunch = useCallback(() => {
     setUserAborted(false);
     lastAbortedWorkspaceRef.current = null;
-    setReconnectKey((k) => k + 1);
+    explicitEndRef.current = false;
+    // Close any stale (likely exited) session first so the next run()'s probe
+    // doesn't re-attach to the corpse — we want a genuinely fresh connect.
+    const staleId = sessionIdRef.current;
+    sessionIdRef.current = null;
+    void (async () => {
+      if (staleId) {
+        try {
+          await invoke("openeralPtyClose", staleId);
+        } catch {
+          // Best-effort — a fresh bootstrap recovers regardless.
+        }
+      }
+      setReconnectKey((k) => k + 1);
+    })();
+  }, []);
+
+  // Explicitly end the running session: kill the PTY (Claude Code relaunches
+  // on the next Reconnect) WITHOUT deleting the sandbox. Distinct from
+  // navigating away, which detaches and keeps the session alive.
+  const endSession = useCallback(async () => {
+    const id = sessionIdRef.current;
+    if (!id) {
+      setPhase("exited");
+      return;
+    }
+    explicitEndRef.current = true;
+    sessionIdRef.current = null;
+    try {
+      await invoke("openeralPtyClose", id);
+    } catch {
+      // Best-effort.
+    }
+    try {
+      termRef.current?.write(
+        "\r\n\x1b[33m[Session ended. Click Reconnect to start a new session.]\x1b[0m\r\n",
+      );
+    } catch {
+      // ignore
+    }
+    setPhase("exited");
   }, []);
 
   // Track whether this component has ever reached "connected" phase so we
@@ -216,7 +265,11 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
         const id = sessionIdRef.current;
         sessionIdRef.current = null;
         try {
-          await invoke("openeralPtyClose", id);
+          // Navigation (workspace switch, route change, switch-to-chat) ⇒
+          // DETACH: keep the wsl child + output buffer alive in main so the
+          // next mount replays the scrollback instantly. Only an explicit
+          // end/delete CLOSES (kills) the PTY.
+          await invoke(explicitEndRef.current ? "openeralPtyClose" : "openeralPtyDetach", id);
         } catch {
           // Best-effort.
         }
@@ -256,25 +309,20 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
         // ("Sandbox is Provisioning, waiting…") are visible instead of
         // being hidden behind a stale "ready" message.
         setBootstrapMessage(null);
+        // Reset per-run so switching between two OpenEral workspaces (the
+        // component stays mounted, only props change) doesn't carry the prior
+        // workspace's bootstrap flag into a lossless re-attach. The fresh
+        // branch sets it true again only when there is no live session.
+        setIsFreshBootstrap(false);
         unsubProgress = bridge?.openeral?.onSessionProgress?.((evt) => {
           if (cancelled) return;
           if (evt.message) setBootstrapMessage(evt.message);
         });
 
-        // 1. Ensure sandbox exists. This is idempotent — reopen of an
-        // existing workspace short-circuits with existed=true.
-        setPhase("ensuring-sandbox");
-        const sandbox = await invoke<{ sandboxName: string; existed: boolean }>(
-          "openeralEnsureSandbox",
-          { workspaceId: props.workspaceId, profile: props.profile },
-        );
-        if (cancelled) return;
-        setSandboxName(sandbox.sandboxName);
-        lastKnownSandboxNameRef.current = sandbox.sandboxName;
-
-        // 2. Subscribe to PTY events BEFORE opening the PTY so the
-        // initial sandbox-connect output (welcome banner, prompt)
-        // isn't lost between open and subscribe.
+        // 1. Subscribe to PTY events BEFORE opening/attaching the PTY so the
+        // initial sandbox-connect output (welcome banner, prompt) and any
+        // live bytes that arrive mid-attach aren't lost. Handlers gate on
+        // sessionIdRef so they only fire once we own a session.
         unsubData = bridge?.openeral?.onPtyData?.((payload) => {
           if (cancelled) return;
           if (payload.sessionId === sessionIdRef.current) {
@@ -284,7 +332,9 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
         unsubExit = bridge?.openeral?.onPtyExit?.((payload) => {
           if (cancelled) return;
           if (payload.sessionId === sessionIdRef.current) {
-            sessionIdRef.current = null;
+            // Keep sessionIdRef set: the dead session is retained in the main
+            // process (with its buffer) so Reconnect / End session can close
+            // it by id, and a re-attach after navigation replays its output.
             writeToTerm(
               `\r\n\x1b[33m[Session ended (exit ${payload.exitCode ?? "?"}). Click Reconnect to start a new session.]\x1b[0m\r\n`,
             );
@@ -292,8 +342,11 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
           }
         });
 
-        // 3. Mount xterm.js inside the container div.
-        setPhase("mounting-terminal");
+        // 2. Mount xterm.js FIRST — both so we have real cols/rows to hand to
+        // the PTY and so we have a live terminal to replay buffered scrollback
+        // into on a re-attach. The bootstrap overlay (gated on
+        // isFreshBootstrap) sits ON TOP of this container via absolute
+        // positioning, so mounting underneath first is invisible.
         const { Terminal } = await import("@xterm/xterm");
         const { FitAddon } = await import("@xterm/addon-fit");
         if (cancelled || !containerRef.current) return;
@@ -404,8 +457,80 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
           }
         }
 
-        // 4. Open the PTY. Pass the current xterm size — now guaranteed
-        // to be the result of a ResizeObserver-corrected fit() call.
+        // Wire terminal input → PTY stdin (every keystroke, incl. arrows)
+        // and xterm's own resize → PTY SIGWINCH. Identical for the re-attach
+        // and fresh-open paths, so define once and call in each branch.
+        const wireTerminalIO = () => {
+          term.onData((data) => {
+            if (!sessionIdRef.current) return;
+            void invoke("openeralPtyWrite", {
+              sessionId: sessionIdRef.current,
+              data,
+            });
+          });
+          term.onResize(({ cols, rows }) => {
+            if (!sessionIdRef.current) return;
+            void invoke("openeralPtyResize", {
+              sessionId: sessionIdRef.current,
+              cols,
+              rows,
+            });
+          });
+        };
+
+        // 3. Probe for an already-running PTY for this sandbox. If one exists
+        // the renderer simply navigated away earlier (we detached, keeping the
+        // wsl child + scrollback alive), so we re-attach losslessly — no
+        // re-bootstrap, no Claude Code relaunch.
+        let liveSandbox = false;
+        try {
+          const sessionsList = await invoke<Array<{ sandboxName: string }>>("openeralPtyList");
+          liveSandbox = sessionsList.some((s) => s.sandboxName === expectedSandboxName);
+        } catch {
+          liveSandbox = false;
+        }
+        if (cancelled) return;
+
+        if (liveSandbox) {
+          // ── Lossless re-attach ────────────────────────────────────────
+          const attached = await invoke<{ id: string; buffered: string; exited: boolean }>(
+            "openeralPtyAttachOrOpen",
+            { sandboxName: expectedSandboxName, cols: term.cols, rows: term.rows },
+          );
+          if (cancelled) return;
+          setSandboxName(expectedSandboxName);
+          lastKnownSandboxNameRef.current = expectedSandboxName;
+          sessionIdRef.current = attached.id;
+          // Replay buffered scrollback FIRST (it's historical), then flush any
+          // live bytes that queued during mount. Live IPC data is delivered on
+          // a later tick, so it always lands after this synchronous replay.
+          if (attached.buffered) term.write(attached.buffered);
+          if (earlyBufferRef.current.length > 0) {
+            for (const chunk of earlyBufferRef.current) term.write(chunk);
+            earlyBufferRef.current = [];
+          }
+          wireTerminalIO();
+          setHasEverConnected(true);
+          setPhase(attached.exited ? "exited" : "connected");
+          return;
+        }
+
+        // ── Fresh bootstrap ───────────────────────────────────────────────
+        // No live session: this is a first open (or a reconnect after the PTY
+        // was explicitly closed). Now show the bootstrap overlay, ensure the
+        // sandbox is up (idempotent), then open a new PTY.
+        setIsFreshBootstrap(true);
+        setPhase("ensuring-sandbox");
+        const sandbox = await invoke<{ sandboxName: string; existed: boolean }>(
+          "openeralEnsureSandbox",
+          { workspaceId: props.workspaceId, profile: props.profile },
+        );
+        if (cancelled) return;
+        setSandboxName(sandbox.sandboxName);
+        lastKnownSandboxNameRef.current = sandbox.sandboxName;
+
+        // Open the PTY. Pass the current xterm size — now guaranteed to be the
+        // result of a ResizeObserver-corrected fit() call.
         setPhase("connecting-pty");
         const pty = await invoke<{ id: string }>("openeralPtyOpen", {
           sandboxName: sandbox.sandboxName,
@@ -417,29 +542,12 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
           return;
         }
         sessionIdRef.current = pty.id;
-
-        // 5. Wire terminal input → PTY stdin. xterm's onData fires for
-        // every keystroke including special keys (arrows, etc.).
-        term.onData((data) => {
-          if (!sessionIdRef.current) return;
-          void invoke("openeralPtyWrite", {
-            sessionId: sessionIdRef.current,
-            data,
-          });
-        });
-
-        // 6. Wire xterm's own resize event → forward to PTY (SIGWINCH).
-        // (ResizeObserver is already wired above; it calls fit.fit() which
-        // triggers this handler whenever the container resizes.)
-        term.onResize(({ cols, rows }) => {
-          if (!sessionIdRef.current) return;
-          void invoke("openeralPtyResize", {
-            sessionId: sessionIdRef.current,
-            cols,
-            rows,
-          });
-        });
-
+        // Flush any bytes that queued between open and this point.
+        if (earlyBufferRef.current.length > 0) {
+          for (const chunk of earlyBufferRef.current) term.write(chunk);
+          earlyBufferRef.current = [];
+        }
+        wireTerminalIO();
         setPhase("connected");
       } catch (err) {
         if (cancelled) return;
@@ -479,6 +587,15 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
         "sandbox and restore the home directory from PostgreSQL.",
     );
     if (!ok) return;
+    // Kill the local PTY before tearing down the sandbox so we never leave a
+    // wsl child pointed at a deleted container. explicitEndRef makes the
+    // subsequent unmount a CLOSE (no-op, already closed) rather than a detach.
+    explicitEndRef.current = true;
+    const id = sessionIdRef.current;
+    sessionIdRef.current = null;
+    if (id) {
+      await invoke("openeralPtyClose", id).catch(() => {});
+    }
     try {
       await invoke("openeralDeleteSandbox", nameToDelete);
       props.onSandboxDeleted?.();
@@ -591,13 +708,24 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
               Cancel
             </Button>
           ) : null}
+          {phase === "connected" ? (
+            <Button
+              variant="outline"
+              className="h-7 w-7 !rounded-full !p-0 shrink-0"
+              onClick={() => void endSession()}
+              onMouseDown={(e) => e.preventDefault()}
+              title="End this session (stops the agent process). The sandbox and Postgres-backed files persist; Reconnect starts a fresh session. Just navigating away keeps the session running."
+            >
+              <Power size={13} />
+            </Button>
+          ) : null}
           {props.onSwitchToChat ? (
             <Button
               variant="outline"
               className="h-7 rounded-full px-3 text-xs"
               onClick={props.onSwitchToChat}
               onMouseDown={(e) => e.preventDefault()}
-              title="Switch to the regular OpenWork chat UI. The sandbox keeps running."
+              title="Switch to the regular OpenWork chat UI. The session keeps running — switch back to resume it instantly."
             >
               <MessageSquare size={12} className="mr-1" />
               Chat
@@ -678,7 +806,10 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
               onOpenSettings={props.onOpenSettings}
             />
           </div>
-        ) : phase !== "connected" && phase !== "exited" && phase !== "error" ? (
+        ) : isFreshBootstrap && phase !== "connected" && phase !== "exited" && phase !== "error" ? (
+          // Only show the 3-step bootstrap overlay during a FIRST-TIME launch.
+          // A lossless re-attach (isFreshBootstrap === false) skips it so
+          // returning to a workspace is instant with no spinner flash.
           // "error" without an errorMessage (cleared by commitRename) falls
           // through here — don't show the spinner, just show the terminal.
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-dls-surface p-6">

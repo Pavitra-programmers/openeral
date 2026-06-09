@@ -156,7 +156,10 @@
       "Bash(grep -n '_rc=\\\\$?\\\\|=\\\\$?' /mnt/c/Users/dines/OneDrive/Desktop/work/openeral/sandboxes/openeral/setup.sh)",
       "Bash(npm ls *)",
       "Bash(tar -tzf openclaw-2026.5.12.tgz)",
-      "Bash(grep -oE \"models[^,}]{0,200}primary[^,}]{0,400}\" package/dist/io-5xE1dPMK.js)"
+      "Bash(grep -oE \"models[^,}]{0,200}primary[^,}]{0,400}\" package/dist/io-5xE1dPMK.js)",
+      "Bash(ls scripts *)",
+      "Bash(grep -rl \"openeral\" electron)",
+      "Bash(grep -vi \"\\\\.md$\")"
     ]
   }
 }

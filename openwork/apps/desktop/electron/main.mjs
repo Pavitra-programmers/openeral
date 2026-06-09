@@ -287,6 +287,34 @@ function emitOpenEralPtyExit(sessionId, exitCode, signal) {
   }
 }
 
+/**
+ * Build the extra env forwarded into the OpenEral PTY at spawn time:
+ * decrypted Anthropic / StringCost keys (so Claude Code auto-configures
+ * its provider on first run without an interactive prompt) plus COLUMNS /
+ * LINES belt-and-suspenders alongside the stty call in openeral-pty.mjs.
+ * Shared by the openeralPtyOpen and openeralPtyAttachOrOpen handlers.
+ *
+ * @param {number | undefined} cols
+ * @param {number | undefined} rows
+ * @returns {Promise<Record<string, string> | undefined>}
+ */
+async function buildOpenEralPtyEnv(cols, rows) {
+  const extraEnv = {};
+  try {
+    const anthropicApiKey = await openeralCredentials.getCredential("anthropicApiKey");
+    if (anthropicApiKey) extraEnv.ANTHROPIC_API_KEY = anthropicApiKey;
+  } catch { /* safeStorage may be unavailable in some test environments */ }
+  try {
+    const stringcostApiKey = await openeralCredentials.getCredential("stringcostApiKey");
+    if (stringcostApiKey) extraEnv.STRINGCOST_API_KEY = stringcostApiKey;
+  } catch { /* optional — StringCost tracking only */ }
+  const effectiveCols = Number.isFinite(cols) && cols > 0 ? cols : 120;
+  const effectiveRows = Number.isFinite(rows) && rows > 0 ? rows : 32;
+  extraEnv.COLUMNS = String(effectiveCols);
+  extraEnv.LINES = String(effectiveRows);
+  return Object.keys(extraEnv).length > 0 ? extraEnv : undefined;
+}
+
 function normalizePlatform(value) {
   if (value === "darwin" || value === "linux") return value;
   if (value === "win32") return "windows";
@@ -1751,33 +1779,65 @@ async function handleDesktopInvoke(event, command, ...args) {
       // auto-configure Claude Code's Anthropic provider on first run without
       // showing an interactive "enter API key" prompt that the user can't
       // see or respond to (especially when the terminal is still sizing up).
-      const extraEnv = {};
-      try {
-        const anthropicApiKey = await openeralCredentials.getCredential("anthropicApiKey");
-        if (anthropicApiKey) extraEnv.ANTHROPIC_API_KEY = anthropicApiKey;
-      } catch { /* safeStorage may be unavailable in some test environments */ }
-      try {
-        const stringcostApiKey = await openeralCredentials.getCredential("stringcostApiKey");
-        if (stringcostApiKey) extraEnv.STRINGCOST_API_KEY = stringcostApiKey;
-      } catch { /* optional — StringCost tracking only */ }
-      // Forward terminal dimensions as COLUMNS/LINES so Claude Code (and any
-      // other program in the container that checks env vars before TIOCGWINSZ)
-      // gets the right width from the start. Belt-and-suspenders alongside the
-      // `stty cols X rows Y` call in openeral-pty.mjs's spawnImpl.
-      const effectiveCols = Number.isFinite(cols) && cols > 0 ? cols : 120;
-      const effectiveRows = Number.isFinite(rows) && rows > 0 ? rows : 32;
-      extraEnv.COLUMNS = String(effectiveCols);
-      extraEnv.LINES = String(effectiveRows);
+      const extraEnv = await buildOpenEralPtyEnv(cols, rows);
 
       const result = await openeralPty.openSession({
         sandboxName,
         cols,
         rows,
-        extraEnv: Object.keys(extraEnv).length > 0 ? extraEnv : undefined,
+        extraEnv,
         onData: (data) => emitOpenEralPtyData(result.id, data),
         onExit: (exitCode, signal) => emitOpenEralPtyExit(result.id, exitCode, signal),
       });
       return result;
+    }
+    case "openeralPtyAttachOrOpen": {
+      // Lossless re-attach. If a PTY for this sandbox is still alive in the
+      // main process (renderer navigated away earlier but we kept it via
+      // openeralPtyDetach), re-wire its output to the current window and
+      // return the buffered scrollback so the renderer can replay it into a
+      // fresh xterm — no re-bootstrap, no Claude Code relaunch. Otherwise
+      // fall back to spawning a new PTY exactly like openeralPtyOpen.
+      const input = args[0] ?? {};
+      const sandboxName = String(input.sandboxName ?? "").trim();
+      if (!sandboxName) throw new Error("sandboxName is required");
+      const cols = Number.isFinite(input.cols) ? input.cols : undefined;
+      const rows = Number.isFinite(input.rows) ? input.rows : undefined;
+
+      const existing = openeralPty.findSessionBySandbox(sandboxName);
+      if (existing) {
+        openeralPty.attachHandlers(existing.id, {
+          onData: (data) => emitOpenEralPtyData(existing.id, data),
+          onExit: (exitCode, signal) => emitOpenEralPtyExit(existing.id, exitCode, signal),
+        });
+        if (Number.isFinite(cols) && Number.isFinite(rows)) {
+          openeralPty.resizeSession(existing.id, cols, rows);
+        }
+        return {
+          id: existing.id,
+          buffered: openeralPty.getBuffer(existing.id),
+          reused: true,
+          exited: Boolean(existing.exitInfo),
+        };
+      }
+
+      const extraEnv = await buildOpenEralPtyEnv(cols, rows);
+      const result = await openeralPty.openSession({
+        sandboxName,
+        cols,
+        rows,
+        extraEnv,
+        onData: (data) => emitOpenEralPtyData(result.id, data),
+        onExit: (exitCode, signal) => emitOpenEralPtyExit(result.id, exitCode, signal),
+      });
+      return { id: result.id, buffered: "", reused: false, exited: false };
+    }
+    case "openeralPtyDetach": {
+      // Renderer is unmounting on navigation — keep the wsl child + output
+      // buffer alive so returning to the workspace is instant and lossless.
+      const id = String(args[0] ?? "").trim();
+      if (!id) throw new Error("sessionId is required");
+      return openeralPty.detachSession(id);
     }
     case "openeralPtyWrite": {
       const input = args[0] ?? {};
