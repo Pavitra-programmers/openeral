@@ -492,7 +492,9 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
         if (cancelled) return;
 
         if (liveSandbox) {
-          // ── Lossless re-attach ────────────────────────────────────────
+          // ── Lossless re-attach (two-phase) ───────────────────────────
+          // Phase 1: get session id + buffered scrollback. The main process
+          // does NOT call attachHandlers here, so no pty-data events fly yet.
           const attached = await invoke<{ id: string; buffered: string; exited: boolean }>(
             "openeralPtyAttachOrOpen",
             { sandboxName: expectedSandboxName, cols: term.cols, rows: term.rows },
@@ -500,15 +502,20 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
           if (cancelled) return;
           setSandboxName(expectedSandboxName);
           lastKnownSandboxNameRef.current = expectedSandboxName;
+          // Set sessionIdRef BEFORE phase 2 so the onPtyData handler accepts
+          // events the moment the main process starts streaming.
           sessionIdRef.current = attached.id;
-          // Replay buffered scrollback FIRST (it's historical), then flush any
-          // live bytes that queued during mount. Live IPC data is delivered on
-          // a later tick, so it always lands after this synchronous replay.
+          // Replay buffered scrollback (historical output).
           if (attached.buffered) term.write(attached.buffered);
           if (earlyBufferRef.current.length > 0) {
             for (const chunk of earlyBufferRef.current) term.write(chunk);
             earlyBufferRef.current = [];
           }
+          // Phase 2: wire live PTY streaming now that sessionIdRef is set.
+          if (!attached.exited) {
+            await invoke("openeralPtyAttach", attached.id);
+          }
+          if (cancelled) return;
           wireTerminalIO();
           setHasEverConnected(true);
           setPhase(attached.exited ? "exited" : "connected");
