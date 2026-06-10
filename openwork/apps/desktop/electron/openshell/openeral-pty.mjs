@@ -305,10 +305,17 @@ export function resizeSession(id, cols, rows) {
 export function closeSession(id, signal = "SIGTERM") {
   const session = sessions.get(id);
   if (!session) return false;
+  if (session.exitInfo) {
+    // Already exited — safe to delete unconditionally.
+    sessions.delete(id);
+    return true;
+  }
   try {
     session.pty.kill(signal);
   } catch {
-    // Already exited — nothing to kill.
+    // kill() threw unexpectedly — PTY may still be running; don't delete so
+    // the caller can retry (e.g. with SIGKILL) or the session stays trackable.
+    return false;
   }
   sessions.delete(id);
   return true;
