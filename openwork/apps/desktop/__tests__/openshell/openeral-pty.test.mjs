@@ -186,11 +186,14 @@ test("closeSession: accepts a custom signal", async () => {
   assert.deepEqual(activeFake.events.kills, ["SIGKILL"]);
 });
 
-test("closeSession: removes the session from the map when onExit fires", async () => {
+test("closeSession: removes the session from the map immediately (does not wait for onExit)", async () => {
   const { id } = await pty.openSession({ sandboxName: "x" });
   assert.equal(pty.listSessions().length, 1);
   pty.closeSession(id);
-  // Simulate node-pty's onExit firing after kill.
+  // closeSession is the authoritative deleter — the map is clean right away,
+  // even before node-pty's onExit fires.
+  assert.equal(pty.listSessions().length, 0);
+  // A late onExit on the orphaned session must not resurrect or crash.
   activeFake.exit(0);
   assert.equal(pty.listSessions().length, 0);
 });
@@ -211,11 +214,128 @@ test("onExit handler fires with exit code + signal", async () => {
   assert.deepEqual(exits, [{ code: 7, signal: "SIGTERM" }]);
 });
 
-test("onExit removes the session from listSessions even without explicit close", async () => {
-  await pty.openSession({ sandboxName: "x" });
+test("onExit RETAINS the session (marks exitInfo) so it can be replayed on re-attach", async () => {
+  const { id } = await pty.openSession({ sandboxName: "x" });
   assert.equal(pty.listSessions().length, 1);
+  activeFake.exit(3, "SIGHUP");
+  // Session is kept in the map so a renderer that re-attaches after the wsl
+  // child died can still replay the final output and offer "Reconnect".
+  assert.equal(pty.listSessions().length, 1);
+  const session = pty.__testing.getSession(id);
+  assert.deepEqual(session.exitInfo, { exitCode: 3, signal: "SIGHUP" });
+});
+
+test("post-exit: writeSession and resizeSession return false (no writes to a dead pty)", async () => {
+  const { id } = await pty.openSession({ sandboxName: "x", cols: 80, rows: 24 });
   activeFake.exit(0);
-  assert.equal(pty.listSessions().length, 0);
+  assert.equal(pty.writeSession(id, "ls\n"), false);
+  assert.equal(pty.resizeSession(id, 100, 40), false);
+  assert.equal(activeFake.events.writes.length, 0);
+  assert.equal(activeFake.events.resizes.length, 0);
+});
+
+// ── output buffer + replay ──────────────────────────────────────────────
+
+test("getBuffer: accumulates emitted output for replay", async () => {
+  const { id } = await pty.openSession({ sandboxName: "x" });
+  activeFake.emit("hello ");
+  activeFake.emit("world");
+  assert.equal(pty.getBuffer(id), "hello world");
+});
+
+test("getBuffer: returns empty string for an unknown session", () => {
+  assert.equal(pty.getBuffer("not-a-real-id"), "");
+});
+
+test("getBuffer: decodes the MERGED byte array (multibyte char split across chunks is intact)", async () => {
+  const { id } = await pty.openSession({ sandboxName: "x" });
+  // "é" is 0xC3 0xA9 in UTF-8 — emit each byte as its own chunk. A per-chunk
+  // decode would yield replacement chars; a merged decode reconstructs "é".
+  activeFake.emit(new Uint8Array([0xc3]));
+  activeFake.emit(new Uint8Array([0xa9]));
+  assert.equal(pty.getBuffer(id), "é");
+});
+
+test("buffer cap: evicts oldest output, retains the tail, stays within the byte cap", async () => {
+  const CAP = 768 * 1024;
+  const { id } = await pty.openSession({ sandboxName: "x" });
+  activeFake.emit("START" + "a".repeat(400_000));
+  activeFake.emit("b".repeat(400_000)); // total > cap → first chunk evicted
+  activeFake.emit("ENDMARKER");
+  const buffered = pty.getBuffer(id);
+  assert.ok(new TextEncoder().encode(buffered).length <= CAP, "within byte cap");
+  assert.ok(buffered.includes("ENDMARKER"), "retains the newest output");
+  assert.ok(!buffered.includes("START"), "evicts the oldest output");
+});
+
+// ── findSessionBySandbox ────────────────────────────────────────────────
+
+test("findSessionBySandbox: returns the session matching the sandbox name", async () => {
+  const { id } = await pty.openSession({ sandboxName: "alpha" });
+  await pty.openSession({ sandboxName: "bravo" });
+  const found = pty.findSessionBySandbox("alpha");
+  assert.ok(found);
+  assert.equal(found.id, id);
+  assert.equal(found.sandboxName, "alpha");
+});
+
+test("findSessionBySandbox: returns null for an unknown sandbox", async () => {
+  await pty.openSession({ sandboxName: "alpha" });
+  assert.equal(pty.findSessionBySandbox("nope"), null);
+});
+
+// ── detachSession ───────────────────────────────────────────────────────
+
+test("detachSession: keeps the PTY alive, stops routing to the old handler, keeps buffering", async () => {
+  const initial = [];
+  const { id } = await pty.openSession({ sandboxName: "x", onData: (d) => initial.push(d) });
+  activeFake.emit("before");
+  const ok = pty.detachSession(id);
+  assert.equal(ok, true);
+  activeFake.emit("after");
+  // Old handler no longer receives data...
+  assert.deepEqual(initial, ["before"]);
+  // ...but the wsl child is NOT killed and the buffer keeps growing.
+  assert.equal(activeFake.events.kills.length, 0);
+  assert.equal(pty.listSessions().length, 1);
+  assert.equal(pty.getBuffer(id), "beforeafter");
+});
+
+test("detachSession: returns false for an unknown session", () => {
+  assert.equal(pty.detachSession("not-a-real-id"), false);
+});
+
+test("detach then re-attach replays history and routes new output to the new handler", async () => {
+  const first = [];
+  const second = [];
+  const { id } = await pty.openSession({ sandboxName: "x", onData: (d) => first.push(d) });
+  activeFake.emit("history");
+  pty.detachSession(id);
+  pty.attachHandlers(id, { onData: (d) => second.push(d) });
+  activeFake.emit("live");
+  assert.deepEqual(first, ["history"]);
+  assert.deepEqual(second, ["live"]);
+  assert.equal(pty.getBuffer(id), "historylive");
+});
+
+// ── openSession adoption / idempotency ──────────────────────────────────
+
+test("openSession: reuses a live session for the same sandbox instead of spawning twice", async () => {
+  const { id: id1, reused: reused1 } = await pty.openSession({ sandboxName: "x" });
+  assert.equal(reused1, false);
+  const { id: id2, reused: reused2 } = await pty.openSession({ sandboxName: "x" });
+  assert.equal(reused2, true);
+  assert.equal(id2, id1);
+  assert.equal(pty.__testing.getSessionCount(), 1);
+});
+
+test("openSession: discards a dead (exited) session and spawns a fresh one", async () => {
+  const { id: id1 } = await pty.openSession({ sandboxName: "x" });
+  activeFake.exit(0); // session retained but dead
+  const { id: id2, reused } = await pty.openSession({ sandboxName: "x" });
+  assert.equal(reused, false); // not adopted — a fresh PTY was spawned
+  assert.notEqual(id2, id1);
+  assert.equal(pty.__testing.getSessionCount(), 1);
 });
 
 // ── attachHandlers ─────────────────────────────────────────────────────

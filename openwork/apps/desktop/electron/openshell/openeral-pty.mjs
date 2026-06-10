@@ -24,6 +24,37 @@ import { randomUUID } from "node:crypto";
 
 import { DISTRO_NAME } from "./wsl.mjs";
 
+// Each live session keeps a bounded ring-buffer of the raw bytes the PTY
+// has emitted. When the renderer unmounts on navigation we DETACH (keep
+// the wsl child + buffer alive) instead of killing it; when the user
+// returns we re-attach and replay this buffer into a fresh xterm so the
+// terminal comes back instantly with its scrollback intact — the same
+// "switch away and back is lossless" behaviour as the chat sessions.
+//
+// Buffer is stored as raw bytes (not strings) so the cap is an exact byte
+// count and a future on-disk persistence layer is trivial. Decode happens
+// once, on the merged byte array, in getBuffer().
+const BUFFER_CAP_BYTES = 768 * 1024; // ~768 KB of replayable scrollback
+const bufferEncoder = new TextEncoder();
+
+/**
+ * Append PTY output to a session's ring-buffer, evicting the oldest chunks
+ * once the byte cap is exceeded. Never empties the buffer mid-stream (keeps
+ * at least the most recent chunk even if a single chunk exceeds the cap).
+ *
+ * @param {Session} session
+ * @param {string | Uint8Array} data
+ */
+function appendToBuffer(session, data) {
+  const bytes = typeof data === "string" ? bufferEncoder.encode(data) : data;
+  session.buffer.push(bytes);
+  session.bufferBytes += bytes.length;
+  while (session.bufferBytes > BUFFER_CAP_BYTES && session.buffer.length > 1) {
+    const dropped = session.buffer.shift();
+    session.bufferBytes -= dropped.length;
+  }
+}
+
 /** @typedef {(data: string | Uint8Array) => void} DataHandler */
 /** @typedef {(exitCode: number | null, signal?: string | null) => void} ExitHandler */
 
@@ -46,6 +77,10 @@ import { DISTRO_NAME } from "./wsl.mjs";
  * @property {ExitHandler | null} onExit
  * @property {{ cols: number; rows: number }} size
  * @property {number} openedAt
+ * @property {Uint8Array[]} buffer        Replayable output chunks (raw bytes)
+ * @property {number} bufferBytes         Running byte total of `buffer`
+ * @property {boolean} detached           True while no renderer is attached
+ * @property {{ exitCode: number | null; signal: string | null } | null} exitInfo
  */
 
 /** @type {Map<string, Session>} */
@@ -148,7 +183,7 @@ const DEFAULT_ROWS = 32;
  *   inside the sandbox without prompting the user interactively.
  * @param {DataHandler} [opts.onData]   Receives PTY stdout/stderr bytes
  * @param {ExitHandler} [opts.onExit]   Called when the wsl child exits
- * @returns {Promise<{ id: string, sandboxName: string }>}
+ * @returns {Promise<{ id: string, sandboxName: string, reused: boolean }>}
  */
 export async function openSession(opts) {
   if (!opts?.sandboxName) {
@@ -157,6 +192,25 @@ export async function openSession(opts) {
   const cols = Number.isFinite(opts.cols) ? opts.cols : DEFAULT_COLS;
   const rows = Number.isFinite(opts.rows) ? opts.rows : DEFAULT_ROWS;
   const extraEnv = opts.extraEnv ?? null;
+
+  // Adoption / idempotency: if a still-live session already owns this
+  // sandbox, re-attach to it instead of spawning a second wsl child. This
+  // makes openSession safe to call from any path (legacy openeralPtyOpen,
+  // a racy double-mount) without ever leaking a duplicate PTY against the
+  // same sandbox.
+  const existing = findSessionBySandbox(opts.sandboxName);
+  if (existing) {
+    if (!existing.exitInfo) {
+      // Still live → adopt it; never spawn a second wsl child for one sandbox.
+      attachHandlers(existing.id, { onData: opts.onData, onExit: opts.onExit });
+      resizeSession(existing.id, cols, rows);
+      return { id: existing.id, sandboxName: existing.sandboxName, reused: true };
+    }
+    // Dead (exited) session for this sandbox is lingering for replay — a fresh
+    // openSession means the user is reconnecting, so forget it and spawn anew.
+    // This guarantees at most one session per sandbox after openSession.
+    closeSession(existing.id);
+  }
 
   const pty = await spawnImpl({ sandboxName: opts.sandboxName, cols, rows, extraEnv });
   const id = randomUUID();
@@ -170,25 +224,39 @@ export async function openSession(opts) {
     onExit: opts.onExit ?? null,
     size: { cols, rows },
     openedAt: Date.now(),
+    buffer: [],
+    bufferBytes: 0,
+    detached: false,
+    exitInfo: null,
   };
 
-  // Wire data → caller. node-pty's onData fires for both stdout and
+  // Wire data → buffer (always, even while detached) → caller (only when a
+  // renderer is attached). node-pty's onData fires for both stdout and
   // stderr — there's no TTY-side distinction, which is exactly what
   // xterm.js expects.
   pty.onData((data) => {
+    appendToBuffer(session, data);
     session.onData?.(data);
   });
 
   pty.onExit((event) => {
-    sessions.delete(id);
     const code = typeof event?.exitCode === "number" ? event.exitCode : null;
     const signal =
       typeof event?.signal === "number" ? String(event.signal) : event?.signal ?? null;
+    // Retain the session (do NOT delete from the map) so a renderer that
+    // re-attaches AFTER the wsl child died can still replay the final
+    // output plus this notice and offer "Reconnect". The map entry is
+    // removed only by an explicit closeSession()/closeAllSessions().
+    session.exitInfo = { exitCode: code, signal };
+    appendToBuffer(
+      session,
+      `\r\n\x1b[33m[Session ended (exit ${code ?? "?"}).]\x1b[0m\r\n`,
+    );
     session.onExit?.(code, signal);
   });
 
   sessions.set(id, session);
-  return { id, sandboxName: opts.sandboxName };
+  return { id, sandboxName: opts.sandboxName, reused: false };
 }
 
 /**
@@ -199,6 +267,9 @@ export async function openSession(opts) {
 export function writeSession(id, data) {
   const session = sessions.get(id);
   if (!session) return false;
+  // The wsl child has exited but the session is retained for replay — no
+  // stdin to write to. Swallow rather than throw on a dead pty.
+  if (session.exitInfo) return false;
   session.pty.write(typeof data === "string" ? data : String(data));
   return true;
 }
@@ -211,6 +282,7 @@ export function writeSession(id, data) {
 export function resizeSession(id, cols, rows) {
   const session = sessions.get(id);
   if (!session) return false;
+  if (session.exitInfo) return false;
   const safeCols = Number.isFinite(cols) && cols > 0 ? Math.floor(cols) : session.size.cols;
   const safeRows = Number.isFinite(rows) && rows > 0 ? Math.floor(rows) : session.size.rows;
   if (safeCols === session.size.cols && safeRows === session.size.rows) {
@@ -222,20 +294,84 @@ export function resizeSession(id, cols, rows) {
 }
 
 /**
- * Kill the PTY's wsl child. The onExit handler fires synchronously and
- * removes the session from the map. The OpenEral sandbox itself
- * persists — that's the whole point of OpenEral's PostgreSQL-backed
- * /home/agent.
+ * Kill the PTY's wsl child and remove the session from the map. This is
+ * the authoritative deleter — `onExit` only marks a session dead (so it
+ * can be replayed); `closeSession` is what actually forgets it. Use this
+ * for an explicit "end session" / "delete sandbox", NOT for navigation
+ * (navigation should detachSession() to keep the buffer alive). The
+ * OpenEral sandbox itself persists — that's the whole point of OpenEral's
+ * PostgreSQL-backed /home/agent.
  */
 export function closeSession(id, signal = "SIGTERM") {
   const session = sessions.get(id);
   if (!session) return false;
+  if (session.exitInfo) {
+    // Already exited — safe to delete unconditionally.
+    sessions.delete(id);
+    return true;
+  }
   try {
     session.pty.kill(signal);
   } catch {
-    // Already exited; the onExit cleanup may not have run yet.
-    sessions.delete(id);
+    // kill() threw unexpectedly — PTY may still be running; don't delete so
+    // the caller can retry (e.g. with SIGKILL) or the session stays trackable.
+    return false;
   }
+  sessions.delete(id);
+  return true;
+}
+
+/**
+ * Find a live-or-dead session by its sandbox name. Used to re-attach a
+ * re-mounted renderer to an already-running PTY instead of spawning a new
+ * one. Returns the first match, or null.
+ *
+ * @param {string} sandboxName
+ * @returns {Session | null}
+ */
+export function findSessionBySandbox(sandboxName) {
+  if (!sandboxName) return null;
+  for (const session of sessions.values()) {
+    if (session.sandboxName === sandboxName) return session;
+  }
+  return null;
+}
+
+/**
+ * Return the session's replayable scrollback as a string. The byte chunks
+ * are concatenated and decoded ONCE so a multibyte UTF-8 sequence split
+ * across a cap-driven eviction boundary doesn't produce replacement
+ * characters. Empty string for an unknown session.
+ *
+ * @param {string} id
+ * @returns {string}
+ */
+export function getBuffer(id) {
+  const session = sessions.get(id);
+  if (!session) return "";
+  const merged = new Uint8Array(session.bufferBytes);
+  let offset = 0;
+  for (const chunk of session.buffer) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return new TextDecoder().decode(merged);
+}
+
+/**
+ * Detach the renderer from a live session WITHOUT killing the wsl child.
+ * The module-level pty.onData keeps appending to the buffer while detached
+ * so scrollback accrued during navigation is replayed on the next attach.
+ * Returns `false` for an unknown session.
+ *
+ * @param {string} id
+ */
+export function detachSession(id) {
+  const session = sessions.get(id);
+  if (!session) return false;
+  session.onData = null;
+  session.onExit = null;
+  session.detached = true;
   return true;
 }
 
@@ -269,6 +405,9 @@ export function attachHandlers(id, handlers = {}) {
   if (!session) return false;
   if (onData !== undefined) session.onData = onData ?? null;
   if (onExit !== undefined) session.onExit = onExit ?? null;
+  // A renderer is now (re)attached — clear the detached flag so the
+  // buffer-append path knows there's a live consumer again.
+  if (session.onData || session.onExit) session.detached = false;
   return true;
 }
 
@@ -310,6 +449,10 @@ export const __testing = {
   },
   getSessionCount() {
     return sessions.size;
+  },
+  /** Raw session object for buffer / detached / exitInfo assertions. */
+  getSession(id) {
+    return sessions.get(id) ?? null;
   },
   resetAll() {
     closeAllSessions();
