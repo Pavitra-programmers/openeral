@@ -1781,11 +1781,8 @@ async function handleDesktopInvoke(event, command, ...args) {
       // see or respond to (especially when the terminal is still sizing up).
       const extraEnv = await buildOpenEralPtyEnv(cols, rows);
 
-      const result = await openeralPty.openSession({
-        sandboxName,
-        cols,
-        rows,
-        extraEnv,
+      const result = await openeralPty.openSession({ sandboxName, cols, rows, extraEnv });
+      openeralPty.attachHandlers(result.id, {
         onData: (data) => emitOpenEralPtyData(result.id, data),
         onExit: (exitCode, signal) => emitOpenEralPtyExit(result.id, exitCode, signal),
       });
@@ -1806,10 +1803,10 @@ async function handleDesktopInvoke(event, command, ...args) {
 
       const existing = openeralPty.findSessionBySandbox(sandboxName);
       if (existing) {
-        openeralPty.attachHandlers(existing.id, {
-          onData: (data) => emitOpenEralPtyData(existing.id, data),
-          onExit: (exitCode, signal) => emitOpenEralPtyExit(existing.id, exitCode, signal),
-        });
+        // Do NOT call attachHandlers here — the renderer hasn't set
+        // sessionIdRef yet, so any pty-data events emitted now would be
+        // dropped. The renderer will call openeralPtyAttach (phase 2) after
+        // setting sessionIdRef and replaying buffered scrollback.
         if (Number.isFinite(cols) && Number.isFinite(rows)) {
           openeralPty.resizeSession(existing.id, cols, rows);
         }
@@ -1822,15 +1819,23 @@ async function handleDesktopInvoke(event, command, ...args) {
       }
 
       const extraEnv = await buildOpenEralPtyEnv(cols, rows);
-      const result = await openeralPty.openSession({
-        sandboxName,
-        cols,
-        rows,
-        extraEnv,
+      const result = await openeralPty.openSession({ sandboxName, cols, rows, extraEnv });
+      openeralPty.attachHandlers(result.id, {
         onData: (data) => emitOpenEralPtyData(result.id, data),
         onExit: (exitCode, signal) => emitOpenEralPtyExit(result.id, exitCode, signal),
       });
       return { id: result.id, buffered: "", reused: false, exited: false };
+    }
+    case "openeralPtyAttach": {
+      // Phase 2 of lossless re-attach: the renderer has already set
+      // sessionIdRef.current and replayed buffered scrollback; now wire the
+      // live PTY output stream so no events are dropped.
+      const id = String(args[0] ?? "").trim();
+      if (!id) throw new Error("sessionId is required");
+      return openeralPty.attachHandlers(id, {
+        onData: (data) => emitOpenEralPtyData(id, data),
+        onExit: (exitCode, signal) => emitOpenEralPtyExit(id, exitCode, signal),
+      });
     }
     case "openeralPtyDetach": {
       // Renderer is unmounting on navigation — keep the wsl child + output
