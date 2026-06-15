@@ -13,7 +13,18 @@ export const DISTRO_NAME = "openwork-openshell";
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 function resolveWslExe() {
-  return process.env.OPENWORK_WSL_EXE || "wsl.exe";
+  const exe = process.env.OPENWORK_WSL_EXE || "wsl.exe";
+  return exe;
+}
+
+// On Windows, shell scripts (.sh) can't be spawned directly — they need
+// bash. Wrap them automatically so tests that set OPENWORK_WSL_EXE to a
+// .sh path work without modification on Windows.
+function resolveSpawnArgs(exe, args) {
+  if (process.platform === "win32" && exe.endsWith(".sh")) {
+    return { exe: "bash", args: [exe, ...args] };
+  }
+  return { exe, args };
 }
 
 // Older wsl.exe emits UTF-16 LE for `--list` etc.; newer versions emit
@@ -51,8 +62,9 @@ export async function wslRun(args, options = {}) {
     stdin,
     signal,
   } = options;
-  const exe = resolveWslExe();
-  const finalArgs = injectUser(args, user);
+  const rawExe = resolveWslExe();
+  const injected = injectUser(args, user);
+  const { exe, args: finalArgs } = resolveSpawnArgs(rawExe, injected);
 
   return new Promise((resolve, reject) => {
     let child;
@@ -114,8 +126,9 @@ export async function wslRun(args, options = {}) {
 
 export function wslSpawn(args, options = {}) {
   const { user, cwd, env } = options;
-  const exe = resolveWslExe();
-  const finalArgs = injectUser(args, user);
+  const rawExe = resolveWslExe();
+  const injected = injectUser(args, user);
+  const { exe, args: finalArgs } = resolveSpawnArgs(rawExe, injected);
 
   const child = spawn(exe, finalArgs, {
     cwd,

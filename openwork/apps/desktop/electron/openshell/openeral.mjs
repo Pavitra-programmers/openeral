@@ -381,6 +381,76 @@ function shellQuote(value) {
 }
 
 /**
+ * Try to restart the OpenShell gateway. Mirrors the three-path logic in
+ * main.mjs's openshellGatewayRestart handler so sandbox creation can
+ * self-heal without requiring a manual "Restart Gateway" click.
+ */
+async function restartGateway(onProgress) {
+  onProgress?.({ phase: "gateway-restart", message: "Auto-restarting OpenShell gateway…" });
+  // Path 1: systemd unit (openshell 0.0.37+); runs as banker user so the
+  // user-scoped systemd session is targeted correctly.
+  const r1 = await wslRun(
+    ["-d", DISTRO_NAME, "--", "systemctl", "--user", "restart", "openshell-gateway"],
+    { timeout: 60_000, user: "banker" },
+  ).catch(() => ({ exitCode: -1 }));
+  if (r1.exitCode === 0) return;
+  // Path 2: legacy CLI start (older openshell releases).
+  const r2 = await wslRun(
+    [
+      "-d",
+      DISTRO_NAME,
+      "--",
+      "bash",
+      "-c",
+      "openshell gateway start --recreate 2>/dev/null || " +
+        "openshell gateway start --detach 2>/dev/null || " +
+        "openshell gateway start 2>/dev/null",
+    ],
+    { timeout: 60_000 },
+  ).catch(() => ({ exitCode: -1 }));
+  if (r2.exitCode === 0) return;
+  // Path 3: docker restart fallback — finds the openshell cluster container
+  // and restarts it directly.
+  const listR = await wslRun(
+    [
+      "-d",
+      DISTRO_NAME,
+      "--",
+      "bash",
+      "-c",
+      "docker ps -a --filter 'name=openshell' --format '{{.Names}}'",
+    ],
+    { timeout: 15_000 },
+  ).catch(() => ({ exitCode: -1, stdout: "" }));
+  const containerNames = (listR.stdout || "")
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (containerNames.length > 0) {
+    await wslRun(
+      ["-d", DISTRO_NAME, "--", "docker", "restart", containerNames[0]],
+      { timeout: 60_000 },
+    ).catch(() => {});
+  }
+}
+
+/**
+ * Poll `openshell sandbox list --names` until the gateway responds with
+ * exit 0, confirming it is accepting connections again after a restart.
+ */
+async function waitForGateway(timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const r = await wslRun(
+      ["-d", DISTRO_NAME, "--", "bash", "-c", "timeout 5 openshell sandbox list --names"],
+      { timeout: 10_000 },
+    ).catch(() => ({ exitCode: -1 }));
+    if (r.exitCode === 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+}
+
+/**
  * Create (or resume into) an OpenEral sandbox. Sandbox naming is stable
  * per-workspace — re-running with the same name on the same Postgres
  * is OpenEral's whole portability story.
@@ -391,9 +461,20 @@ function shellQuote(value) {
  * @param {(evt: {phase: string, message: string}) => void} [opts.onProgress]
  * @param {boolean} [opts.skipImagePull]  Skip the docker pull (testing)
  * @param {number} [opts.createTimeoutMs]
+ * @param {boolean} [opts._gatewayRestartAttempted]  Internal: prevents infinite restart loop
+ * @param {number} [opts._testWaitTimeoutMs]  Internal: overrides waitForSandboxReady timeout (testing)
+ * @param {number} [opts._testPollMs]         Internal: overrides waitForSandboxReady poll interval (testing)
  */
 export async function createOpenEralSandbox(opts) {
-  const { name, profile, onProgress, skipImagePull = false } = opts;
+  const {
+    name,
+    profile,
+    onProgress,
+    skipImagePull = false,
+    _gatewayRestartAttempted = false,
+    _testWaitTimeoutMs,
+    _testPollMs,
+  } = opts;
   if (!name) throw new Error("createOpenEralSandbox: name is required");
   if (!profile) throw new Error("createOpenEralSandbox: profile is required");
 
@@ -413,6 +494,8 @@ export async function createOpenEralSandbox(opts) {
     let existingReady = false;
     try {
       await waitForSandboxReady(name, {
+        timeoutMs: _testWaitTimeoutMs ?? 120_000,
+        pollMs: _testPollMs ?? 4_000,
         onProgress: (evt) => onProgress?.({ phase: evt.phase, message: evt.message }),
       });
       existingReady = true;
@@ -460,18 +543,15 @@ export async function createOpenEralSandbox(opts) {
     });
   }
 
-  // Forward credentials into the Linux side of WSL via WSLENV.
-  // ANTHROPIC_API_KEY is always forwarded so --auto-providers can
-  // auto-create the `claude` provider. For openclaw, also forward
-  // OPENERAL_AGENT=openclaw so the openeral wrapper picks the right
-  // agent at runtime.
+  // Forward ANTHROPIC_API_KEY into the Linux side of WSL via WSLENV
+  // so `--provider claude` can register the claude provider.
+  // Agent kind is determined by the /sandbox/openeral-agent marker file
+  // (uploaded atomically during create), not by WSLENV — this prevents
+  // cross-contamination from globally-registered openshell providers.
   const stringcostApiKey = await getCredential("stringcostApiKey");
   const forwarded = { ANTHROPIC_API_KEY: anthropicApiKey };
   if (stringcostApiKey) {
     forwarded.STRINGCOST_API_KEY = stringcostApiKey;
-  }
-  if (profile === "openeral-openclaw") {
-    forwarded.OPENERAL_AGENT = "openclaw";
   }
   const env = buildWslEnvForwarding(forwarded);
 
@@ -497,24 +577,21 @@ export async function createOpenEralSandbox(opts) {
   // "Error: × No such file or directory (os error 2)" from the failed
   // exec.
   const dbPath = `/tmp/openeral-db-url-${randomUUID()}`;
-  // Keep the create command simple — use `-- /bin/true` so openshell
-  // returns as soon as provisioning is done (no trailing command to race
-  // against the --auto-providers setup).
+  const keyPath = `/tmp/openeral-api-key-${randomUUID()}`;
+  // --auto-providers is intentionally absent: it activates every globally-registered
+  // openshell provider, including the openclaw generic provider which delivers
+  // OPENERAL_AGENT=openclaw into ALL sandboxes — contaminating claude-profile sandboxes.
   //
-  // openshell CLI 0.0.42 has a race: when --auto-providers is combined
-  // with a non-trivial `-- CMD`, the provider finalisation and the CMD
-  // exec both touch the gateway concurrently and one of them returns
-  // gRPC NotFound, aborting the create with exit 1.  Using `-- /bin/true`
-  // (exits in ~0 ms) avoids the window where the race can manifest.
-  //
-  // ANTHROPIC_API_KEY delivery for setup.sh's StringCost presign step:
-  // we write /sandbox/anthropic-api-key via a separate `sandbox exec`
-  // call AFTER create, so there is no quoting complexity inside the
-  // create command.  setup.sh falls back gracefully if the exec fails
-  // (it skips the presign step when ANTHROPIC_API_KEY is a placeholder).
+  // Instead we name the provider explicitly per profile:
+  //   claude   → --provider claude  (delivers ANTHROPIC_API_KEY via openshell proxy)
+  //   openclaw → --provider openclaw (delivers OPENERAL_AGENT=openclaw so setup.sh
+  //                                   selects the right agent; setup.sh reads the
+  //                                   ANTHROPIC_API_KEY from the uploaded file)
+  const providerFlag = profile === "openeral-openclaw" ? "--provider openclaw" : "--provider claude";
+
   // NOTE: do NOT use `exec openshell sandbox create ...` here.
   // `exec` replaces the bash process, which means the EXIT trap set
-  // below never fires and the temp DB-URL file leaks in /tmp forever.
+  // below never fires and the temp files leak in /tmp forever.
   // Running openshell as a regular child (no exec) lets bash honour
   // the trap on exit — whether the create succeeds or fails.
   const script = [
@@ -523,13 +600,19 @@ export async function createOpenEralSandbox(opts) {
     // DATABASE_URL is piped via stdin — never touches the command line.
     `cat > ${dbPath}`,
     `chmod 600 ${dbPath}`,
-    // Staging file is removed on exit whether create succeeds or fails.
-    `trap 'rm -f ${dbPath}' EXIT`,
+    // ANTHROPIC_API_KEY is uploaded atomically alongside db-url so
+    // setup.sh has it from the moment the sandbox first boots, regardless
+    // of provider-placeholder resolution.
+    `printf %s ${shellQuote(anthropicApiKey)} > ${keyPath}`,
+    `chmod 600 ${keyPath}`,
+    // Both staging files are removed on exit whether create succeeds or fails.
+    `trap 'rm -f ${dbPath} ${keyPath}' EXIT`,
     `openshell sandbox create --no-tty ` +
       `--name ${shellQuote(name)} ` +
       `--from ${shellQuote(imageRef)} ` +
       `--upload ${dbPath}:/sandbox/db-url ` +
-      `--provider claude --auto-providers ` +
+      `--upload ${keyPath}:/sandbox/anthropic-api-key ` +
+      `${providerFlag} ` +
       `-- /bin/true`,
   ].join("\n");
 
@@ -546,6 +629,20 @@ export async function createOpenEralSandbox(opts) {
     );
   } catch (err) {
     if (/wsl\.exe timed out/i.test(err?.message ?? "")) {
+      // Auto-restart the gateway on first timeout, then retry once.
+      if (!_gatewayRestartAttempted) {
+        onProgress?.({
+          phase: "gateway-restart",
+          message: "Sandbox creation timed out; restarting OpenShell gateway and retrying…",
+        });
+        await restartGateway(onProgress);
+        await waitForGateway(30_000);
+        return createOpenEralSandbox({
+          ...opts,
+          _gatewayRestartAttempted: true,
+          skipImagePull: true,
+        });
+      }
       throw new Error(
         `openshell sandbox create timed out after 3 minutes. ` +
           `The OpenShell gateway or Docker daemon is not responding. ` +
@@ -576,7 +673,8 @@ export async function createOpenEralSandbox(opts) {
         onProgress?.({ phase: "waiting", message: `Sandbox ${name} is provisioning; waiting for Ready state…` });
         try {
           await waitForSandboxReady(name, {
-            timeoutMs: 5 * 60_000,
+            timeoutMs: _testWaitTimeoutMs ?? 5 * 60_000,
+            pollMs: _testPollMs ?? 4_000,
             onProgress: (evt) => onProgress?.({ phase: evt.phase, message: evt.message }),
           });
           return { name, profile, imageRef, existed: false };
@@ -601,6 +699,24 @@ export async function createOpenEralSandbox(opts) {
         }
       }
     }
+    // gRPC "stream closed" or "Cancelled" — the gateway dropped the
+    // connection mid-provisioning (Docker networking issue or gateway
+    // crash). Restart the gateway, clean up any partially-created sandbox,
+    // and retry once automatically.
+    if (/stream closed|status.*cancelled/i.test(output) && !_gatewayRestartAttempted) {
+      onProgress?.({
+        phase: "gateway-restart",
+        message: "Gateway stream closed; restarting OpenShell gateway and retrying…",
+      });
+      await deleteOpenEralSandbox(name).catch(() => {});
+      await restartGateway(onProgress);
+      await waitForGateway(30_000);
+      return createOpenEralSandbox({
+        ...opts,
+        _gatewayRestartAttempted: true,
+        skipImagePull: true,
+      });
+    }
     const cli = await getCliInfo().catch(() => null);
     const versionTag = cli?.version ? ` [CLI ${cli.version}]` : "";
     throw new Error(
@@ -608,22 +724,6 @@ export async function createOpenEralSandbox(opts) {
         `${output || "(no output)"}`,
     );
   }
-  // Write the API key file so setup.sh can create a StringCost presign
-  // with the real key (not the openshell:resolve:env:* placeholder).
-  // This runs as a separate exec AFTER create so there is no interaction
-  // with --auto-providers.  Non-fatal: if the exec fails, setup.sh
-  // skips the presign step and uses the placeholder / env-var fallback.
-  const writeKeyScript =
-    `openshell sandbox exec --name ${shellQuote(name)} -- ` +
-    `sh -c ${shellQuote(`mkdir -p /sandbox && printf %s ${shellQuote(anthropicApiKey)} > /sandbox/anthropic-api-key && chmod 600 /sandbox/anthropic-api-key`)}`;
-  await wslRun(["-d", DISTRO_NAME, "--", "bash", "-c", writeKeyScript], {
-    timeout: 30_000,
-    env,
-  }).catch((e) => {
-    // Non-fatal — setup.sh has an explicit fallback for missing key file.
-    console.warn("[createOpenEralSandbox] key-file write via exec failed (non-fatal):", e.message);
-  });
-
   // `sandbox create -- /bin/true` exits 0 as soon as the gateway REGISTERS
   // the sandbox, but setup.sh inside the container may still be running.
   // Wait for Ready before returning so the PTY never connects to a
@@ -631,7 +731,8 @@ export async function createOpenEralSandbox(opts) {
   onProgress?.({ phase: "waiting", message: `Sandbox ${name} created; waiting for Ready state…` });
   try {
     await waitForSandboxReady(name, {
-      timeoutMs: 5 * 60_000,
+      timeoutMs: _testWaitTimeoutMs ?? 5 * 60_000,
+      pollMs: _testPollMs ?? 4_000,
       onProgress: (evt) => onProgress?.({ phase: evt.phase, message: evt.message }),
     });
   } catch (waitErr) {
