@@ -48,6 +48,16 @@ const DEFAULT_PULL_TIMEOUT_MS = 10 * 60_000;
 const DEFAULT_CREATE_TIMEOUT_MS = 3 * 60_000;
 const DEFAULT_PROBE_TIMEOUT_MS = 15_000;
 
+// StringCost cost-tracking control plane. Defaults to the hosted service;
+// override with STRINGCOST_API_BASE=http://<host>:8080 to point at a
+// self-hosted stack for local end-to-end testing. Mirrors the same default
+// and override the sandbox's setup.sh uses internally.
+const STRINGCOST_API_BASE = (process.env.STRINGCOST_API_BASE || "https://app.stringcost.com").replace(
+  /\/+$/,
+  "",
+);
+const STRINGCOST_PRESIGN_TIMEOUT_MS = 30_000;
+
 // Docker pulls happen under user `banker` inside the distro. If Docker
 // Desktop's WSL integration ever ran for this distro (or runs again on
 // a future boot) it can write a `credsStore: "desktop"` line into
@@ -207,6 +217,74 @@ function parseListTextPhase(stdout, sandboxName) {
   }
 
   return null;
+}
+
+/**
+ * List all sandboxes by parsing the plain `openshell sandbox list` ANSI text
+ * table into structured rows `{ name, created, phase }`.
+ *
+ * CLI 0.0.45 does NOT support `--json` for `sandbox list` (it errors with
+ * "unexpected argument '--json' found"), so the JSON path in client.mjs throws
+ * and the OpenEral session list comes back empty. This text parser is the
+ * reliable source for the Sandboxes manager. Best-effort: returns [] when the
+ * gateway is unreachable or no rows parse.
+ *
+ * @returns {Promise<Array<{ name: string, created: string, phase: string }>>}
+ */
+export async function listSandboxes() {
+  let r;
+  try {
+    r = await wslRun(
+      ["-d", DISTRO_NAME, "--", "bash", "-c", "timeout 15 openshell sandbox list"],
+      { timeout: 25_000 },
+    );
+  } catch {
+    return [];
+  }
+  if (r.exitCode !== 0) return [];
+  // Strip ANSI colour/style codes, then parse by the header's column offsets.
+  const clean = r.stdout.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
+  const lines = clean.split(/\r?\n/);
+  let headerLine = null;
+  let nameOff = -1;
+  let createdOff = -1;
+  let phaseOff = -1;
+  for (const line of lines) {
+    const up = line.toUpperCase();
+    if (up.includes("NAME") && up.includes("PHASE")) {
+      headerLine = line;
+      nameOff = up.indexOf("NAME");
+      createdOff = up.indexOf("CREATED");
+      phaseOff = up.indexOf("PHASE");
+      break;
+    }
+  }
+  const rows = [];
+  let pastHeader = false;
+  for (const line of lines) {
+    if (!pastHeader) {
+      if (line === headerLine) pastHeader = true;
+      continue;
+    }
+    if (!line.trim()) continue;
+    let name;
+    let created;
+    let phase;
+    if (nameOff >= 0 && phaseOff > nameOff) {
+      const nameEnd = createdOff > nameOff ? createdOff : phaseOff;
+      name = line.slice(nameOff, nameEnd).trim();
+      created = createdOff >= 0 ? line.slice(createdOff, phaseOff).trim() : "";
+      phase = (line.slice(phaseOff).trim().split(/\s+/)[0] ?? "").trim();
+    } else {
+      // Fallback: split on runs of 2+ spaces.
+      const parts = line.trim().split(/\s{2,}/);
+      name = (parts[0] ?? "").trim();
+      created = parts.length >= 3 ? parts[1].trim() : "";
+      phase = (parts[parts.length - 1] ?? "").trim();
+    }
+    if (name) rows.push({ name, created, phase });
+  }
+  return rows;
 }
 
 /**
@@ -381,6 +459,360 @@ function shellQuote(value) {
 }
 
 /**
+ * Derive the `ANTHROPIC_BASE_URL` an agent should use from a StringCost
+ * presign URL.
+ *
+ * The control plane mints a single-path presign whose URL already ends in
+ * `/v1/messages` (e.g. `https://proxy.stringcost.com/stringcost-proxy/t/<token>/v1/messages`).
+ * Claude Code / OpenClaw append `/v1/messages` themselves, so the base URL
+ * we hand them must NOT include it — otherwise the proxy sees
+ * `/v1/messages/v1/messages` and rejects it with "Path not authorized".
+ *
+ * Accepts the hosted shape (proxy.stringcost.com) and any self-hosted
+ * `http(s)://<host>/stringcost-proxy/t/<token>` shape. Returns null when the
+ * URL doesn't look like a StringCost proxy URL so callers can skip the
+ * injection rather than write a garbage base URL.
+ *
+ * @param {string} presignUrl
+ * @returns {string | null}
+ */
+function stringcostBaseUrlForAgent(presignUrl) {
+  if (typeof presignUrl !== "string") return null;
+  let url = presignUrl.trim().replace(/\/+$/, ""); // drop trailing slash(es)
+  url = url.replace(/\/v1\/messages$/, "").replace(/\/+$/, "");
+  if (!/^https?:\/\/[^/]+\/stringcost-proxy\/t\/[^/]+$/.test(url)) return null;
+  return url;
+}
+
+/**
+ * Build an `openshell sandbox exec` command that runs an arbitrary multi-line
+ * shell script inside the container without nested-quoting hell: the script is
+ * base64-encoded on the host and decoded + piped to `sh` in the sandbox. Only
+ * the base64 blob (A–Z a–z 0–9 + / =) crosses the command line, so embedded
+ * quotes, newlines, and `$` in the script never need escaping.
+ *
+ * @param {string} name  Sandbox name
+ * @param {string} script  POSIX sh script to run in the container
+ * @returns {string}  A `bash -c`-ready command string
+ */
+function sandboxRunScriptCmd(name, script) {
+  const b64 = Buffer.from(script, "utf8").toString("base64");
+  return (
+    `openshell sandbox exec --name ${shellQuote(name)} -- ` +
+    `sh -c ${shellQuote(`printf %s ${shellQuote(b64)} | base64 -d | sh`)}`
+  );
+}
+
+/**
+ * Ensure the distro has `scp`/`ssh` (openssh-client) before any sandbox op.
+ *
+ * `openshell sandbox create --upload`, `exec`, `connect`, and `download` all
+ * shell out to the local scp/ssh binaries. On a distro imported from a rootfs
+ * that predates the openssh-client requirement — or where the docker install
+ * phase ran before this dependency was added — those binaries are missing and
+ * EVERY sandbox operation dies with a cryptic
+ * `Error: × No such file or directory (os error 2)` (Rust's Command::spawn
+ * failing to find the binary, not a missing upload source).
+ *
+ * The installer's docker phase now bakes openssh-client in, but that phase is
+ * marked complete on already-provisioned distros and won't re-run — so this
+ * guard self-heals existing installs. It's a fast `command -v` check that only
+ * apt-installs (root, ~5s) when scp/ssh are actually absent.
+ *
+ * @param {(evt: {phase: string, message: string}) => void} [onProgress]
+ */
+async function ensureOpensshClient(onProgress) {
+  const present = await wslRun(
+    ["-d", DISTRO_NAME, "--", "bash", "-c", "command -v scp >/dev/null && command -v ssh >/dev/null"],
+    { timeout: 15_000 },
+  ).catch(() => ({ exitCode: 1 }));
+  if (present.exitCode === 0) return;
+
+  onProgress?.({
+    phase: "deps",
+    message: "Installing openssh-client (required for sandbox file transfer)…",
+  });
+  const script = [
+    "set -e",
+    "export DEBIAN_FRONTEND=noninteractive",
+    "apt-get update -qq",
+    "apt-get install -y openssh-client",
+  ].join("\n");
+  const r = await wslRun(
+    ["-d", DISTRO_NAME, "--user", "root", "--", "bash", "-c", script],
+    { timeout: 5 * 60_000 },
+  ).catch((err) => ({ exitCode: -1, stdout: "", stderr: err?.message ?? String(err) }));
+  if (r.exitCode !== 0) {
+    throw new Error(
+      `openssh-client is missing from the "${DISTRO_NAME}" distro and could not be ` +
+        `installed automatically — openshell needs scp/ssh to provision sandboxes. ` +
+        `Install it manually with: wsl -d ${DISTRO_NAME} --user root -- ` +
+        `apt-get install -y openssh-client  ` +
+        `(apt error: ${(r.stderr || r.stdout || "unknown").trim().slice(0, 200)})`,
+    );
+  }
+}
+
+/**
+ * Configure how the agent starts inside the sandbox: export the StringCost
+ * proxy env (when a presign was minted) and auto-launch the agent so the user
+ * never has to type `claude`.
+ *
+ * Why this is needed: the published image's entrypoint is /bin/bash and
+ * OpenShell's supervisor starts the agent as an interactive `bash -i`. That
+ * sources /sandbox/.bashrc but never runs the image's /opt/openeral/setup.sh,
+ * so (a) the uploaded StringCost presign is ignored — the agent talks to
+ * Anthropic directly and nothing is metered — and (b) the session drops to a
+ * shell prompt instead of launching the agent. We fix both by writing a single
+ * managed block to /sandbox/.bashrc:
+ *   - export ANTHROPIC_BASE_URL (proxy) + a throwaway ANTHROPIC_AUTH_TOKEN and
+ *     unset the OpenShell placeholder ANTHROPIC_API_KEY (StringCost auths via
+ *     the token embedded in the proxy URL and bills the real key stored with
+ *     the presign);
+ *   - `exec <agent>` so Claude Code / OpenClaw starts directly. The guard
+ *     (OPENWORK_AGENT_LAUNCHED + a tty check) makes sure only the top-level
+ *     interactive shell auto-launches — nested shells the agent itself spawns
+ *     inherit OPENWORK_AGENT_LAUNCHED=1 and fall through to a normal shell.
+ * For Claude Code we also merge ANTHROPIC_BASE_URL into ~/.claude/settings.json
+ * so it applies even if a launch isn't an interactive bash.
+ *
+ * Idempotent (drops any prior block first) and best-effort (a failure leaves
+ * the sandbox usable, just without auto-launch / metering).
+ *
+ * @param {{ name: string, profile: string, proxyBase: string | null,
+ *           env: NodeJS.ProcessEnv, onProgress?: Function }} args
+ */
+async function configureAgentLaunch({ name, profile, proxyBase, env, onProgress }) {
+  const isClaude = profile !== "openeral-openclaw";
+  const agentCmd = isClaude ? "claude" : "openclaw";
+
+  // Built literally into /sandbox/.bashrc via a quoted heredoc — `$` stays
+  // literal so bash expands OPENWORK_AGENT_LAUNCHED/`$-` at source time, not now.
+  const block = ["# >>> openwork launch >>>"];
+  if (proxyBase) {
+    block.push(
+      `export ANTHROPIC_BASE_URL="${proxyBase}"`,
+      'export ANTHROPIC_AUTH_TOKEN="openwork-stringcost"',
+      "unset ANTHROPIC_API_KEY",
+    );
+  }
+  block.push(
+    'if [ -z "${OPENWORK_AGENT_LAUNCHED:-}" ] && [ -t 0 ]; then',
+    "  export OPENWORK_AGENT_LAUNCHED=1",
+    // Wipe the terminal (screen + scrollback) so the OpenShell connect
+    // handshake / shell-init escape noise — the "gibberish first line" — is
+    // gone before the agent's TUI paints. \033[3J also clears scrollback.
+    "  printf '\\033[2J\\033[3J\\033[H'",
+    `  exec ${agentCmd}`,
+    "fi",
+    "# <<< openwork launch <<<",
+  );
+
+  const lines = [
+    "set -e",
+    "RC=/sandbox/.bashrc",
+    '[ -f "$RC" ] || : > "$RC"',
+    // Idempotent: drop any prior managed block so re-creates update cleanly.
+    "sed -i '/# >>> openwork launch >>>/,/# <<< openwork launch <<</d' \"$RC\" 2>/dev/null || true",
+    'cat >> "$RC" <<\'OPENWORK_LAUNCH_EOF\'',
+    block.join("\n"),
+    "OPENWORK_LAUNCH_EOF",
+  ];
+  if (isClaude && proxyBase) {
+    lines.push(
+      "mkdir -p /sandbox/.claude",
+      `node -e 'const fs=require("fs");const f="/sandbox/.claude/settings.json";let s={};try{s=JSON.parse(fs.readFileSync(f,"utf8")||"{}")}catch(e){}s.env=Object.assign({},s.env,{ANTHROPIC_BASE_URL:"${proxyBase}",ANTHROPIC_AUTH_TOKEN:"openwork-stringcost"});fs.writeFileSync(f,JSON.stringify(s,null,2))' 2>/dev/null || true`,
+    );
+  }
+
+  await wslRun(
+    ["-d", DISTRO_NAME, "--", "bash", "-c", sandboxRunScriptCmd(name, lines.join("\n"))],
+    { timeout: 30_000, env },
+  )
+    .then(() =>
+      onProgress?.({
+        phase: "launch",
+        message: proxyBase
+          ? "StringCost cost tracking enabled; agent will auto-launch."
+          : "Agent will auto-launch on connect.",
+      }),
+    )
+    .catch((e) => {
+      // Non-fatal — sandbox still works; user can launch the agent manually.
+      console.warn(
+        "[createOpenEralSandbox] agent launch configuration failed (non-fatal):",
+        e.message,
+      );
+    });
+}
+
+/**
+ * Read an already-uploaded StringCost presign URL back out of a sandbox, so a
+ * reconnect reuses it instead of minting a fresh presign every launch. Returns
+ * null when none is present.
+ *
+ * @param {string} name
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {Promise<string | null>}
+ */
+async function readSandboxPresignUrl(name, env) {
+  const cmd =
+    `openshell sandbox exec --name ${shellQuote(name)} -- ` +
+    `sh -c ${shellQuote("cat /sandbox/openeral-input/presign.json 2>/dev/null || true")}`;
+  const r = await wslRun(["-d", DISTRO_NAME, "--", "bash", "-c", cmd], {
+    timeout: 20_000,
+    env,
+  }).catch(() => null);
+  if (!r || r.exitCode !== 0) return null;
+  const m = r.stdout.match(/https:\/\/[^"\s]+/);
+  return m ? m[0] : null;
+}
+
+/**
+ * Finalize a Ready sandbox for launch: write the real ANTHROPIC_API_KEY file,
+ * resolve the StringCost proxy base (reuse an uploaded presign, else mint one),
+ * and configure the auto-launch + proxy env. Runs on BOTH fresh-create and
+ * reconnect so reopening an existing workspace also gets auto-launch + metering.
+ *
+ * MUST be called only after the sandbox is Ready — every step shells out via
+ * `openshell sandbox exec`, which refuses while the sandbox is Provisioning.
+ * All steps are best-effort: failures degrade gracefully (no metering /
+ * manual agent launch) rather than failing the session.
+ *
+ * @param {{ name: string, profile: string, env: NodeJS.ProcessEnv,
+ *           onProgress?: Function }} args
+ */
+async function finalizeSandboxLaunch({ name, profile, env, onProgress }) {
+  const anthropicApiKey = await getCredential("anthropicApiKey").catch(() => null);
+  if (anthropicApiKey) {
+    const writeKeyScript =
+      `openshell sandbox exec --name ${shellQuote(name)} -- ` +
+      `sh -c ${shellQuote(`mkdir -p /sandbox && printf %s ${shellQuote(anthropicApiKey)} > /sandbox/anthropic-api-key && chmod 600 /sandbox/anthropic-api-key`)}`;
+    await wslRun(["-d", DISTRO_NAME, "--", "bash", "-c", writeKeyScript], {
+      timeout: 30_000,
+      env,
+    }).catch((e) =>
+      console.warn("[createOpenEralSandbox] key-file write failed (non-fatal):", e.message),
+    );
+  }
+
+  let proxyBase = null;
+  const stringcostApiKey = await getCredential("stringcostApiKey").catch(() => null);
+  if (stringcostApiKey) {
+    // Reuse a presign already uploaded on a prior launch before minting anew.
+    const existingUrl = await readSandboxPresignUrl(name, env);
+    if (existingUrl) {
+      proxyBase = stringcostBaseUrlForAgent(existingUrl);
+    } else if (anthropicApiKey) {
+      const agentLabel = profile === "openeral-openclaw" ? "openclaw" : "claude-code";
+      const presignUrl = await createStringcostPresign({
+        anthropicApiKey,
+        stringcostApiKey,
+        agentLabel,
+      });
+      if (presignUrl) {
+        const presignJson = JSON.stringify({ url: presignUrl });
+        const writePresignScript =
+          `openshell sandbox exec --name ${shellQuote(name)} -- ` +
+          `sh -c ${shellQuote(
+            `mkdir -p /sandbox/openeral-input && printf %s ${shellQuote(presignJson)} > /sandbox/openeral-input/presign.json && chmod 600 /sandbox/openeral-input/presign.json`,
+          )}`;
+        await wslRun(["-d", DISTRO_NAME, "--", "bash", "-c", writePresignScript], {
+          timeout: 30_000,
+          env,
+        }).catch((e) =>
+          console.warn("[createOpenEralSandbox] presign upload failed (non-fatal):", e.message),
+        );
+        proxyBase = stringcostBaseUrlForAgent(presignUrl);
+      }
+    }
+  }
+
+  await configureAgentLaunch({ name, profile, proxyBase, env, onProgress });
+}
+
+/**
+ * Mint a permanent StringCost presign on the HOST, mirroring the request
+ * `setup.sh` makes from inside the sandbox.
+ *
+ * Why on the host and not in the sandbox: setup.sh can only mint its own
+ * presign when both STRINGCOST_API_KEY and a *real* ANTHROPIC_API_KEY are
+ * present in the container env. Under OpenShell, provider-delivered keys
+ * arrive as `openshell:resolve:env:*` placeholders that setup.sh cannot use
+ * for an outbound presign call — so setup.sh explicitly expects a
+ * host-created `presign.json` to be uploaded instead (it reads
+ * `/sandbox/openeral-input/presign.json`). Host env vars forwarded via
+ * WSLENV never reach the sandbox container, so the uploaded file is the
+ * only reliable delivery channel.
+ *
+ * The presign routes the agent's `/v1/messages` calls through the StringCost
+ * proxy for token + cost metering. `metadata.labels` is what StringCost's
+ * vendor-portfolio classifier reads, so spend is attributed to the right
+ * agent (`claude-code` or `openclaw`).
+ *
+ * Entirely best-effort: returns the presign URL string, or `null` on any
+ * failure (network, non-2xx, malformed response, missing fetch). Callers
+ * treat a null as "launch the sandbox without StringCost".
+ *
+ * @param {{ anthropicApiKey: string, stringcostApiKey: string, agentLabel: "claude-code" | "openclaw" }} args
+ * @returns {Promise<string | null>}
+ */
+async function createStringcostPresign({ anthropicApiKey, stringcostApiKey, agentLabel }) {
+  if (typeof fetch !== "function") {
+    console.warn("[createOpenEralSandbox] global fetch unavailable — skipping StringCost presign");
+    return null;
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), STRINGCOST_PRESIGN_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${STRINGCOST_API_BASE}/v1/presign`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${stringcostApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        provider: "anthropic",
+        client_api_key: anthropicApiKey,
+        path: ["/v1/messages"],
+        // Permanent, unmetered presign — the StringCost proxy enforces the
+        // cost_limit, and the sandbox reuses this presign across sessions.
+        expires_in: -1,
+        max_uses: -1,
+        cost_limit: 10000000,
+        metadata: {
+          source: "openwork-desktop",
+          client: agentLabel,
+          labels: ["openeral", agentLabel],
+        },
+      }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "");
+      console.warn(
+        `[createOpenEralSandbox] StringCost presign failed (${res.status}): ${detail.slice(0, 300)}`,
+      );
+      return null;
+    }
+    const data = await res.json().catch(() => null);
+    const url = data && typeof data.url === "string" ? data.url : null;
+    if (!url) {
+      console.warn("[createOpenEralSandbox] StringCost presign returned no URL");
+      return null;
+    }
+    return url;
+  } catch (err) {
+    console.warn(
+      `[createOpenEralSandbox] StringCost presign error: ${err?.message || String(err)}`,
+    );
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Create (or resume into) an OpenEral sandbox. Sandbox naming is stable
  * per-workspace — re-running with the same name on the same Postgres
  * is OpenEral's whole portability story.
@@ -398,6 +830,12 @@ export async function createOpenEralSandbox(opts) {
   if (!profile) throw new Error("createOpenEralSandbox: profile is required");
 
   const imageRef = imageForProfile(profile);
+
+  // openshell shells out to scp/ssh for create --upload AND for exec/connect.
+  // Make sure they exist before any sandbox op so we never dead-end at the
+  // opaque "No such file or directory (os error 2)" — this also covers the
+  // reconnect path below, which connects/execs into the existing sandbox.
+  await ensureOpensshClient(onProgress);
 
   // Short-circuit if the sandbox already exists (workspace reopen).
   // Wait for it to reach Ready state before returning so the subsequent
@@ -433,6 +871,11 @@ export async function createOpenEralSandbox(opts) {
       }
     }
     if (existingReady) {
+      // Reopening an existing sandbox: (re)apply auto-launch + StringCost env so
+      // the agent starts directly and meters even on reconnect. env isn't built
+      // until after credential validation below, so use process.env here — the
+      // exec just writes files with values baked into the script (no WSLENV).
+      await finalizeSandboxLaunch({ name, profile, env: process.env, onProgress });
       return { name, profile, imageRef, existed: true };
     }
     // Fall through to create a fresh sandbox.
@@ -465,11 +908,13 @@ export async function createOpenEralSandbox(opts) {
   // auto-create the `claude` provider. For openclaw, also forward
   // OPENERAL_AGENT=openclaw so the openeral wrapper picks the right
   // agent at runtime.
-  const stringcostApiKey = await getCredential("stringcostApiKey");
+  //
+  // NOTE: STRINGCOST_API_KEY is deliberately NOT forwarded here. WSLENV only
+  // makes a value visible to the openshell CLI in the WSL distro — it never
+  // reaches the sandbox container. StringCost is delivered the way the agent
+  // actually consumes it: finalizeSandboxLaunch (post-Ready) mints a presign
+  // and writes ANTHROPIC_BASE_URL into the agent's launch env.
   const forwarded = { ANTHROPIC_API_KEY: anthropicApiKey };
-  if (stringcostApiKey) {
-    forwarded.STRINGCOST_API_KEY = stringcostApiKey;
-  }
   if (profile === "openeral-openclaw") {
     forwarded.OPENERAL_AGENT = "openclaw";
   }
@@ -579,6 +1024,7 @@ export async function createOpenEralSandbox(opts) {
             timeoutMs: 5 * 60_000,
             onProgress: (evt) => onProgress?.({ phase: evt.phase, message: evt.message }),
           });
+          await finalizeSandboxLaunch({ name, profile, env, onProgress });
           return { name, profile, imageRef, existed: false };
         } catch (waitErr) {
           const waitMsg = waitErr?.message ?? "";
@@ -608,22 +1054,6 @@ export async function createOpenEralSandbox(opts) {
         `${output || "(no output)"}`,
     );
   }
-  // Write the API key file so setup.sh can create a StringCost presign
-  // with the real key (not the openshell:resolve:env:* placeholder).
-  // This runs as a separate exec AFTER create so there is no interaction
-  // with --auto-providers.  Non-fatal: if the exec fails, setup.sh
-  // skips the presign step and uses the placeholder / env-var fallback.
-  const writeKeyScript =
-    `openshell sandbox exec --name ${shellQuote(name)} -- ` +
-    `sh -c ${shellQuote(`mkdir -p /sandbox && printf %s ${shellQuote(anthropicApiKey)} > /sandbox/anthropic-api-key && chmod 600 /sandbox/anthropic-api-key`)}`;
-  await wslRun(["-d", DISTRO_NAME, "--", "bash", "-c", writeKeyScript], {
-    timeout: 30_000,
-    env,
-  }).catch((e) => {
-    // Non-fatal — setup.sh has an explicit fallback for missing key file.
-    console.warn("[createOpenEralSandbox] key-file write via exec failed (non-fatal):", e.message);
-  });
-
   // `sandbox create -- /bin/true` exits 0 as soon as the gateway REGISTERS
   // the sandbox, but setup.sh inside the container may still be running.
   // Wait for Ready before returning so the PTY never connects to a
@@ -656,6 +1086,11 @@ export async function createOpenEralSandbox(opts) {
     }
     throw waitErr;
   }
+  // Now that the sandbox is Ready, write the API key, resolve the StringCost
+  // presign, and configure auto-launch + proxy env. Doing this AFTER Ready is
+  // essential — `openshell sandbox exec` refuses while the sandbox is still
+  // Provisioning, which silently skipped these steps when they ran pre-Ready.
+  await finalizeSandboxLaunch({ name, profile, env, onProgress });
   onProgress?.({ phase: "ready", message: `Sandbox ${name} ready.` });
   return { name, profile, imageRef, existed: false };
 }
@@ -733,4 +1168,8 @@ export const __testing = {
   IMAGE_BY_PROFILE,
   buildWslEnvForwarding,
   shellQuote,
+  createStringcostPresign,
+  stringcostBaseUrlForAgent,
+  sandboxRunScriptCmd,
+  configureAgentLaunch,
 };

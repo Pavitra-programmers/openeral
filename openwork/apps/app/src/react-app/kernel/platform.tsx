@@ -58,9 +58,32 @@ function shouldOpenInCurrentTab(url: string) {
   return /^(mailto|tel):/i.test(url.trim());
 }
 
+/**
+ * Resolve the host OS. The Electron preload exposes the authoritative
+ * value (`process.platform`, normalized to darwin/windows/linux) at
+ * `window.__OPENWORK_ELECTRON__.meta.platform`; fall back to a userAgent
+ * sniff for the web build or if the bridge isn't ready yet.
+ *
+ * Without this, `os` was always `undefined`, which permanently disabled
+ * the "Install OpenShell" button (its gate is `os !== "windows"`).
+ */
+function detectOs(): Platform["os"] {
+  if (typeof window === "undefined") return undefined;
+  const fromBridge = window.__OPENWORK_ELECTRON__?.meta?.platform;
+  if (fromBridge === "darwin") return "macos";
+  if (fromBridge === "windows") return "windows";
+  if (fromBridge === "linux") return "linux";
+  const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
+  if (/Windows/i.test(ua)) return "windows";
+  if (/Mac OS X|Macintosh/i.test(ua)) return "macos";
+  if (/Linux|X11|CrOS/i.test(ua)) return "linux";
+  return undefined;
+}
+
 export function createDefaultPlatform(): Platform {
   return {
     platform: isDesktopRuntime() ? "desktop" : "web",
+    os: detectOs(),
     openLink(url: string) {
       if (isDesktopRuntime()) {
         void openDesktopUrl(url).catch(() => undefined);

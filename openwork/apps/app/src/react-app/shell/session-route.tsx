@@ -1747,17 +1747,28 @@ export function SessionRoute() {
       }}
       onOpenSettings={() => navigate("/settings/general")}
       headerActions={
-        openeralProfile && openeralView === "chat" ? (
+        <div className="flex items-center gap-1.5">
           <button
             type="button"
             className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[13px] font-medium text-gray-10 transition-colors hover:bg-gray-2/70 hover:text-dls-text"
-            onClick={() => setOpeneralView("terminal")}
-            title="Switch back to the Claude Code terminal"
+            onClick={() => navigate("/sandboxes")}
+            title="Manage OpenEral sandboxes"
           >
-            <span className="inline-block h-2 w-2 rounded-full bg-green-9" />
-            Terminal
+            <span className="inline-block h-2 w-2 rounded-sm bg-dls-accent" />
+            Sandboxes
           </button>
-        ) : null
+          {openeralProfile && openeralView === "chat" ? (
+            <button
+              type="button"
+              className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[13px] font-medium text-gray-10 transition-colors hover:bg-gray-2/70 hover:text-dls-text"
+              onClick={() => setOpeneralView("terminal")}
+              title="Switch back to the Claude Code terminal"
+            >
+              <span className="inline-block h-2 w-2 rounded-full bg-green-9" />
+              Terminal
+            </button>
+          ) : null}
+        </div>
       }
       sidebar={{
         workspaceSessionGroups,
