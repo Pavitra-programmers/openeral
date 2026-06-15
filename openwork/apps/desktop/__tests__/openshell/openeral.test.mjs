@@ -113,6 +113,199 @@ test("buildWslEnvForwarding: preserves existing WSLENV entries", () => {
   }
 });
 
+// ── createStringcostPresign ────────────────────────────────────────────
+
+test("createStringcostPresign: posts the canonical body and returns the url", async () => {
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url, init });
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return { url: "https://proxy.stringcost.com/stringcost-proxy/t/abc123/v1/messages" };
+      },
+      async text() {
+        return "";
+      },
+    };
+  };
+  try {
+    const url = await openeral.__testing.createStringcostPresign({
+      anthropicApiKey: "sk-ant-test",
+      stringcostApiKey: "sk-st-test",
+      agentLabel: "claude-code",
+    });
+    assert.equal(url, "https://proxy.stringcost.com/stringcost-proxy/t/abc123/v1/messages");
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].url, /\/v1\/presign$/);
+    assert.equal(calls[0].init.method, "POST");
+    assert.equal(calls[0].init.headers.Authorization, "Bearer sk-st-test");
+    const body = JSON.parse(calls[0].init.body);
+    assert.equal(body.provider, "anthropic");
+    assert.equal(body.client_api_key, "sk-ant-test");
+    assert.deepEqual(body.path, ["/v1/messages"]);
+    // metadata.labels is what StringCost's vendor-portfolio classifier reads.
+    assert.deepEqual(body.metadata.labels, ["openeral", "claude-code"]);
+    assert.equal(body.metadata.client, "claude-code");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("createStringcostPresign: labels openclaw spend distinctly", async () => {
+  const realFetch = globalThis.fetch;
+  let captured;
+  globalThis.fetch = async (_url, init) => {
+    captured = JSON.parse(init.body);
+    return { ok: true, status: 200, async json() { return { url: "https://x/stringcost-proxy/t/z" }; }, async text() { return ""; } };
+  };
+  try {
+    await openeral.__testing.createStringcostPresign({
+      anthropicApiKey: "sk-ant-test",
+      stringcostApiKey: "sk-st-test",
+      agentLabel: "openclaw",
+    });
+    assert.deepEqual(captured.metadata.labels, ["openeral", "openclaw"]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("createStringcostPresign: returns null on a non-2xx response", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 401,
+    async text() {
+      return "unauthorized";
+    },
+    async json() {
+      return {};
+    },
+  });
+  try {
+    const url = await openeral.__testing.createStringcostPresign({
+      anthropicApiKey: "sk-ant-test",
+      stringcostApiKey: "bad-key",
+      agentLabel: "claude-code",
+    });
+    assert.equal(url, null);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("createStringcostPresign: returns null when the response carries no url", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    async json() {
+      return { not_a_url: true };
+    },
+    async text() {
+      return "";
+    },
+  });
+  try {
+    const url = await openeral.__testing.createStringcostPresign({
+      anthropicApiKey: "sk-ant-test",
+      stringcostApiKey: "sk-st-test",
+      agentLabel: "claude-code",
+    });
+    assert.equal(url, null);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("createStringcostPresign: returns null (does not throw) when fetch rejects", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error("network down");
+  };
+  try {
+    const url = await openeral.__testing.createStringcostPresign({
+      anthropicApiKey: "sk-ant-test",
+      stringcostApiKey: "sk-st-test",
+      agentLabel: "claude-code",
+    });
+    assert.equal(url, null);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// ── stringcostBaseUrlForAgent ──────────────────────────────────────────
+
+test("stringcostBaseUrlForAgent: strips the /v1/messages the agent re-appends", () => {
+  // The control plane mints a single-path presign URL ending in /v1/messages.
+  // Claude Code / OpenClaw append /v1/messages themselves, so the base URL we
+  // hand them must NOT include it (else the proxy sees /v1/messages/v1/messages
+  // and returns "Path not authorized").
+  assert.equal(
+    openeral.__testing.stringcostBaseUrlForAgent(
+      "https://proxy.stringcost.com/stringcost-proxy/t/TOK123/v1/messages",
+    ),
+    "https://proxy.stringcost.com/stringcost-proxy/t/TOK123",
+  );
+});
+
+test("stringcostBaseUrlForAgent: drops a trailing slash (adapter-token shape)", () => {
+  assert.equal(
+    openeral.__testing.stringcostBaseUrlForAgent(
+      "https://proxy.stringcost.com/stringcost-proxy/t/TOK123/",
+    ),
+    "https://proxy.stringcost.com/stringcost-proxy/t/TOK123",
+  );
+});
+
+test("stringcostBaseUrlForAgent: leaves an already-bare base URL untouched", () => {
+  assert.equal(
+    openeral.__testing.stringcostBaseUrlForAgent(
+      "https://proxy.stringcost.com/stringcost-proxy/t/TOK123",
+    ),
+    "https://proxy.stringcost.com/stringcost-proxy/t/TOK123",
+  );
+});
+
+test("stringcostBaseUrlForAgent: accepts a self-hosted host:port shape", () => {
+  assert.equal(
+    openeral.__testing.stringcostBaseUrlForAgent(
+      "http://10.0.0.5:8787/stringcost-proxy/t/TOK/v1/messages",
+    ),
+    "http://10.0.0.5:8787/stringcost-proxy/t/TOK",
+  );
+});
+
+test("stringcostBaseUrlForAgent: returns null for non-StringCost / empty input", () => {
+  assert.equal(
+    openeral.__testing.stringcostBaseUrlForAgent("https://api.anthropic.com/v1/messages"),
+    null,
+  );
+  assert.equal(openeral.__testing.stringcostBaseUrlForAgent(""), null);
+  assert.equal(openeral.__testing.stringcostBaseUrlForAgent(null), null);
+});
+
+// ── sandboxRunScriptCmd ────────────────────────────────────────────────
+
+test("sandboxRunScriptCmd: base64-encodes the script so it round-trips in the sandbox", () => {
+  const script = "echo hi\nexport FOO=\"a b\"\nunset BAR";
+  const cmd = openeral.__testing.sandboxRunScriptCmd("openeral-ws1", script);
+  // Targets the named sandbox via exec.
+  assert.match(cmd, /openshell sandbox exec --name 'openeral-ws1' --/);
+  // Decodes through base64 -d | sh — no raw script chars on the command line.
+  assert.match(cmd, /base64 -d \| sh/);
+  // The embedded blob decodes back to exactly the input script. shellQuote is
+  // applied twice (once for the blob, once for the `sh -c` arg) so the base64
+  // rides inside `'\''…'\''` — just grab the longest base64 run and decode it.
+  const runs = cmd.match(new RegExp("[A-Za-z0-9+/=]{12,}", "g")) || [];
+  const b64 = runs.sort((a, b) => b.length - a.length)[0];
+  assert.equal(Buffer.from(b64, "base64").toString("utf8"), script);
+});
+
 // ── sandboxExists ──────────────────────────────────────────────────────
 
 test("sandboxExists: returns true when the sandbox is in the list", async () => {

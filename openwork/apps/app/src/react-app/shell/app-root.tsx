@@ -11,6 +11,7 @@ import { useDesktopFontZoomBehavior } from "./font-zoom";
 import { LoadingOverlay } from "./loading-overlay";
 import { DevProfiler, DevProfilerOverlay } from "./dev-profiler";
 import { ReactRenderWatchdogOverlay } from "./react-render-watchdog-overlay";
+import { SandboxesRoute } from "./sandboxes-route";
 import { SessionRoute } from "./session-route";
 import { SettingsRoute } from "./settings-route";
 import { WelcomeRoute } from "./welcome-route";
@@ -123,6 +124,14 @@ export function AppRoot() {
               element={
                 <DevProfiler id="SessionRoute">
                   <SessionRoute />
+                </DevProfiler>
+              }
+            />
+            <Route
+              path="/sandboxes"
+              element={
+                <DevProfiler id="SandboxesRoute">
+                  <SandboxesRoute />
                 </DevProfiler>
               }
             />
