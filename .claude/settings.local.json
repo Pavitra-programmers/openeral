@@ -159,7 +159,8 @@
       "Bash(grep -oE \"models[^,}]{0,200}primary[^,}]{0,400}\" package/dist/io-5xE1dPMK.js)",
       "Bash(ls scripts *)",
       "Bash(grep -rl \"openeral\" electron)",
-      "Bash(grep -vi \"\\\\.md$\")"
+      "Bash(grep -vi \"\\\\.md$\")",
+      "Bash(wsl *)"
     ]
   }
 }

@@ -113,6 +113,199 @@ test("buildWslEnvForwarding: preserves existing WSLENV entries", () => {
   }
 });
 
+// ── createStringcostPresign ────────────────────────────────────────────
+
+test("createStringcostPresign: posts the canonical body and returns the url", async () => {
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url, init });
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return { url: "https://proxy.stringcost.com/stringcost-proxy/t/abc123/v1/messages" };
+      },
+      async text() {
+        return "";
+      },
+    };
+  };
+  try {
+    const url = await openeral.__testing.createStringcostPresign({
+      anthropicApiKey: "test-anthropic-api-key",
+      stringcostApiKey: "test-stringcost-api-key",
+      agentLabel: "claude-code",
+    });
+    assert.equal(url, "https://proxy.stringcost.com/stringcost-proxy/t/abc123/v1/messages");
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].url, /\/v1\/presign$/);
+    assert.equal(calls[0].init.method, "POST");
+    assert.equal(calls[0].init.headers.Authorization, "Bearer test-stringcost-api-key");
+    const body = JSON.parse(calls[0].init.body);
+    assert.equal(body.provider, "anthropic");
+    assert.equal(body.client_api_key, "test-anthropic-api-key");
+    assert.deepEqual(body.path, ["/v1/messages"]);
+    // metadata.labels is what StringCost's vendor-portfolio classifier reads.
+    assert.deepEqual(body.metadata.labels, ["openeral", "claude-code"]);
+    assert.equal(body.metadata.client, "claude-code");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("createStringcostPresign: labels openclaw spend distinctly", async () => {
+  const realFetch = globalThis.fetch;
+  let captured;
+  globalThis.fetch = async (_url, init) => {
+    captured = JSON.parse(init.body);
+    return { ok: true, status: 200, async json() { return { url: "https://x/stringcost-proxy/t/z" }; }, async text() { return ""; } };
+  };
+  try {
+    await openeral.__testing.createStringcostPresign({
+      anthropicApiKey: "sk-ant-test",
+      stringcostApiKey: "sk-st-test",
+      agentLabel: "openclaw",
+    });
+    assert.deepEqual(captured.metadata.labels, ["openeral", "openclaw"]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("createStringcostPresign: returns null on a non-2xx response", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 401,
+    async text() {
+      return "unauthorized";
+    },
+    async json() {
+      return {};
+    },
+  });
+  try {
+    const url = await openeral.__testing.createStringcostPresign({
+      anthropicApiKey: "sk-ant-test",
+      stringcostApiKey: "bad-key",
+      agentLabel: "claude-code",
+    });
+    assert.equal(url, null);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("createStringcostPresign: returns null when the response carries no url", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    async json() {
+      return { not_a_url: true };
+    },
+    async text() {
+      return "";
+    },
+  });
+  try {
+    const url = await openeral.__testing.createStringcostPresign({
+      anthropicApiKey: "sk-ant-test",
+      stringcostApiKey: "sk-st-test",
+      agentLabel: "claude-code",
+    });
+    assert.equal(url, null);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("createStringcostPresign: returns null (does not throw) when fetch rejects", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error("network down");
+  };
+  try {
+    const url = await openeral.__testing.createStringcostPresign({
+      anthropicApiKey: "sk-ant-test",
+      stringcostApiKey: "sk-st-test",
+      agentLabel: "claude-code",
+    });
+    assert.equal(url, null);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// ── stringcostBaseUrlForAgent ──────────────────────────────────────────
+
+test("stringcostBaseUrlForAgent: strips the /v1/messages the agent re-appends", () => {
+  // The control plane mints a single-path presign URL ending in /v1/messages.
+  // Claude Code / OpenClaw append /v1/messages themselves, so the base URL we
+  // hand them must NOT include it (else the proxy sees /v1/messages/v1/messages
+  // and returns "Path not authorized").
+  assert.equal(
+    openeral.__testing.stringcostBaseUrlForAgent(
+      "https://proxy.stringcost.com/stringcost-proxy/t/TOK123/v1/messages",
+    ),
+    "https://proxy.stringcost.com/stringcost-proxy/t/TOK123",
+  );
+});
+
+test("stringcostBaseUrlForAgent: drops a trailing slash (adapter-token shape)", () => {
+  assert.equal(
+    openeral.__testing.stringcostBaseUrlForAgent(
+      "https://proxy.stringcost.com/stringcost-proxy/t/TOK123/",
+    ),
+    "https://proxy.stringcost.com/stringcost-proxy/t/TOK123",
+  );
+});
+
+test("stringcostBaseUrlForAgent: leaves an already-bare base URL untouched", () => {
+  assert.equal(
+    openeral.__testing.stringcostBaseUrlForAgent(
+      "https://proxy.stringcost.com/stringcost-proxy/t/TOK123",
+    ),
+    "https://proxy.stringcost.com/stringcost-proxy/t/TOK123",
+  );
+});
+
+test("stringcostBaseUrlForAgent: accepts a self-hosted host:port shape", () => {
+  assert.equal(
+    openeral.__testing.stringcostBaseUrlForAgent(
+      "http://10.0.0.5:8787/stringcost-proxy/t/TOK/v1/messages",
+    ),
+    "http://10.0.0.5:8787/stringcost-proxy/t/TOK",
+  );
+});
+
+test("stringcostBaseUrlForAgent: returns null for non-StringCost / empty input", () => {
+  assert.equal(
+    openeral.__testing.stringcostBaseUrlForAgent("https://api.anthropic.com/v1/messages"),
+    null,
+  );
+  assert.equal(openeral.__testing.stringcostBaseUrlForAgent(""), null);
+  assert.equal(openeral.__testing.stringcostBaseUrlForAgent(null), null);
+});
+
+// ── sandboxRunScriptCmd ────────────────────────────────────────────────
+
+test("sandboxRunScriptCmd: base64-encodes the script so it round-trips in the sandbox", () => {
+  const script = "echo hi\nexport FOO=\"a b\"\nunset BAR";
+  const cmd = openeral.__testing.sandboxRunScriptCmd("openeral-ws1", script);
+  // Targets the named sandbox via exec.
+  assert.match(cmd, /openshell sandbox exec --name 'openeral-ws1' --/);
+  // Decodes through base64 -d | sh — no raw script chars on the command line.
+  assert.match(cmd, /base64 -d \| sh/);
+  // The embedded blob decodes back to exactly the input script. shellQuote is
+  // applied twice (once for the blob, once for the `sh -c` arg) so the base64
+  // rides inside `'\''…'\''` — just grab the longest base64 run and decode it.
+  const runs = cmd.match(new RegExp("[A-Za-z0-9+/=]{12,}", "g")) || [];
+  const b64 = runs.sort((a, b) => b.length - a.length)[0];
+  assert.equal(Buffer.from(b64, "base64").toString("utf8"), script);
+});
+
 // ── sandboxExists ──────────────────────────────────────────────────────
 
 test("sandboxExists: returns true when the sandbox is in the list", async () => {
@@ -275,6 +468,143 @@ test("createOpenEralSandbox: requires name and profile", async () => {
     () => openeral.createOpenEralSandbox({ name: "x" }),
     /profile is required/,
   );
+});
+
+// ── buildLaunchBlock ───────────────────────────────────────────────────
+// Pure function — no wslRun, no mock needed.
+
+test("buildLaunchBlock (claude + proxy): exports proxy vars and unsets the real key", () => {
+  const block = openeral.__testing.buildLaunchBlock(
+    "openeral-claude",
+    "https://proxy.stringcost.com/stringcost-proxy/t/TOK",
+  );
+  assert.match(block, /ANTHROPIC_BASE_URL=.*TOK/, "must export proxy base URL");
+  assert.match(block, /unset ANTHROPIC_API_KEY/, "claude must unset real key when proxy active");
+  assert.doesNotMatch(block, /openclaw gateway/, "claude must not start openclaw gateway");
+  assert.match(block, /exec claude/, "claude must exec claude");
+});
+
+test("buildLaunchBlock (openclaw + proxy): preserves key, starts gateway, writes auth profile", () => {
+  const block = openeral.__testing.buildLaunchBlock(
+    "openeral-openclaw",
+    "https://proxy.stringcost.com/stringcost-proxy/t/TOK2",
+  );
+  // Must NOT unset the key — openclaw needs it for the direct auth-profile write.
+  assert.doesNotMatch(block, /unset ANTHROPIC_API_KEY/, "openclaw must keep ANTHROPIC_API_KEY");
+  // Must still export the proxy URL.
+  assert.match(block, /ANTHROPIC_BASE_URL=.*TOK2/, "must export proxy base URL");
+  // Must load the key from the file deposited by finalizeSandboxLaunch.
+  assert.match(block, /anthropic-api-key/, "must load key from /sandbox/anthropic-api-key");
+  // Must start the gateway supervision loop.
+  assert.match(block, /openclaw gateway --port 18789/, "must start openclaw gateway");
+  // Must wait for the gateway to be reachable.
+  assert.match(block, /18789\/readyz/, "must wait for gateway /readyz");
+  // Must write auth-profiles.json directly (no openclaw onboard — it hangs on
+  // npm-via-git installs blocked by the sandbox network policy).
+  assert.doesNotMatch(block, /openclaw onboard/, "must NOT run openclaw onboard (hangs on blocked npm-via-git)");
+  assert.match(block, /auth-profiles\.json/, "must check/write auth-profiles.json directly");
+  assert.match(block, /openwork-direct/, "must write auth profile with openwork-direct source marker");
+  // Must exec with HOME set and OPENCLAW_PLUGIN_STAGE_DIR explicitly unset
+  // (forwarding it to the TUI causes a concurrent staging loop that freezes the terminal).
+  assert.match(block, /exec env -u OPENCLAW_PLUGIN_STAGE_DIR/, "exec must unset OPENCLAW_PLUGIN_STAGE_DIR");
+  assert.match(block, /HOME=\/home\/agent/, "exec must set HOME=/home/agent");
+  assert.match(block, /^\s+openclaw\s*$/m, "exec must end with openclaw on its own line");
+  // SHELL must be set so openclaw agent tool invocations use openeral's workspace
+  // filesystem layer (PostgreSQL-backed) rather than raw /bin/bash.
+  assert.match(block, /SHELL=\/usr\/local\/bin\/openeral-bash/, "exec must set SHELL to openeral-bash");
+  // OPENCLAW_HANDSHAKE_TIMEOUT_MS must be set for the TUI exec so the client
+  // doesn't time out connecting to the gateway on a cold container.
+  assert.match(block, /OPENCLAW_HANDSHAKE_TIMEOUT_MS=30000/, "exec must set OPENCLAW_HANDSHAKE_TIMEOUT_MS for TUI client");
+  // StringCost provider config must be present (openclaw's built-in anthropic
+  // provider hardcodes api.anthropic.com — a custom provider is the only way
+  // to route traffic through the StringCost proxy).
+  assert.match(block, /models\.providers\.stringcost/, "must add stringcost provider to openclaw.json");
+  assert.match(block, /anthropic-messages/, "stringcost provider must use anthropic-messages API");
+  assert.match(block, /_remap/, "must have model remap logic (anthropic/ → stringcost/)");
+  // Recovery restart must be present OUTSIDE the main gateway block to handle
+  // gateway crashes during plugin pre-stage (the gateway watches openclaw.json via
+  // inotify; any write while it's running can trigger a live reload that crashes it).
+  assert.match(block, /Restarting gateway \(crashed during setup\)/, "must have recovery restart for crashed gateway");
+  assert.match(block, /_gw_final/, "recovery restart must use a distinct wait counter (_gw_final)");
+  // openclaw status --deep must run BEFORE doctor --fix to pre-stage all TUI
+  // plugin deps. Without this, first user prompt hangs ~10 min on plugin install.
+  assert.match(block, /openclaw status --deep/, "must run openclaw status --deep to pre-stage TUI plugins");
+  // Plugin registry consolidation must follow status --deep.
+  assert.match(block, /doctor --fix/, "must run openclaw doctor --fix to consolidate plugins");
+});
+
+test("buildLaunchBlock (openclaw): auth-profiles.json written BEFORE openclaw.json", () => {
+  // auth-profiles.json is written directly (no openclaw onboard) to avoid the
+  // 10–30 min hang caused by blocked npm-via-git installs. It must be written
+  // BEFORE openclaw.json so the gateway starts with a valid auth context.
+  const block = openeral.__testing.buildLaunchBlock("openeral-openclaw", null);
+
+  // Must NOT run openclaw onboard — it hangs on blocked npm-via-git installs.
+  assert.doesNotMatch(block, /openclaw onboard/, "must NOT call openclaw onboard");
+
+  // Must write auth-profiles.json directly.
+  const authWriteIdx = block.indexOf("openwork-direct");
+  assert.ok(authWriteIdx > -1, "must write auth-profiles.json with openwork-direct source marker");
+
+  // auth-profiles.json write must appear BEFORE openclaw.json write (uses `c`/`file`).
+  const jsonWriteIdx = block.indexOf("writeFileSync(file, JSON.stringify(c,");
+  assert.ok(jsonWriteIdx > -1, "openclaw.json write must be present");
+  assert.ok(
+    authWriteIdx < jsonWriteIdx,
+    `auth-profiles.json write (pos ${authWriteIdx}) must appear BEFORE openclaw.json write (pos ${jsonWriteIdx})`,
+  );
+
+  // Plugin stage dir must still be seeded from image cache (for gateway startup
+  // and openclaw status --deep which follow).
+  const pluginSeedIdx = block.indexOf("cp -rn /opt/openclaw-plugin-cache/. /tmp/openclaw-plugin-runtime-deps/");
+  assert.ok(pluginSeedIdx > -1, "plugin stage dir must be seeded from /opt/openclaw-plugin-cache");
+  assert.ok(
+    pluginSeedIdx < authWriteIdx,
+    `plugin cache seed (pos ${pluginSeedIdx}) must appear BEFORE auth write (pos ${authWriteIdx})`,
+  );
+});
+
+test("buildLaunchBlock (openclaw + apiKey): embeds key directly in block", () => {
+  // When apiKey is provided, it must be exported directly in the bash block
+  // as a primary source, so the key is available even when the sandbox file
+  // upload timed out (the most common cause of onboard being skipped).
+  const block = openeral.__testing.buildLaunchBlock(
+    "openeral-openclaw",
+    null,
+    "test-embedded-api-key",
+  );
+  assert.match(
+    block,
+    /export ANTHROPIC_API_KEY='test-embedded-api-key'/,
+    "must embed the API key directly in the block",
+  );
+  // The file-read override must also still be present for key rotation.
+  assert.match(block, /anthropic-api-key/, "file-read fallback must also be present");
+});
+
+test("buildLaunchBlock (openclaw + no proxy): gateway present, no onboard, auth written directly", () => {
+  const block = openeral.__testing.buildLaunchBlock("openeral-openclaw", null);
+  assert.doesNotMatch(block, /unset ANTHROPIC_API_KEY/);
+  // The StringCost node scripts always appear in the block as JS source (their
+  // runtime `if (_baseUrl)` gate activates only when ANTHROPIC_BASE_URL is set).
+  // What must be absent is the top-level bash `export ANTHROPIC_BASE_URL=` that
+  // only appears when proxyBase is non-null.
+  assert.doesNotMatch(block, /^export ANTHROPIC_BASE_URL=/m, "no top-level ANTHROPIC_BASE_URL export when proxyBase is null");
+  assert.match(block, /openclaw gateway --port 18789/);
+  assert.doesNotMatch(block, /openclaw onboard/, "must NOT run openclaw onboard (hangs on blocked network)");
+  assert.match(block, /auth-profiles\.json/, "must write auth-profiles.json directly");
+  assert.match(block, /openclaw status --deep/, "must run status --deep to pre-stage plugins");
+  assert.match(block, /exec env -u OPENCLAW_PLUGIN_STAGE_DIR/, "exec must unset plugin stage dir");
+  assert.match(block, /SHELL=\/usr\/local\/bin\/openeral-bash/, "exec must set SHELL to openeral-bash");
+  assert.match(block, /HOME=\/home\/agent/, "exec must set HOME");
+});
+
+test("buildLaunchBlock (claude + no proxy): no proxy vars and no gateway", () => {
+  const block = openeral.__testing.buildLaunchBlock("openeral-claude", null);
+  assert.doesNotMatch(block, /ANTHROPIC_BASE_URL/);
+  assert.doesNotMatch(block, /unset ANTHROPIC_API_KEY/);
+  assert.doesNotMatch(block, /openclaw gateway/);
+  assert.match(block, /exec claude/);
 });
 
 // ── deleteOpenEralSandbox ──────────────────────────────────────────────

@@ -38,6 +38,25 @@ OpenEral needs two credentials at session start:
    Claude Code can use the OpenShell provider system instead, but
    configuring the key here is fine for both.
 
+3. **`STRINGCOST_API_KEY`** *(optional)* — enables token + cost metering.
+   When set, OpenWork mints a permanent StringCost presign on the host at
+   sandbox-create time, uploads it to `/sandbox/openeral-input/presign.json`,
+   **and writes the proxy base URL straight into the agent's launch
+   environment** — `ANTHROPIC_BASE_URL` is appended to `/sandbox/.bashrc`
+   (the shell OpenShell starts the agent from) and, for Claude Code, merged
+   into `~/.claude/settings.json`. The agent's `/v1/messages` calls are then
+   routed through StringCost. Leave unset to talk to Anthropic directly.
+   Applies to both agents.
+
+   > Why not rely on `setup.sh`? The published sandbox image's entrypoint is
+   > `/bin/bash`, and OpenShell's supervisor launches the agent as
+   > `bash -i` → `claude`. That sources `/sandbox/.bashrc` but never runs the
+   > image's `/opt/openeral/setup.sh`, so the uploaded presign is not consumed
+   > on its own. The base URL we strip for the agent must NOT include the
+   > trailing `/v1/messages` the minted presign URL carries — the agent
+   > re-appends it, and a doubled `/v1/messages/v1/messages` is rejected by the
+   > proxy with "Path not authorized".
+
 Open **Settings → Sandbox**:
 
 - Pick **OpenShell** as the sandbox backend
@@ -138,7 +157,7 @@ actions:
 | Profile | `openeral-claude` | `openeral-openclaw` |
 | Image | `ghcr.io/sandys/openeral/sandbox:just-bash` | `ghcr.io/pavitra-programmers/openeral/sandbox:just-bash` |
 | API key delivery | OpenShell provider system or uploaded file | Uploaded file only (OpenClaw's embedded gateway can't resolve provider placeholders) |
-| StringCost cost tracking | Supported via `STRINGCOST_API_KEY` | Not supported — OpenClaw talks to Anthropic directly |
+| StringCost cost tracking | Supported via `STRINGCOST_API_KEY` | Supported via `STRINGCOST_API_KEY` |
 | First-run latency | ~30s (image pull + sandbox create) | ~3 min (additional npm-package staging — pre-baked in newer images) |
 
 Pick at workspace-create time. The profile is fixed for the workspace's

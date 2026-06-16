@@ -1724,17 +1724,16 @@ async function handleDesktopInvoke(event, command, ...args) {
       });
       return { ...result, sandboxName, terminal };
     }
-    case "openeralListSessions": {
-      // Returns the subset of `openshell sandbox list` whose names start
-      // with the openeral- prefix — sandboxes OpenWork has created.
-      const list = await openshellClient.listSandboxes().catch(() => []);
-      const filtered = Array.isArray(list)
-        ? list.filter((s) => {
-            const name = typeof s === "string" ? s : s?.name;
-            return typeof name === "string" && name.startsWith("openeral-");
-          })
+    case "openeralListSessions":
+    case "openeralListSandboxes": {
+      // Returns the subset of `openshell sandbox list` whose names start with
+      // the openeral- prefix — the sandboxes OpenWork created. Uses the text
+      // parser in openeral.mjs because CLI 0.0.45 rejects `sandbox list --json`,
+      // which left openshellClient.listSandboxes() (and this handler) empty.
+      const list = await openeral.listSandboxes().catch(() => []);
+      return Array.isArray(list)
+        ? list.filter((s) => typeof s?.name === "string" && s.name.startsWith("openeral-"))
         : [];
-      return filtered;
     }
     case "openeralEndSession": {
       // Per spec: OpenEral sandboxes persist across sessions for the
@@ -1762,6 +1761,15 @@ async function handleDesktopInvoke(event, command, ...args) {
     case "openeralDeriveSandboxName": {
       const workspaceId = String(args[0] ?? "").trim();
       return deriveOpenEralSandboxName(workspaceId);
+    }
+    case "openeralHostBuild": {
+      // Windows build number for xterm.js's `windowsPty` option. The OpenEral
+      // PTY runs `wsl.exe` through a Windows ConPTY (node-pty), so xterm must be
+      // told the backend/build or it mis-renders ConPTY's reflowed full-width
+      // lines (e.g. Claude Code's welcome-box border shows as a gibberish first
+      // line). 0 on non-Windows → renderer skips the option.
+      if (process.platform !== "win32") return 0;
+      return Number(os.release().split(".")[2]) || 0;
     }
     case "openeralPtyOpen": {
       // Renderer xterm.js requests a PTY to an existing sandbox. We

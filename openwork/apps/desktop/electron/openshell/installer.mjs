@@ -211,7 +211,11 @@ async function phaseDocker({ onProgress, signal }) {
     "chmod a+r /etc/apt/keyrings/docker.gpg",
     'echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list',
     "apt-get update",
-    "apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin",
+    // openssh-client (scp/ssh) is REQUIRED: `openshell sandbox create --upload`
+    // and exec/connect/download all shell out to scp/ssh inside this distro.
+    // Without it every sandbox op dies with a cryptic
+    // "Error: × No such file or directory (os error 2)" from the failed spawn.
+    "apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin openssh-client",
     "service docker start || systemctl enable --now docker || true",
   ].join("\n");
   const r = await wslRun(

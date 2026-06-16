@@ -381,6 +381,14 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
         }
         if (cancelled || !containerRef.current) return;
 
+        // The PTY runs `wsl.exe` through a Windows ConPTY (node-pty). xterm.js
+        // needs to know that, or it mis-renders ConPTY's reflowed/padded
+        // full-width lines — which showed up as a gibberish first line (Claude
+        // Code's welcome-box border). buildNumber comes from the host; 0 on
+        // non-Windows so we omit the option there.
+        const hostBuild = await invoke<number>("openeralHostBuild").catch(() => 0);
+        if (cancelled || !containerRef.current) return;
+
         const term = new Terminal({
           fontFamily:
             "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
@@ -388,6 +396,9 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
           cursorBlink: true,
           scrollback: 5_000,
           allowProposedApi: true,
+          ...(hostBuild > 0
+            ? { windowsPty: { backend: "conpty" as const, buildNumber: hostBuild } }
+            : {}),
           theme: {
             background: "#0a0a0a",
             foreground: "#e6e6e6",
