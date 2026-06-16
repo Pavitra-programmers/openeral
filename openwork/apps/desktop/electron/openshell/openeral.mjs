@@ -650,7 +650,7 @@ function buildLaunchBlock(profile, proxyBase, apiKey = null) {
       // ── Step 1: load real API key and runtime env ──────────────────────
       // Embed key directly as primary source so the key is always available
       // even if the file upload timed out at launch time.
-      ...(apiKey ? [`export ANTHROPIC_API_KEY="${apiKey}"`] : []),
+      ...(apiKey ? [`export ANTHROPIC_API_KEY=${shellQuote(apiKey)}`] : []),
       // Override from file if a newer key was uploaded to the sandbox.
       "if [ -f /sandbox/anthropic-api-key ]; then",
       "  _fk=\"$(tr -d '[:space:]' < /sandbox/anthropic-api-key)\"",
@@ -1000,8 +1000,19 @@ async function readSandboxPresignUrl(name, env) {
     env,
   }).catch(() => null);
   if (!r || r.exitCode !== 0) return null;
-  const m = r.stdout.match(/https:\/\/[^"\s]+/);
-  return m ? m[0] : null;
+  // Prefer JSON parse over regex scraping.
+  try {
+    const parsed = JSON.parse(r.stdout.trim());
+    if (parsed && typeof parsed.url === "string") {
+      return stringcostBaseUrlForAgent(parsed.url) ? parsed.url : null;
+    }
+  } catch {
+    // fall through to regex
+  }
+  // Fallback: accept both http:// and https://.
+  const m = r.stdout.match(/https?:\/\/[^"\s]+/);
+  if (!m) return null;
+  return stringcostBaseUrlForAgent(m[0]) ? m[0] : null;
 }
 
 /**

@@ -133,18 +133,18 @@ test("createStringcostPresign: posts the canonical body and returns the url", as
   };
   try {
     const url = await openeral.__testing.createStringcostPresign({
-      anthropicApiKey: "sk-ant-test",
-      stringcostApiKey: "sk-st-test",
+      anthropicApiKey: "test-anthropic-api-key",
+      stringcostApiKey: "test-stringcost-api-key",
       agentLabel: "claude-code",
     });
     assert.equal(url, "https://proxy.stringcost.com/stringcost-proxy/t/abc123/v1/messages");
     assert.equal(calls.length, 1);
     assert.match(calls[0].url, /\/v1\/presign$/);
     assert.equal(calls[0].init.method, "POST");
-    assert.equal(calls[0].init.headers.Authorization, "Bearer sk-st-test");
+    assert.equal(calls[0].init.headers.Authorization, "Bearer test-stringcost-api-key");
     const body = JSON.parse(calls[0].init.body);
     assert.equal(body.provider, "anthropic");
-    assert.equal(body.client_api_key, "sk-ant-test");
+    assert.equal(body.client_api_key, "test-anthropic-api-key");
     assert.deepEqual(body.path, ["/v1/messages"]);
     // metadata.labels is what StringCost's vendor-portfolio classifier reads.
     assert.deepEqual(body.metadata.labels, ["openeral", "claude-code"]);
@@ -571,11 +571,11 @@ test("buildLaunchBlock (openclaw + apiKey): embeds key directly in block", () =>
   const block = openeral.__testing.buildLaunchBlock(
     "openeral-openclaw",
     null,
-    "sk-ant-embedded-test-key",
+    "test-embedded-api-key",
   );
   assert.match(
     block,
-    /export ANTHROPIC_API_KEY="sk-ant-embedded-test-key"/,
+    /export ANTHROPIC_API_KEY='test-embedded-api-key'/,
     "must embed the API key directly in the block",
   );
   // The file-read override must also still be present for key rotation.
