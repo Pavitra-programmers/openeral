@@ -1990,6 +1990,17 @@ async function createMainWindow() {
     },
   });
 
+  // Allow microphone capture for on-device voice dictation in the composer.
+  // Scope the grant to media/audio only; everything else stays denied.
+  const isMediaPermission = (permission) =>
+    permission === "media" || permission === "audioCapture";
+  mainWindow.webContents.session.setPermissionRequestHandler(
+    (_webContents, permission, callback) => callback(isMediaPermission(permission)),
+  );
+  mainWindow.webContents.session.setPermissionCheckHandler(
+    (_webContents, permission) => isMediaPermission(permission),
+  );
+
   mainWindow.once("ready-to-show", () => {
     mainWindow?.show();
     flushPendingDeepLinks();

@@ -11,6 +11,16 @@ import {
   ReactComposerNotice,
   type ReactComposerNotice as ReactComposerNoticeData,
 } from "./notice";
+import { MicButton } from "./voice/mic-button";
+
+// Append a voice transcript to the existing prompt draft, inserting a single
+// separating space unless the draft already ends in whitespace.
+function appendTranscript(draft: string, text: string): string {
+  const addition = text.trim();
+  if (!addition) return draft;
+  if (!draft) return addition;
+  return /\s$/.test(draft) ? draft + addition : `${draft} ${addition}`;
+}
 
 type MentionItem = {
   id: string;
@@ -1072,6 +1082,10 @@ export function ReactSessionComposer(props: ComposerProps) {
                 >
                   <Paperclip size={16} />
                 </button>
+                <MicButton
+                  onTranscript={(text) => props.onDraftChange(appendTranscript(props.draft, text))}
+                  disabled={props.disabled}
+                />
                 <div ref={toolMenuRef} className="relative">
                   <button
                     type="button"
