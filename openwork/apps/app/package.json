@@ -41,6 +41,7 @@
     "@codemirror/language": "^6.11.0",
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.38.0",
+    "@huggingface/transformers": "4.2.0",
     "@lexical/react": "^0.35.0",
     "@opencode-ai/sdk": "^1.4.9",
     "@openwork/types": "workspace:*",

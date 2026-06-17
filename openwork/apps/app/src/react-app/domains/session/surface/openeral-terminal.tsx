@@ -1,9 +1,10 @@
 /** @jsxImportSource react */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, ExternalLink, Loader2, MessageSquare, Pencil, Power, RotateCcw, Settings, Trash2 } from "lucide-react";
+import { AlertTriangle, ExternalLink, Loader2, MessageSquare, Mic, Pencil, Power, RotateCcw, Settings, Square, Trash2 } from "lucide-react";
 
 import type { SandboxProfile } from "../../../../app/lib/desktop";
 import { Button } from "../../../design-system/button";
+import { useVoiceInput } from "./composer/voice/use-voice-input";
 
 // xterm.js is loaded dynamically so it doesn't bloat the workspace
 // dashboard bundle for users who never open an OpenEral session.
@@ -695,6 +696,33 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
           <span className="text-gray-10 shrink-0">{phaseLabel(phase)}</span>
         </div>
         <div className="flex items-center gap-1.5">
+          {phase === "connected" ? (
+            <TerminalMicButton
+              onText={(text) => {
+                const id = sessionIdRef.current;
+                if (!id) return;
+                // Flatten newlines so dictation never accidentally submits the
+                // prompt — the user reviews the text and presses Enter.
+                const flat = text.replace(/\r?\n/g, " ").trim();
+                if (!flat) return;
+                void invoke("openeralPtyWrite", { sessionId: id, data: flat });
+                try {
+                  termRef.current?.focus();
+                } catch {
+                  /* ignore */
+                }
+              }}
+              onError={(message) => {
+                // Surface failures directly in the terminal so they're not
+                // lost behind a tooltip.
+                try {
+                  termRef.current?.write(`\r\n\x1b[31m[voice] ${message}\x1b[0m\r\n`);
+                } catch {
+                  /* ignore */
+                }
+              }}
+            />
+          ) : null}
           {phase === "exited" || phase === "error" ? (
             <Button
               variant="outline"
@@ -841,6 +869,56 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
         ) : null}
       </div>
     </div>
+  );
+}
+
+/**
+ * Microphone button for the terminal toolbar. Records speech, transcribes it
+ * on-device (Whisper, via the shared useVoiceInput hook), and hands the text
+ * to onText — which the terminal writes into the PTY so it lands in Claude
+ * Code's input box. Renders nothing when the runtime can't record/transcribe.
+ */
+function TerminalMicButton(props: {
+  onText: (text: string) => void;
+  onError?: (message: string) => void;
+  disabled?: boolean;
+}) {
+  const { status, error, modelProgress, start, stop } = useVoiceInput(props.onText, props.onError);
+  if (status === "unsupported") return null;
+
+  const recording = status === "recording";
+  const transcribing = status === "transcribing";
+
+  let title = "Dictate into the terminal (on-device voice)";
+  if (recording) title = "Stop recording";
+  else if (transcribing)
+    title =
+      modelProgress != null
+        ? `Loading speech model… ${Math.round(modelProgress * 100)}%`
+        : "Transcribing…";
+  else if (status === "error" && error) title = `${error} — click to try again`;
+
+  return (
+    <Button
+      variant="outline"
+      className={`h-7 w-7 !rounded-full !p-0 shrink-0 ${recording ? "border-red-7/60 text-red-12" : ""}`}
+      onClick={() => {
+        if (props.disabled || transcribing) return;
+        if (recording) stop();
+        else start();
+      }}
+      onMouseDown={(e) => e.preventDefault()}
+      disabled={props.disabled || transcribing}
+      title={title}
+    >
+      {transcribing ? (
+        <Loader2 size={13} className="animate-spin" />
+      ) : recording ? (
+        <Square size={11} fill="currentColor" className="animate-pulse" />
+      ) : (
+        <Mic size={13} />
+      )}
+    </Button>
   );
 }
 
