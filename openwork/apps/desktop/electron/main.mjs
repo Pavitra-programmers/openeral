@@ -1654,6 +1654,45 @@ async function handleDesktopInvoke(event, command, ...args) {
       await openeralCredentials.clearCredential(key);
       return openeralCredentials.getCredentialStatus();
     }
+    case "voiceTranscribe": {
+      // Cloud speech-to-text for the composer/terminal mic when the voice
+      // engine is set to ElevenLabs. The renderer captures audio and posts the
+      // raw bytes here; the API key stays in the main process (never shipped to
+      // the renderer) and this also sidesteps browser CORS to ElevenLabs.
+      const input = args[0] ?? {};
+      const audio = input.audio;
+      const mimeType =
+        typeof input.mimeType === "string" && input.mimeType ? input.mimeType : "audio/webm";
+      if (!audio) throw new Error("No audio was provided for transcription.");
+      const apiKey = await openeralCredentials.getCredential("elevenLabsApiKey");
+      if (!apiKey) {
+        throw new Error("ElevenLabs API key not configured. Add it in Settings → Sandbox.");
+      }
+      const bytes = audio instanceof Uint8Array ? audio : new Uint8Array(audio);
+      const form = new FormData();
+      form.append("model_id", "scribe_v1");
+      form.append("file", new Blob([bytes], { type: mimeType }), "audio.webm");
+      const response = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
+        method: "POST",
+        // Do NOT set Content-Type — fetch derives the multipart boundary from
+        // the FormData body automatically.
+        headers: { "xi-api-key": apiKey },
+        body: form,
+      });
+      if (!response.ok) {
+        let detail = "";
+        try {
+          detail = (await response.text()).slice(0, 300);
+        } catch {
+          // ignore
+        }
+        throw new Error(
+          `ElevenLabs transcription failed (${response.status} ${response.statusText}). ${detail}`.trim(),
+        );
+      }
+      const result = await response.json();
+      return { text: typeof result?.text === "string" ? result.text : "" };
+    }
     case "openeralTestDatabase": {
       // Runs psql via a transient postgres:16-alpine container inside
       // the openwork-openshell distro. Lazy-pulls the image on first
@@ -1989,6 +2028,61 @@ async function createMainWindow() {
       sandbox: false,
     },
   });
+
+  // Microphone capture for on-device voice dictation. Grant narrowly:
+  //  - only the `media`/`audioCapture` permissions (everything else denied),
+  //  - only from the app's own content (the file:// bundle or the trusted dev
+  //    server), never arbitrary remote frames, and
+  //  - only audio — any request that includes video (camera) is denied.
+  const trustedStartOrigin = (() => {
+    const raw =
+      process.env.OPENWORK_ELECTRON_START_URL?.trim() ||
+      process.env.ELECTRON_START_URL?.trim();
+    if (!raw) return null;
+    try {
+      return new URL(raw).origin;
+    } catch {
+      return null;
+    }
+  })();
+  const isTrustedVoiceOrigin = (url) => {
+    if (typeof url !== "string" || url.length === 0) return false;
+    // Packaged build serves the renderer over file://.
+    if (url.startsWith("file://")) return true;
+    // Local dev server (Vite binds IPv4 loopback; localhost covers both).
+    if (url.startsWith("http://127.0.0.1") || url.startsWith("http://localhost")) {
+      return true;
+    }
+    if (trustedStartOrigin) {
+      try {
+        return new URL(url).origin === trustedStartOrigin;
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  };
+  const isAudioOnlyMediaPermission = (permission, details) => {
+    if (permission !== "media" && permission !== "audioCapture") return false;
+    // Request handler exposes mediaTypes[]; the check handler exposes mediaType.
+    if (Array.isArray(details?.mediaTypes) && details.mediaTypes.includes("video")) {
+      return false;
+    }
+    if (details?.mediaType === "video") return false;
+    return true;
+  };
+  mainWindow.webContents.session.setPermissionRequestHandler(
+    (_webContents, permission, callback, details) => {
+      const url = details?.requestingUrl || details?.securityOrigin || "";
+      callback(isAudioOnlyMediaPermission(permission, details) && isTrustedVoiceOrigin(url));
+    },
+  );
+  mainWindow.webContents.session.setPermissionCheckHandler(
+    (_webContents, permission, requestingOrigin, details) => {
+      const url = details?.requestingUrl || requestingOrigin || details?.securityOrigin || "";
+      return isAudioOnlyMediaPermission(permission, details) && isTrustedVoiceOrigin(url);
+    },
+  );
 
   mainWindow.once("ready-to-show", () => {
     mainWindow?.show();

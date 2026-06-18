@@ -1,5 +1,5 @@
 /** @jsxImportSource react */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Agent } from "@opencode-ai/sdk/v2/client";
 import { ArrowUp, Check, ChevronDown, ChevronRight, FileText, Paperclip, Plug, Settings, Square, Terminal, X, Zap } from "lucide-react";
 import fuzzysort from "fuzzysort";
@@ -11,6 +11,16 @@ import {
   ReactComposerNotice,
   type ReactComposerNotice as ReactComposerNoticeData,
 } from "./notice";
+import { MicButton } from "./voice/mic-button";
+
+// Append a voice transcript to the existing prompt draft, inserting a single
+// separating space unless the draft already ends in whitespace.
+function appendTranscript(draft: string, text: string): string {
+  const addition = text.trim();
+  if (!addition) return draft;
+  if (!draft) return addition;
+  return /\s$/.test(draft) ? draft + addition : `${draft} ${addition}`;
+}
 
 type MentionItem = {
   id: string;
@@ -282,7 +292,10 @@ export function ReactSessionComposer(props: ComposerProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const locale = currentLocale();
   const draftRef = useRef(props.draft);
-  useEffect(() => {
+  // useLayoutEffect (not useEffect) so the ref is current before paint and
+  // before any async voice transcript resolves — appending to the live draft
+  // instead of a stale snapshot.
+  useLayoutEffect(() => {
     draftRef.current = props.draft;
   }, [props.draft]);
 
@@ -1072,6 +1085,10 @@ export function ReactSessionComposer(props: ComposerProps) {
                 >
                   <Paperclip size={16} />
                 </button>
+                <MicButton
+                  onTranscript={(text) => props.onDraftChange(appendTranscript(draftRef.current, text))}
+                  disabled={props.disabled}
+                />
                 <div ref={toolMenuRef} className="relative">
                   <button
                     type="button"

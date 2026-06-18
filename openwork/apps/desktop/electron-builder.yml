@@ -38,6 +38,10 @@ mac:
   hardenedRuntime: true
   gatekeeperAssess: false
   notarize: false
+  # Required for microphone access under the hardened runtime; the composer's
+  # voice dictation captures audio that is transcribed entirely on-device.
+  extendInfo:
+    NSMicrophoneUsageDescription: OpenWork uses your microphone for on-device voice dictation in the prompt composer.
   extraResources:
     - from: resources/sidecars
       to: sidecars
