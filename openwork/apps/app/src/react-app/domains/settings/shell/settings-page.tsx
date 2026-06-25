@@ -6,8 +6,10 @@ import { t } from "../../../../i18n";
 import type { SettingsTab } from "../../../../app/types";
 import { Button } from "../../../design-system/button";
 
-const settingsRailClass = "rounded-[24px] border border-dls-border bg-dls-sidebar p-3";
-const settingsPanelClass = "rounded-[28px] border border-dls-border bg-dls-surface p-5 md:p-6";
+const settingsRailClass =
+  "rounded-[24px] border border-dls-border bg-dls-sidebar p-3";
+const settingsPanelClass =
+  "rounded-[28px] border border-dls-border bg-dls-surface p-5 md:p-6";
 
 export function getSettingsTabLabel(tab: SettingsTab) {
   switch (tab) {
@@ -29,6 +31,8 @@ export function getSettingsTabLabel(tab: SettingsTab) {
       return t("settings.tab_updates");
     case "recovery":
       return t("settings.tab_recovery");
+    case "billing":
+      return "Billing";
     case "debug":
       return t("settings.tab_debug");
     default:
@@ -56,6 +60,8 @@ export function getSettingsTabDescription(tab: SettingsTab) {
       return t("settings.tab_description_updates");
     case "recovery":
       return t("settings.tab_description_recovery");
+    case "billing":
+      return "StringCost subscription status and AI usage for this month.";
     case "debug":
       return t("settings.tab_description_debug");
     default:
@@ -70,6 +76,7 @@ export function getWorkspaceSettingsTabs(): SettingsTab[] {
 export function getGlobalSettingsTabs(developerMode: boolean): SettingsTab[] {
   const tabs: SettingsTab[] = [
     "den",
+    "billing",
     "sandbox",
     "appearance",
     "environment",
@@ -149,7 +156,9 @@ export function SettingsPage(props: SettingsPageProps) {
       </aside>
 
       <div className="min-w-0 space-y-6">
-        <div className={`${settingsPanelClass} flex flex-col gap-3 md:flex-row md:items-center md:justify-between`}>
+        <div
+          className={`${settingsPanelClass} flex flex-col gap-3 md:flex-row md:items-center md:justify-between`}
+        >
           <div className="space-y-1">
             <h2 className="text-lg font-semibold tracking-tight text-gray-12">
               {getSettingsTabLabel(props.activeTab)}
@@ -166,8 +175,12 @@ export function SettingsPage(props: SettingsPageProps) {
                   className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs shadow-sm ${props.updateToolbarTone ?? "bg-gray-4/60 text-gray-11 border-gray-7/50"}`}
                   title={props.updateToolbarTitle}
                 >
-                  {props.updateToolbarSpinning ? <RefreshCcw size={12} className="animate-spin" /> : null}
-                  <span className="tabular-nums whitespace-nowrap">{props.updateToolbarLabel}</span>
+                  {props.updateToolbarSpinning ? (
+                    <RefreshCcw size={12} className="animate-spin" />
+                  ) : null}
+                  <span className="tabular-nums whitespace-nowrap">
+                    {props.updateToolbarLabel}
+                  </span>
                 </div>
                 {props.updateToolbarActionLabel ? (
                   <Button

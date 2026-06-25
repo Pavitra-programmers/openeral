@@ -85,7 +85,13 @@ export type StepGroupMode = "exploration" | "standalone";
 
 export type MessageGroup =
   | { kind: "text"; part: Part; segment: "intent" | "result" }
-  | { kind: "steps"; id: string; parts: Part[]; segment: "execution"; mode: StepGroupMode };
+  | {
+      kind: "steps";
+      id: string;
+      parts: Part[];
+      segment: "execution";
+      mode: StepGroupMode;
+    };
 
 export type PromptMode = "prompt" | "shell";
 
@@ -172,6 +178,7 @@ export type OnboardingStep = "welcome" | "local" | "server" | "connecting";
 export type SettingsTab =
   | "general"
   | "den"
+  | "billing"
   | "skills"
   | "extensions"
   | "environment"
@@ -184,7 +191,11 @@ export type SettingsTab =
 
 export type WorkspacePreset = "starter" | "automation" | "minimal";
 
-export type WorkspaceConnectionStatus = "idle" | "connecting" | "connected" | "error";
+export type WorkspaceConnectionStatus =
+  | "idle"
+  | "connecting"
+  | "connected"
+  | "error";
 
 export type WorkspaceConnectionState = {
   status: WorkspaceConnectionStatus;
@@ -314,7 +325,10 @@ export type SuggestedPlugin = {
 
 export type PluginScope = "project" | "global";
 
-export type McpServerSource = "config.project" | "config.global" | "config.remote";
+export type McpServerSource =
+  | "config.project"
+  | "config.global"
+  | "config.remote";
 
 export type McpServerConfig = {
   type: "remote" | "local";
@@ -342,7 +356,13 @@ export type McpStatus =
 
 export type McpStatusMap = Record<string, McpStatus>;
 
-export type ReloadReason = "plugins" | "skills" | "mcp" | "config" | "agents" | "commands";
+export type ReloadReason =
+  | "plugins"
+  | "skills"
+  | "mcp"
+  | "config"
+  | "agents"
+  | "commands";
 
 export type OpencodeConnectStatus = {
   at: number;
