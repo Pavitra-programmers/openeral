@@ -1,7 +1,18 @@
 /** @jsxImportSource react */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Boxes, ExternalLink, Loader2, Plus, RefreshCcw, Settings, Trash2, X } from "lucide-react";
+import {
+  ArrowUpRight,
+  Boxes,
+  ExternalLink,
+  Loader2,
+  Plus,
+  RefreshCcw,
+  Settings,
+  Sparkles,
+  Trash2,
+  X,
+} from "lucide-react";
 
 import type { SandboxProfile } from "../../app/lib/desktop";
 import { Button } from "../design-system/button";
@@ -18,7 +29,9 @@ function getBridge(): ElectronBridge | null {
 async function invoke<T>(command: string, ...args: unknown[]): Promise<T> {
   const bridge = getBridge();
   if (!bridge?.invokeDesktop) {
-    throw new Error("Desktop bridge unavailable — OpenEral sandboxes need the OpenWork desktop app.");
+    throw new Error(
+      "Desktop bridge unavailable — OpenEral sandboxes need the OpenWork desktop app.",
+    );
   }
   return (await bridge.invokeDesktop(command, ...args)) as T;
 }
@@ -33,7 +46,8 @@ type CredentialStatus = {
 
 // Matches the panel/badge/button vocabulary used across Settings so the screen
 // reads as a native part of the app.
-const panelClass = "rounded-[28px] border border-dls-border bg-dls-surface p-5 md:p-6";
+const panelClass =
+  "rounded-[28px] border border-dls-border bg-dls-surface p-5 md:p-6";
 const badgeBaseClass =
   "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider";
 const pillButtonClass = "h-8 rounded-full px-3 text-xs";
@@ -49,15 +63,35 @@ function deriveSandboxName(workspaceId: string): string {
   return trimmed ? `openeral-${trimmed}` : "";
 }
 
-function phaseBadge(phase?: string): { cls: string; dot: string; label: string } {
+function phaseBadge(phase?: string): {
+  cls: string;
+  dot: string;
+  label: string;
+} {
   const p = (phase ?? "").toLowerCase();
   if (/ready|running/.test(p))
-    return { cls: "border-green-7/60 bg-green-3/30 text-green-12", dot: "bg-green-9", label: phase || "Ready" };
+    return {
+      cls: "border-green-7/60 bg-green-3/30 text-green-12",
+      dot: "bg-green-9",
+      label: phase || "Ready",
+    };
   if (/provision|starting|pending/.test(p))
-    return { cls: "border-amber-7/50 bg-amber-2/30 text-amber-12", dot: "bg-amber-9", label: phase || "Provisioning" };
+    return {
+      cls: "border-amber-7/50 bg-amber-2/30 text-amber-12",
+      dot: "bg-amber-9",
+      label: phase || "Provisioning",
+    };
   if (/error|failed|stopped/.test(p))
-    return { cls: "border-red-7/50 bg-red-2/30 text-red-12", dot: "bg-red-9", label: phase || "Error" };
-  return { cls: "border-gray-7/40 bg-gray-3/30 text-gray-11", dot: "bg-gray-8", label: phase || "Unknown" };
+    return {
+      cls: "border-red-7/50 bg-red-2/30 text-red-12",
+      dot: "bg-red-9",
+      label: phase || "Error",
+    };
+  return {
+    cls: "border-gray-7/40 bg-gray-3/30 text-gray-11",
+    dot: "bg-gray-8",
+    label: phase || "Unknown",
+  };
 }
 
 export function SandboxesRoute() {
@@ -70,7 +104,10 @@ export function SandboxesRoute() {
 
   const [profile, setProfile] = useState<SandboxProfile>("openeral-claude");
   const [newName, setNewName] = useState("");
-  const [active, setActive] = useState<{ workspaceId: string; profile: SandboxProfile } | null>(null);
+  const [active, setActive] = useState<{
+    workspaceId: string;
+    profile: SandboxProfile;
+  } | null>(null);
 
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [busyName, setBusyName] = useState<string | null>(null);
@@ -80,7 +117,9 @@ export function SandboxesRoute() {
     setListError(null);
     try {
       const [list, status] = await Promise.all([
-        invoke<SandboxRow[]>("openeralListSandboxes").catch(() => invoke<SandboxRow[]>("openeralListSessions")),
+        invoke<SandboxRow[]>("openeralListSandboxes").catch(() =>
+          invoke<SandboxRow[]>("openeralListSessions"),
+        ),
         invoke<CredentialStatus>("openeralCredentialStatus").catch(() => null),
       ]);
       setRows(Array.isArray(list) ? list : []);
@@ -103,6 +142,54 @@ export function SandboxesRoute() {
     [previewName, rows],
   );
   const canCreate = Boolean(previewName) && !nameTaken && dbReady;
+  const billingConfigured = creds?.stringcostApiKey === "set";
+
+  // Optional StringCost billing status — fetched in background when the key is set.
+  // The renderer never sees the actual key; the IPC handler reads it from the keyring.
+  const [scStatus, setScStatus] = useState<{
+    keyMissing?: boolean;
+    keyValid?: boolean;
+    billingMode?: string;
+    creditBalanceMicros?: string;
+    outstandingMicros?: string;
+    currentPeriod?: {
+      start: string;
+      end: string;
+      usageCostMicros: string;
+      callCount: number;
+    };
+    lastInvoice?: {
+      status: string;
+      totalMicros: string;
+      dueDate: string | null;
+      paidAt: string | null;
+      stripeInvoiceUrl: string | null;
+    } | null;
+    dashboardUrl?: string;
+    error?: string;
+  } | null>(null);
+  const [scStatusLoading, setScStatusLoading] = useState(false);
+
+  const refreshScStatus = useCallback(async () => {
+    if (!billingConfigured) {
+      setScStatus(null);
+      return;
+    }
+    setScStatusLoading(true);
+    try {
+      const result = await invoke<typeof scStatus>("openeralStringCostStatus");
+      setScStatus(result);
+    } catch {
+      setScStatus(null);
+    } finally {
+      setScStatusLoading(false);
+    }
+  }, [billingConfigured]);
+
+  // Fetch StringCost status once when creds load and billing key is set.
+  useEffect(() => {
+    if (billingConfigured) void refreshScStatus();
+  }, [billingConfigured, refreshScStatus]);
 
   const openSandbox = (name: string, p: SandboxProfile) => {
     setActive({ workspaceId: name.replace(/^openeral-/, ""), profile: p });
@@ -158,7 +245,9 @@ export function SandboxesRoute() {
         <header className="sticky top-0 z-10 flex h-12 shrink-0 items-center justify-between border-b border-dls-border bg-dls-surface px-4 md:px-6">
           <div className="flex min-w-0 items-center gap-2.5">
             <Boxes size={17} className="shrink-0 text-dls-accent" />
-            <h1 className="truncate text-[15px] font-semibold text-dls-text">OpenEral Sandboxes</h1>
+            <h1 className="truncate text-[15px] font-semibold text-dls-text">
+              OpenEral Sandboxes
+            </h1>
             <span className="hidden truncate text-[13px] text-dls-secondary lg:inline">
               Persistent, Postgres-backed agent sandboxes
             </span>
@@ -171,9 +260,29 @@ export function SandboxesRoute() {
               disabled={loading}
               title="Refresh"
             >
-              {loading ? <Loader2 size={15} className="animate-spin" /> : <RefreshCcw size={15} />}
+              {loading ? (
+                <Loader2 size={15} className="animate-spin" />
+              ) : (
+                <RefreshCcw size={15} />
+              )}
               <span className="hidden sm:inline">Refresh</span>
             </button>
+            {creds ? (
+              <div
+                className={`hidden sm:flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium ${
+                  billingConfigured
+                    ? "border-green-7/50 bg-green-2/20 text-green-11"
+                    : "border-dls-border bg-dls-surface text-dls-secondary"
+                }`}
+              >
+                <span
+                  className={`inline-block h-1.5 w-1.5 rounded-full ${billingConfigured ? "bg-green-9" : "bg-gray-7"}`}
+                />
+                {billingConfigured
+                  ? "StringCost active"
+                  : "StringCost optional"}
+              </div>
+            ) : null}
             <button
               type="button"
               className="flex h-9 w-9 items-center justify-center rounded-md text-gray-10 transition-colors hover:bg-gray-2/70 hover:text-dls-text"
@@ -194,9 +303,12 @@ export function SandboxesRoute() {
               <div className="flex items-start gap-3 rounded-2xl border border-amber-7/40 bg-amber-2/20 p-4 text-amber-12">
                 <Settings size={16} className="mt-0.5 shrink-0" />
                 <div className="flex-1 text-[13px]">
-                  <div className="font-medium">DATABASE_URL is not configured</div>
+                  <div className="font-medium">
+                    DATABASE_URL is not configured
+                  </div>
                   <div className="opacity-90">
-                    OpenEral sandboxes need a PostgreSQL connection for persistence. Set it before creating one.
+                    OpenEral sandboxes need a PostgreSQL connection for
+                    persistence. Set it before creating one.
                   </div>
                 </div>
                 <Button
@@ -209,14 +321,63 @@ export function SandboxesRoute() {
               </div>
             ) : null}
 
+            {/* StringCost advisory — shown when key is NOT set */}
+            {creds && !billingConfigured ? (
+              <div className="flex items-start gap-3 rounded-2xl border border-dls-border bg-dls-surface/60 p-4">
+                <Sparkles size={16} className="mt-0.5 shrink-0 text-violet-9" />
+                <div className="flex-1 text-[13px]">
+                  <div className="font-medium text-dls-text">
+                    Unlock cost monitoring &amp; billing reports
+                  </div>
+                  <div className="mt-0.5 text-dls-secondary">
+                    Sign up on <strong>StringCost</strong> to get your API key —
+                    unlocks per-session cost tracking, usage reports, and
+                    billing visibility directly in OpenWork. Sandboxes work
+                    without it.
+                  </div>
+                </div>
+                <a
+                  href="https://app.stringcost.com"
+                  target="_blank"
+                  rel="noreferrer"
+                  className={`${pillButtonClass} inline-flex items-center gap-1.5 rounded-full border border-dls-border bg-dls-surface px-3 text-xs font-medium text-dls-text hover:bg-dls-hover`}
+                >
+                  Get key <ArrowUpRight size={12} />
+                </a>
+              </div>
+            ) : null}
+
+            {/* StringCost billing status — minimal, full details in Settings → Billing */}
+            {billingConfigured ? (
+              <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-green-7/40 bg-green-2/10 px-4 py-3 text-[13px]">
+                <span className="inline-block h-2 w-2 shrink-0 rounded-full bg-green-9" />
+                <span className="font-medium text-green-11">
+                  StringCost billing active
+                </span>
+                <span className="text-dls-secondary">
+                  — cost monitoring and usage reports enabled.
+                </span>
+                <button
+                  type="button"
+                  className="ml-auto text-[12px] text-dls-secondary hover:text-dls-text"
+                  onClick={() => navigate("/settings/billing")}
+                >
+                  View billing →
+                </button>
+              </div>
+            ) : null}
+
             {/* Create */}
             <section className={panelClass}>
               <div className="mb-1 flex items-center gap-2">
                 <Plus size={15} className="text-dls-accent" />
-                <h2 className="text-sm font-semibold text-dls-text">New sandbox</h2>
+                <h2 className="text-sm font-semibold text-dls-text">
+                  New sandbox
+                </h2>
               </div>
               <p className="mb-4 text-[13px] text-dls-secondary">
-                Name it and launch — the agent starts automatically inside a fresh, persistent sandbox.
+                Name it and launch — the agent starts automatically inside a
+                fresh, persistent sandbox.
               </p>
               <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
                 <div className="flex-1">
@@ -234,11 +395,15 @@ export function SandboxesRoute() {
                   />
                 </div>
                 <div className="w-full sm:w-52">
-                  <div className="mb-1 text-[11px] font-medium uppercase tracking-wider text-gray-8">Agent</div>
+                  <div className="mb-1 text-[11px] font-medium uppercase tracking-wider text-gray-8">
+                    Agent
+                  </div>
                   <select
                     className="h-9 w-full rounded-lg border border-dls-border bg-dls-surface px-3 text-sm text-dls-text shadow-sm focus:outline-none focus:ring-2 focus:ring-[rgba(var(--dls-accent-rgb),0.2)]"
                     value={profile}
-                    onChange={(e) => setProfile(e.target.value as SandboxProfile)}
+                    onChange={(e) =>
+                      setProfile(e.target.value as SandboxProfile)
+                    }
                   >
                     <option value="openeral-claude">Claude Code</option>
                     <option value="openeral-openclaw">OpenClaw</option>
@@ -260,7 +425,9 @@ export function SandboxesRoute() {
               ) : previewName ? (
                 <div className="mt-2 text-[11px] text-dls-secondary">
                   Creates{" "}
-                  <code className="rounded bg-gray-2/40 px-1 py-0.5 text-[11px]">{previewName}</code>
+                  <code className="rounded bg-gray-2/40 px-1 py-0.5 text-[11px]">
+                    {previewName}
+                  </code>
                 </div>
               ) : null}
             </section>
@@ -270,7 +437,11 @@ export function SandboxesRoute() {
               <div className="mb-4 flex items-center justify-between">
                 <h2 className="text-sm font-semibold text-dls-text">
                   Your sandboxes
-                  {rows.length ? <span className="ml-1.5 text-dls-secondary">({rows.length})</span> : null}
+                  {rows.length ? (
+                    <span className="ml-1.5 text-dls-secondary">
+                      ({rows.length})
+                    </span>
+                  ) : null}
                 </h2>
               </div>
 
@@ -287,8 +458,13 @@ export function SandboxesRoute() {
                 </div>
               ) : rows.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-dls-border py-10 text-center">
-                  <Boxes size={26} className="mx-auto mb-2 text-dls-secondary" />
-                  <div className="text-sm font-medium text-dls-text">No sandboxes yet</div>
+                  <Boxes
+                    size={26}
+                    className="mx-auto mb-2 text-dls-secondary"
+                  />
+                  <div className="text-sm font-medium text-dls-text">
+                    No sandboxes yet
+                  </div>
                   <div className="mt-1 text-[13px] text-dls-secondary">
                     Create your first one above to launch an agent.
                   </div>
@@ -299,17 +475,26 @@ export function SandboxesRoute() {
                     const badge = phaseBadge(row.phase);
                     const busy = busyName === row.name;
                     return (
-                      <li key={row.name} className="flex items-center gap-3 bg-dls-surface px-4 py-3">
+                      <li
+                        key={row.name}
+                        className="flex items-center gap-3 bg-dls-surface px-4 py-3"
+                      >
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
-                            <span className="truncate text-sm font-medium text-dls-text">{row.name}</span>
+                            <span className="truncate text-sm font-medium text-dls-text">
+                              {row.name}
+                            </span>
                             <span className={`${badgeBaseClass} ${badge.cls}`}>
-                              <span className={`inline-block h-1.5 w-1.5 rounded-full ${badge.dot}`} />
+                              <span
+                                className={`inline-block h-1.5 w-1.5 rounded-full ${badge.dot}`}
+                              />
                               {badge.label}
                             </span>
                           </div>
                           {row.created ? (
-                            <div className="mt-0.5 text-[11px] text-dls-secondary">Created {row.created}</div>
+                            <div className="mt-0.5 text-[11px] text-dls-secondary">
+                              Created {row.created}
+                            </div>
                           ) : null}
                         </div>
                         <Button
@@ -330,7 +515,11 @@ export function SandboxesRoute() {
                           title={`Delete ${row.name}`}
                           aria-label={`Delete ${row.name}`}
                         >
-                          {busy ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                          {busy ? (
+                            <Loader2 size={14} className="animate-spin" />
+                          ) : (
+                            <Trash2 size={14} />
+                          )}
                         </Button>
                       </li>
                     );
@@ -347,16 +536,24 @@ export function SandboxesRoute() {
         title="Delete sandbox?"
         message={
           <span>
-            Delete <span className="font-medium text-dls-text">{deleteTarget}</span>? The container is
-            removed, but its Postgres-backed <code className="rounded bg-gray-2/40 px-1 py-0.5 text-[11px]">/home/agent</code>{" "}
-            data persists and is restored if you recreate a sandbox with the same name.
+            Delete{" "}
+            <span className="font-medium text-dls-text">{deleteTarget}</span>?
+            The container is removed, but its Postgres-backed{" "}
+            <code className="rounded bg-gray-2/40 px-1 py-0.5 text-[11px]">
+              /home/agent
+            </code>{" "}
+            data persists and is restored if you recreate a sandbox with the
+            same name.
           </span>
         }
-        confirmLabel="Delete"
+        confirmLabel={busyName ? "Deleting…" : "Delete"}
         cancelLabel="Cancel"
         variant="danger"
+        busy={busyName !== null}
         onConfirm={() => void confirmDelete()}
-        onCancel={() => setDeleteTarget(null)}
+        onCancel={() => {
+          if (!busyName) setDeleteTarget(null);
+        }}
       />
     </div>
   );
