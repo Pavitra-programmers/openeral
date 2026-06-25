@@ -160,7 +160,22 @@
       "Bash(ls scripts *)",
       "Bash(grep -rl \"openeral\" electron)",
       "Bash(grep -vi \"\\\\.md$\")",
-      "Bash(wsl *)"
+      "Bash(wsl *)",
+      "WebFetch(domain:openclaw.dev)",
+      "WebFetch(domain:docs.openclaw.dev)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:api.github.com)",
+      "Bash(./node_modules/.bin/tsc --noEmit)",
+      "Bash(./node_modules/.bin/vitest run *)",
+      "Bash(grep -r \"usage\\\\|report\\\\|Claude\\\\|spending\" /c/Users/dines/OneDrive/Desktop/work/openeral/openwork/apps/server-v2/src/routes/*.ts)",
+      "Bash(find /c/Users/dines/OneDrive/Desktop/work/openeral/openwork/apps/app/src -type f \\\\\\( -name \"*.tsx\" -o -name \"*.ts\" \\\\\\) -exec grep -l \"csv\\\\|CSV\\\\|download\" {} \\\\;)",
+      "Bash(find /c/Users/dines/OneDrive/Desktop/work/openeral/openwork/apps -type f \\\\\\( -name \"*.tsx\" -o -name \"*.ts\" \\\\\\) ! -path \"*/node_modules/*\" -exec grep -l \"\\\\.cost\\\\|\\\\.tokens\" {} \\\\;)",
+      "Bash(find /c/Users/dines/OneDrive/Desktop/work/openeral -name \"*.ts\" ! -path \"*/node_modules/*\" -type f -exec grep -l \"tokens.*input\\\\|tokens.*output\\\\|cache.*read\" {} \\\\;)",
+      "Bash(grep -r \"optimization_metrics\" /c/Users/dines/OneDrive/Desktop/work/openeral --include=\"*.ts\" --include=\"*.tsx\" ! -path \"*/node_modules/*\")",
+      "Bash(find /c/Users/dines/OneDrive/Desktop/work/openeral -type f \\\\\\( -name \"*.ts\" -o -name \"*.tsx\" \\\\\\) ! -path \"*/node_modules/*\" -exec grep -l \"optimization_metrics\" {} \\\\;)",
+      "Read(//c/Users/dines/OneDrive/Desktop/work/stringcost/**)",
+      "Read(//c/Users/dines/Desktop/work/**)",
+      "Read(//c/Users/dines/**)"
     ]
   }
 }

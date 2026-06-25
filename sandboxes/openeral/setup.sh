@@ -666,6 +666,74 @@ if [ "$OPENERAL_AGENT" = "openclaw" ]; then
     cp -rn /opt/openclaw-compile-cache/. /tmp/openclaw-compile-cache/ 2>/dev/null || true
   fi
 
+  # ── Reconnect fast-path + early gateway cleanup ───────────────────────────
+  #
+  # Both `openclaw onboard` AND `openclaw gateway` acquire the same dep-staging
+  # lock at /tmp/openclaw-runtime-deps/. A previous gateway (started with setsid)
+  # holds that lock for its ENTIRE lifetime — if we don't kill it first, both
+  # onboard and the gateway each wait 300 s before giving up, for a combined
+  # 600 s timeout that makes every reconnect take 10+ minutes.
+  #
+  # Fast-path: if the existing gateway is alive AND /readyz responds → the
+  # gateway is fully ready. Skip onboard, gateway start, and TUI pre-staging
+  # (all already done last session). Set _gw_already_ready=true so every
+  # expensive block below is bypassed.
+  #
+  # _gw_pid is set here so the later gateway section can reference it uniformly
+  # regardless of which path was taken.
+  _gw_already_ready=false
+  _gw_pid=""
+  if [ -f /tmp/openclaw-gateway.pid ]; then
+    _existing_gw_pid="$(cat /tmp/openclaw-gateway.pid 2>/dev/null || true)"
+    if [ -n "$_existing_gw_pid" ] && kill -0 "$_existing_gw_pid" 2>/dev/null; then
+      if curl -fsS --max-time 5 http://127.0.0.1:18789/readyz >/dev/null 2>&1; then
+        echo "setup.sh: reusing existing gateway (pid $_existing_gw_pid, /readyz OK) — skipping onboard + startup"
+        _gw_pid="$_existing_gw_pid"
+        _gw_already_ready=true
+      else
+        echo "setup.sh: existing gateway (pid $_existing_gw_pid) alive but /readyz not responding — will restart"
+      fi
+    fi
+  fi
+
+  if [ "$_gw_already_ready" = "false" ]; then
+    # Kill the stale gateway NOW, before onboard and before the new gateway start.
+    # Both commands acquire the dep-staging lock; killing first means neither waits.
+    if [ -f /tmp/openclaw-gateway.pid ]; then
+      _old_gw_pid="$(cat /tmp/openclaw-gateway.pid 2>/dev/null || true)"
+      if [ -n "$_old_gw_pid" ] && kill -0 "$_old_gw_pid" 2>/dev/null; then
+        echo "setup.sh: stopping stale gateway (pid $_old_gw_pid) before onboard..."
+        kill "$_old_gw_pid" 2>/dev/null || true
+        _kw=0
+        while [ $_kw -lt 50 ]; do
+          kill -0 "$_old_gw_pid" 2>/dev/null || break
+          sleep 0.1
+          _kw=$((_kw+1))
+        done
+        if kill -0 "$_old_gw_pid" 2>/dev/null; then
+          kill -9 "$_old_gw_pid" 2>/dev/null || true; sleep 0.2
+        fi
+        echo "setup.sh: stale gateway stopped"
+      fi
+      rm -f /tmp/openclaw-gateway.pid
+    fi
+    # Kill any stray openclaw process on port 18789 not tracked by our PID file.
+    _stray_pids="$(fuser 18789/tcp 2>/dev/null | tr ' ' '\n' | grep -v '^$' || true)"
+    if [ -n "$_stray_pids" ]; then
+      echo "setup.sh: killing stray processes on port 18789: $_stray_pids"
+      echo "$_stray_pids" | xargs -r kill 2>/dev/null || true
+      sleep 0.5
+      echo "$_stray_pids" | xargs -r kill -9 2>/dev/null || true
+      sleep 0.2
+    fi
+    # Remove stale dep-staging lock files so the new gateway acquires the lock
+    # immediately instead of waiting 300 s before timing out.
+    if [ -d /tmp/openclaw-runtime-deps ]; then
+      echo "setup.sh: clearing stale runtime-deps locks..."
+      find /tmp/openclaw-runtime-deps -name '.openclaw-runtime-deps.lock' -delete 2>/dev/null || true
+    fi
+  fi
+
   # Install a diagnose script the user can run if openclaw misbehaves. Dumps
   # everything relevant: config, auth profile, gateway log tail, onboard log
   # tail, /readyz status, env vars. Lives in /home/agent so reconnect sessions
@@ -726,7 +794,10 @@ DIAG_EOF
     ''|openshell:resolve:env:*) ;;
     *) _openclaw_key_ok=true ;;
   esac
-  if [ "$_openclaw_key_ok" = "true" ]; then
+  # Skip onboard on reconnect — auth-profiles.json already written last session.
+  # onboard also acquires the dep-staging lock; running it unnecessarily adds
+  # another 300 s wait if something goes wrong with lock cleanup.
+  if [ "$_gw_already_ready" = "false" ] && [ "$_openclaw_key_ok" = "true" ]; then
     echo "setup.sh: running openclaw onboard to create auth profile..."
     # 600s timeout: onboard does plugin discovery + dep resolution + auth-profile
     # write. With the V8 cache and PLUGIN_STAGE_DIR primed above, this typically
@@ -939,48 +1010,58 @@ console.log('setup.sh: openclaw config written to ' + file);
   # block (before `openclaw onboard`) so onboard, the gateway, and the doctor
   # subcommands all see consistent env. See the runtime-env block above.
 
-  echo "setup.sh: starting openclaw gateway..."
-  # setsid puts the gateway in a new session with no controlling terminal.
-  # Without this, exiting the openclaw TUI (Ctrl+C) sends SIGHUP to the entire
-  # session including the background gateway, killing it. With setsid the gateway
-  # survives TUI exit, so `openshell sandbox connect` finds it still running.
-  setsid env OPENCLAW_SKIP_ONBOARDING=1 OPENCLAW_HANDSHAKE_TIMEOUT_MS=30000 \
-    OPENCLAW_NO_RESPAWN=1 \
-    NODE_COMPILE_CACHE=/tmp/openclaw-compile-cache \
-    GIT_SSL_NO_VERIFY=true npm_config_strict_ssl=false \
-    HOME=/home/agent openclaw gateway --port 18789 --allow-unconfigured \
-    </dev/null >/tmp/openclaw-gateway.log 2>&1 &
-  _gw_pid=$!
-  echo "$_gw_pid" > /tmp/openclaw-gateway.pid
-  # Wait up to 600s for /readyz (NOT just TCP).
-  # TCP opens well before the WebSocket RPC layer is live; /readyz returns 200
-  # only once the gateway is truly ready to accept client connections.
-  # The gateway stages 35 bundled npm packages on every cold start, which can take
-  # several minutes on slow networks. Wait up to 600s (10 min) before giving up.
-  _gd=0
-  while [ $_gd -lt 600 ]; do
-    curl -fsS http://127.0.0.1:18789/readyz >/dev/null 2>&1 && break
-    [ $_gd -eq 10 ] && echo "setup.sh: waiting for openclaw gateway readiness (/readyz) — this can take a few minutes on first run..." >&2
-    [ $_gd -eq 60 ] && echo "setup.sh: still waiting for gateway (staging bundled deps)..." >&2
-    [ $_gd -eq 120 ] && echo "setup.sh: still waiting for gateway (2 min)..." >&2
-    [ $_gd -eq 180 ] && echo "setup.sh: still waiting for gateway (3 min)..." >&2
-    [ $_gd -eq 240 ] && echo "setup.sh: still waiting for gateway (4 min)..." >&2
-    [ $_gd -eq 300 ] && echo "setup.sh: still waiting for gateway (5 min)..." >&2
-    [ $_gd -eq 420 ] && echo "setup.sh: still waiting for gateway (7 min)..." >&2
-    [ $_gd -eq 540 ] && echo "setup.sh: still waiting for gateway (9 min)..." >&2
-    sleep 1
-    _gd=$((_gd+1))
-  done
-  if curl -fsS http://127.0.0.1:18789/readyz >/dev/null 2>&1; then
-    echo "setup.sh: openclaw gateway ready (pid $_gw_pid)"
-  else
-    echo "setup.sh: warning: openclaw gateway not ready after 600s — check /tmp/openclaw-gateway.log" >&2
-    cat /tmp/openclaw-gateway.log >&2 || true
+  # ── Gateway start (fresh path only) ─────────────────────────────────────────
+  #
+  # _gw_already_ready and the stale-gateway kill were handled early (before onboard)
+  # so neither onboard nor the gateway pay the 300 s lock-wait tax.
+  # If _gw_already_ready=true this entire block is skipped.
+
+  if [ "$_gw_already_ready" = "false" ]; then
+    echo "setup.sh: starting openclaw gateway..."
+    # setsid puts the gateway in a new session with no controlling terminal.
+    # Without this, exiting the openclaw TUI (Ctrl+C) sends SIGHUP to the entire
+    # session including the background gateway, killing it. With setsid the gateway
+    # survives TUI exit, so `openshell sandbox connect` finds it still running.
+    setsid env OPENCLAW_SKIP_ONBOARDING=1 OPENCLAW_HANDSHAKE_TIMEOUT_MS=30000 \
+      OPENCLAW_NO_RESPAWN=1 \
+      NODE_COMPILE_CACHE=/tmp/openclaw-compile-cache \
+      GIT_SSL_NO_VERIFY=true npm_config_strict_ssl=false \
+      OPENCLAW_PLUGIN_STAGE_DIR=/tmp/openclaw-plugin-runtime-deps \
+      HOME=/home/agent openclaw gateway --port 18789 --allow-unconfigured \
+      </dev/null >/tmp/openclaw-gateway.log 2>&1 &
+    _gw_pid=$!
+    echo "$_gw_pid" > /tmp/openclaw-gateway.pid
+    # Wait up to 600s for /readyz (NOT just TCP).
+    # TCP opens well before the WebSocket RPC layer is live; /readyz returns 200
+    # only once the gateway is truly ready to accept client connections.
+    # The gateway stages 35 bundled npm packages on every cold start, which can take
+    # several minutes on slow networks. Wait up to 600s (10 min) before giving up.
+    _gd=0
+    while [ $_gd -lt 600 ]; do
+      curl -fsS http://127.0.0.1:18789/readyz >/dev/null 2>&1 && break
+      [ $_gd -eq 10 ] && echo "setup.sh: waiting for openclaw gateway readiness (/readyz) — this can take a few minutes on first run..." >&2
+      [ $_gd -eq 60 ] && echo "setup.sh: still waiting for gateway (staging bundled deps)..." >&2
+      [ $_gd -eq 120 ] && echo "setup.sh: still waiting for gateway (2 min)..." >&2
+      [ $_gd -eq 180 ] && echo "setup.sh: still waiting for gateway (3 min)..." >&2
+      [ $_gd -eq 240 ] && echo "setup.sh: still waiting for gateway (4 min)..." >&2
+      [ $_gd -eq 300 ] && echo "setup.sh: still waiting for gateway (5 min)..." >&2
+      [ $_gd -eq 420 ] && echo "setup.sh: still waiting for gateway (7 min)..." >&2
+      [ $_gd -eq 540 ] && echo "setup.sh: still waiting for gateway (9 min)..." >&2
+      sleep 1
+      _gd=$((_gd+1))
+    done
+    if curl -fsS http://127.0.0.1:18789/readyz >/dev/null 2>&1; then
+      echo "setup.sh: openclaw gateway ready (pid $_gw_pid)"
+    else
+      echo "setup.sh: warning: openclaw gateway not ready after 600s — check /tmp/openclaw-gateway.log" >&2
+      tail -40 /tmp/openclaw-gateway.log >&2 || true
+    fi
   fi
 
   # Re-apply auth credentials: the gateway modifies openclaw.json during startup
   # (adds gateway.auth.token, may clobber env settings on first run). Write our
   # auth settings back now that the gateway has finished its own modifications.
+  # Run this even on reconnect — ANTHROPIC_BASE_URL may have changed (new presign).
   echo "setup.sh: re-applying openclaw auth config..."
   HOME=/home/agent node -e "
 const fs = require('fs');
@@ -1081,6 +1162,7 @@ console.log('setup.sh: openclaw auth config applied');
 
   # After the config rewrite the gateway may briefly restart. Wait for /readyz
   # again before handing off to openclaw — a TCP check is not sufficient here.
+  # On the reconnect fast-path this is instant (gateway was already healthy).
   _gw_post=0
   while [ $_gw_post -lt 60 ]; do
     curl -fsS http://127.0.0.1:18789/readyz >/dev/null 2>&1 && break
@@ -1091,7 +1173,7 @@ console.log('setup.sh: openclaw auth config applied');
     echo "setup.sh: gateway stable after auth config"
   else
     echo "setup.sh: warning: gateway not responding after config re-apply" >&2
-    cat /tmp/openclaw-gateway.log >&2 || true
+    tail -40 /tmp/openclaw-gateway.log >&2 || true
   fi
 
   # Pre-stage TUI plugin npm deps so the first user prompt doesn't pay the full
@@ -1102,31 +1184,39 @@ console.log('setup.sh: openclaw auth config applied');
   # freeze the terminal). Seed from an image-baked cache first (Dockerfile Fix
   # 3), then run a deep status probe so any remaining plugins finish staging
   # while we have a tty-free shell to absorb the wait.
-  if [ -d /opt/openclaw-plugin-cache ] && [ -n "$(ls -A /opt/openclaw-plugin-cache 2>/dev/null)" ]; then
-    echo "setup.sh: seeding TUI plugin cache from image..."
-    mkdir -p /home/agent/.openclaw/plugin-runtime-deps
-    # cp -rn: don't clobber files the workspace restore may have already placed.
-    cp -rn /opt/openclaw-plugin-cache/. /home/agent/.openclaw/plugin-runtime-deps/ 2>/dev/null || true
+  #
+  # SKIP on reconnect: pre-staging was already done in the previous session.
+  # openclaw status --deep takes up to 300 s — paying that cost on every
+  # reconnect is a major source of the "20 min to be reachable" symptom.
+  if [ "$_gw_already_ready" = "false" ]; then
+    if [ -d /opt/openclaw-plugin-cache ] && [ -n "$(ls -A /opt/openclaw-plugin-cache 2>/dev/null)" ]; then
+      echo "setup.sh: seeding TUI plugin cache from image..."
+      mkdir -p /home/agent/.openclaw/plugin-runtime-deps
+      # cp -rn: don't clobber files the workspace restore may have already placed.
+      cp -rn /opt/openclaw-plugin-cache/. /home/agent/.openclaw/plugin-runtime-deps/ 2>/dev/null || true
+    fi
+
+    echo "setup.sh: pre-staging TUI plugin deps (first run, may take 2-5 min)..."
+    # Same env (GIT_SSL_NO_VERIFY, npm_config_strict_ssl, OPENCLAW_NO_RESPAWN,
+    # NODE_COMPILE_CACHE) was exported above, so this inherits it. The timeout
+    # is shorter than gateway pre-stage because if it fails here, the TUI will
+    # retry on demand — we don't want setup to block forever on a slow stage.
+    HOME=/home/agent timeout 300 openclaw status --deep </dev/null \
+      >/tmp/openclaw-bootstrap.log 2>&1 \
+      && echo "setup.sh: TUI plugin pre-stage complete" \
+      || echo "setup.sh: warning: TUI plugin pre-stage exited non-zero — continuing (see /tmp/openclaw-bootstrap.log)" >&2
+
+    # Consolidate the plugin registry. After staging, the doctor often reports
+    # "Persisted plugin registry is missing or stale" — `openclaw doctor --fix`
+    # rebuilds ~/.openclaw/plugins/installs.json from what is actually present.
+    # Without this, every TUI launch re-runs plugin discovery and partial install.
+    HOME=/home/agent timeout 60 openclaw doctor --fix </dev/null \
+      >>/tmp/openclaw-bootstrap.log 2>&1 \
+      && echo "setup.sh: plugin registry consolidated" \
+      || echo "setup.sh: note: doctor --fix exited non-zero — continuing" >&2
+  else
+    echo "setup.sh: skipping TUI pre-stage (gateway reused from previous session)"
   fi
-
-  echo "setup.sh: pre-staging TUI plugin deps (this can take a few minutes on first run)..."
-  # Same env (GIT_SSL_NO_VERIFY, npm_config_strict_ssl, OPENCLAW_NO_RESPAWN,
-  # NODE_COMPILE_CACHE) was exported above, so this inherits it. The timeout
-  # is shorter than gateway pre-stage because if it fails here, the TUI will
-  # retry on demand — we don't want setup to block forever on a slow stage.
-  HOME=/home/agent timeout 300 openclaw status --deep </dev/null \
-    >/tmp/openclaw-bootstrap.log 2>&1 \
-    && echo "setup.sh: TUI plugin pre-stage complete" \
-    || echo "setup.sh: warning: TUI plugin pre-stage exited non-zero — continuing (see /tmp/openclaw-bootstrap.log)" >&2
-
-  # Consolidate the plugin registry. After staging, the doctor often reports
-  # "Persisted plugin registry is missing or stale" — `openclaw doctor --fix`
-  # rebuilds ~/.openclaw/plugins/installs.json from what is actually present.
-  # Without this, every TUI launch re-runs plugin discovery and partial install.
-  HOME=/home/agent timeout 60 openclaw doctor --fix </dev/null \
-    >>/tmp/openclaw-bootstrap.log 2>&1 \
-    && echo "setup.sh: plugin registry consolidated" \
-    || echo "setup.sh: note: doctor --fix exited non-zero — continuing" >&2
 
   echo "setup.sh: launching OpenClaw..."
   echo "setup.sh: if the TUI shows 'run aborted', exit and run:"
