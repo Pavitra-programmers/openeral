@@ -4,7 +4,7 @@
 
 export { Optimizer, createOptimizer } from './optimizer.js';
 export { analyzeTask, selectOptimalModel } from './task-analyzer.js';
-export { compressPrompt, estimateRequestTokens } from './prompt-compressor.js';
+export { compressPrompt, compressMessages, compressText, estimateRequestTokens } from './prompt-compressor.js';
 export { enablePromptCaching, generateCacheKey, getCachedResponse, setCachedResponse } from './caching.js';
 export { calculateCost, storeMetrics, getOptimizationStats, formatStats } from './metrics.js';
 export { OptimizerProxy, startProxy } from './proxy.js';

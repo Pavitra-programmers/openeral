@@ -33,7 +33,7 @@ export function enablePromptCaching(request: APIRequest): APIRequest {
     // Cache the second-to-last message if it's large
     const contextIdx = cached.messages.length - 2;
     const contextMsg = cached.messages[contextIdx];
-    
+
     if (contextMsg && typeof contextMsg.content === 'string' && contextMsg.content.length > 1024) {
       cached.messages[contextIdx] = {
         ...contextMsg,
@@ -44,6 +44,15 @@ export function enablePromptCaching(request: APIRequest): APIRequest {
         }],
       };
     }
+  }
+
+  // Stabilise tool definitions: sort alphabetically so Anthropic's KV cache
+  // can match the same prefix even when tool order varies between turns.
+  // This is the "cache alignment" technique from Headroom.
+  if (Array.isArray((cached as any).tools) && (cached as any).tools.length > 1) {
+    (cached as any).tools = [...(cached as any).tools].sort((a: any, b: any) =>
+      String(a.name ?? '').localeCompare(String(b.name ?? ''))
+    );
   }
 
   return cached;
