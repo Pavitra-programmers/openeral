@@ -3,7 +3,11 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Check, Loader2, Minimize2, Redo2, Undo2, Zap } from "lucide-react";
 
 import { t } from "../../../../i18n";
-import { buildOpenworkWorkspaceBaseUrl, type OpenworkServerClient, type OpenworkServerStatus } from "../../../../app/lib/openwork-server";
+import {
+  buildOpenworkWorkspaceBaseUrl,
+  type OpenworkServerClient,
+  type OpenworkServerStatus,
+} from "../../../../app/lib/openwork-server";
 import { getDisplaySessionTitle } from "../../../../app/lib/session-title";
 import type { BootPhase } from "../../../../app/lib/startup-boot";
 import type { WorkspaceInfo } from "../../../../app/lib/desktop";
@@ -18,12 +22,17 @@ import type {
 import type { ShareWorkspaceModalProps } from "../../workspace/types";
 import { Button } from "../../../design-system/button";
 import { ConfirmModal } from "../../../design-system/modals/confirm-modal";
-import ProviderAuthModal, { type ProviderAuthModalProps } from "../../connections/provider-auth/provider-auth-modal";
+import ProviderAuthModal, {
+  type ProviderAuthModalProps,
+} from "../../connections/provider-auth/provider-auth-modal";
 import { PermissionApprovalModal } from "./permission-approval-modal";
 import { QuestionModal } from "../modals/question-modal";
 import { RenameSessionModal } from "../modals/rename-session-modal";
 import { WorkspaceSessionList } from "../sidebar/workspace-session-list";
-import { SessionSurface, type SessionSurfaceProps } from "../surface/session-surface";
+import {
+  SessionSurface,
+  type SessionSurfaceProps,
+} from "../surface/session-surface";
 import { ShareWorkspaceModal } from "../../workspace/share-workspace-modal";
 import { StatusBar, type StatusBarProps } from "./status-bar";
 import {
@@ -70,8 +79,12 @@ export type SessionPageSidebarProps = {
   onOpenRenameWorkspace: (workspaceId: string) => void;
   onShareWorkspace: (workspaceId: string) => void;
   onRevealWorkspace: (workspaceId: string) => void;
-  onRecoverWorkspace: (workspaceId: string) => Promise<boolean> | boolean | void;
-  onTestWorkspaceConnection: (workspaceId: string) => Promise<boolean> | boolean | void;
+  onRecoverWorkspace: (
+    workspaceId: string,
+  ) => Promise<boolean> | boolean | void;
+  onTestWorkspaceConnection: (
+    workspaceId: string,
+  ) => Promise<boolean> | boolean | void;
   onEditWorkspaceConnection: (workspaceId: string) => void;
   onForgetWorkspace: (workspaceId: string) => void;
   onOpenCreateWorkspace: () => void;
@@ -121,7 +134,10 @@ export type SessionPageProps = {
   providerAuthModal?: ProviderAuthModalProps | null;
   activePermission?: PendingPermission | null;
   permissionReplyBusy?: boolean;
-  respondPermission?: (requestID: string, reply: "once" | "always" | "reject") => void;
+  respondPermission?: (
+    requestID: string,
+    reply: "once" | "always" | "reject",
+  ) => void;
   safeStringify?: (value: unknown) => string;
   activeQuestion?: PendingQuestion | null;
   questionReplyBusy?: boolean;
@@ -152,7 +168,10 @@ function getSidebarInitialLoading(props: SessionPageSidebarProps) {
   );
 }
 
-function sessionTitleForId(groups: WorkspaceSessionGroup[], id: string | null | undefined) {
+function sessionTitleForId(
+  groups: WorkspaceSessionGroup[],
+  id: string | null | undefined,
+) {
   if (!id) return "";
   for (const group of groups) {
     const match = group.sessions.find((session) => session.id === id);
@@ -180,11 +199,17 @@ export function SessionPage(props: SessionPageProps) {
   const [renameBusy, setRenameBusy] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [todoExpanded, setTodoExpanded] = useState(true);
-  const [showDelayedSessionLoadingState, setShowDelayedSessionLoadingState] = useState(false);
+  const [showDelayedSessionLoadingState, setShowDelayedSessionLoadingState] =
+    useState(false);
 
   const selectedSessionTitle = useMemo(
-    () => sessionTitleForId(props.sidebar.workspaceSessionGroups, props.selectedSessionId),
+    () =>
+      sessionTitleForId(
+        props.sidebar.workspaceSessionGroups,
+        props.selectedSessionId,
+      ),
     [props.selectedSessionId, props.sidebar.workspaceSessionGroups],
   );
   const workspaceName =
@@ -193,7 +218,8 @@ export function SessionPage(props: SessionPageProps) {
     t("session.workspace_fallback");
   const providerCount = props.providerConnectedIds.length;
   const messageCountVisible = props.selectedSessionId ? 1 : 0;
-  const showWorkspaceSetupEmptyState = props.workspaces.length === 0 && !props.selectedSessionId;
+  const showWorkspaceSetupEmptyState =
+    props.workspaces.length === 0 && !props.selectedSessionId;
   const showStartupSkeleton =
     !props.selectedSessionId &&
     !props.clientConnected &&
@@ -201,30 +227,42 @@ export function SessionPage(props: SessionPageProps) {
     props.startupPhase !== "firstSessionReady" &&
     props.startupPhase !== "ready";
   const showSessionLoadingState =
-    Boolean(props.selectedSessionId) && props.sessionLoadingById(props.selectedSessionId) && !showWorkspaceSetupEmptyState;
-  const todos = useMemo(() => props.todos.filter((todo) => todo.content.trim()), [props.todos]);
+    Boolean(props.selectedSessionId) &&
+    props.sessionLoadingById(props.selectedSessionId) &&
+    !showWorkspaceSetupEmptyState;
+  const todos = useMemo(
+    () => props.todos.filter((todo) => todo.content.trim()),
+    [props.todos],
+  );
   const completedTodos = useMemo(
     () => todos.filter((todo) => todo.status === "completed").length,
     [todos],
   );
-  const sidebarInitialLoading = useMemo(() => getSidebarInitialLoading(props.sidebar), [props.sidebar]);
+  const sidebarInitialLoading = useMemo(
+    () => getSidebarInitialLoading(props.sidebar),
+    [props.sidebar],
+  );
 
   const reactSessionBaseUrl = useMemo(() => {
     const workspaceId = props.runtimeWorkspaceId?.trim() ?? "";
     const baseUrl = props.openworkServerClient?.baseUrl?.trim() ?? "";
     if (!workspaceId || !baseUrl) return "";
-    const mounted = buildOpenworkWorkspaceBaseUrl(baseUrl, workspaceId) ?? baseUrl;
+    const mounted =
+      buildOpenworkWorkspaceBaseUrl(baseUrl, workspaceId) ?? baseUrl;
     return `${mounted.replace(/\/+$/, "")}/opencode`;
   }, [props.openworkServerClient?.baseUrl, props.runtimeWorkspaceId]);
 
-  const reactSessionToken = props.openworkServerClient?.token?.trim() || props.openworkServerToken?.trim() || "";
+  const reactSessionToken =
+    props.openworkServerClient?.token?.trim() ||
+    props.openworkServerToken?.trim() ||
+    "";
   const canRenderReactSurface = Boolean(
     props.selectedSessionId &&
-      props.runtimeWorkspaceId &&
-      props.openworkServerClient &&
-      reactSessionBaseUrl &&
-      reactSessionToken &&
-      props.surface,
+    props.runtimeWorkspaceId &&
+    props.openworkServerClient &&
+    reactSessionBaseUrl &&
+    reactSessionToken &&
+    props.surface,
   );
 
   useEffect(() => {
@@ -243,6 +281,7 @@ export function SessionPage(props: SessionPageProps) {
     setDeleteOpen(false);
     setRenameBusy(false);
     setDeleteBusy(false);
+    setDeleteError(null);
   }, [props.selectedSessionId]);
 
   const openRenameModal = () => {
@@ -254,7 +293,13 @@ export function SessionPage(props: SessionPageProps) {
   const submitRename = async () => {
     const sessionId = props.selectedSessionId;
     const nextTitle = renameTitle.trim();
-    if (!sessionId || !props.onRenameSession || !nextTitle || nextTitle === selectedSessionTitle.trim()) return;
+    if (
+      !sessionId ||
+      !props.onRenameSession ||
+      !nextTitle ||
+      nextTitle === selectedSessionTitle.trim()
+    )
+      return;
     setRenameBusy(true);
     try {
       await props.onRenameSession(sessionId, nextTitle);
@@ -268,9 +313,14 @@ export function SessionPage(props: SessionPageProps) {
     const sessionId = props.selectedSessionId;
     if (!sessionId || !props.onDeleteSession) return;
     setDeleteBusy(true);
+    setDeleteError(null);
     try {
       await props.onDeleteSession(sessionId);
       setDeleteOpen(false);
+    } catch (err) {
+      setDeleteError(
+        err instanceof Error ? err.message : "Failed to delete session.",
+      );
     } finally {
       setDeleteBusy(false);
     }
@@ -278,7 +328,10 @@ export function SessionPage(props: SessionPageProps) {
 
   const todoLabel =
     completedTodos > 0
-      ? t("session.todo_progress_label", undefined, { completed: completedTodos, total: todos.length })
+      ? t("session.todo_progress_label", undefined, {
+          completed: completedTodos,
+          total: todos.length,
+        })
       : t("session.todo_label", undefined, { count: todos.length });
 
   return (
@@ -295,23 +348,35 @@ export function SessionPage(props: SessionPageProps) {
               developerMode={props.sidebar.developerMode}
               selectedSessionId={props.sidebar.selectedSessionId}
               showInitialLoading={sidebarInitialLoading}
-              showSessionActions={Boolean(props.onRenameSession || props.onDeleteSession)}
+              showSessionActions={Boolean(
+                props.onRenameSession || props.onDeleteSession,
+              )}
               sessionStatusById={props.sidebar.sessionStatusById}
               connectingWorkspaceId={props.sidebar.connectingWorkspaceId}
-              workspaceConnectionStateById={props.sidebar.workspaceConnectionStateById}
+              workspaceConnectionStateById={
+                props.sidebar.workspaceConnectionStateById
+              }
               newTaskDisabled={props.sidebar.newTaskDisabled}
               onSelectWorkspace={props.sidebar.onSelectWorkspace}
               onOpenSession={props.sidebar.onOpenSession}
               onPrefetchSession={props.sidebar.onPrefetchSession}
               onCreateTaskInWorkspace={props.sidebar.onCreateTaskInWorkspace}
-              onOpenRenameSession={props.onRenameSession ? openRenameModal : undefined}
-              onOpenDeleteSession={props.onDeleteSession ? () => setDeleteOpen(true) : undefined}
+              onOpenRenameSession={
+                props.onRenameSession ? openRenameModal : undefined
+              }
+              onOpenDeleteSession={
+                props.onDeleteSession ? () => setDeleteOpen(true) : undefined
+              }
               onOpenRenameWorkspace={props.sidebar.onOpenRenameWorkspace}
               onShareWorkspace={props.sidebar.onShareWorkspace}
               onRevealWorkspace={props.sidebar.onRevealWorkspace}
               onRecoverWorkspace={props.sidebar.onRecoverWorkspace}
-              onTestWorkspaceConnection={props.sidebar.onTestWorkspaceConnection}
-              onEditWorkspaceConnection={props.sidebar.onEditWorkspaceConnection}
+              onTestWorkspaceConnection={
+                props.sidebar.onTestWorkspaceConnection
+              }
+              onEditWorkspaceConnection={
+                props.sidebar.onEditWorkspaceConnection
+              }
               onForgetWorkspace={props.sidebar.onForgetWorkspace}
               onOpenCreateWorkspace={props.sidebar.onOpenCreateWorkspace}
             />
@@ -355,7 +420,10 @@ export function SessionPage(props: SessionPageProps) {
                     type="button"
                     className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[13px] font-medium text-gray-10 transition-colors hover:bg-gray-2/70 hover:text-dls-text disabled:cursor-not-allowed disabled:opacity-60"
                     onClick={() => void props.history?.onUndo()}
-                    disabled={!props.history.canUndo || props.history.busyAction !== null}
+                    disabled={
+                      !props.history.canUndo ||
+                      props.history.busyAction !== null
+                    }
                     title={t("session.undo_title")}
                     aria-label={t("session.undo_label")}
                   >
@@ -364,13 +432,18 @@ export function SessionPage(props: SessionPageProps) {
                     ) : (
                       <Undo2 size={16} />
                     )}
-                    <span className="hidden lg:inline">{t("session.revert_label")}</span>
+                    <span className="hidden lg:inline">
+                      {t("session.revert_label")}
+                    </span>
                   </button>
                   <button
                     type="button"
                     className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[13px] font-medium text-gray-10 transition-colors hover:bg-gray-2/70 hover:text-dls-text disabled:cursor-not-allowed disabled:opacity-60"
                     onClick={() => void props.history?.onRedo()}
-                    disabled={!props.history.canRedo || props.history.busyAction !== null}
+                    disabled={
+                      !props.history.canRedo ||
+                      props.history.busyAction !== null
+                    }
                     title={t("session.redo_title")}
                     aria-label={t("session.redo_aria_label")}
                   >
@@ -379,7 +452,9 @@ export function SessionPage(props: SessionPageProps) {
                     ) : (
                       <Redo2 size={16} />
                     )}
-                    <span className="hidden lg:inline">{t("session.redo_label")}</span>
+                    <span className="hidden lg:inline">
+                      {t("session.redo_label")}
+                    </span>
                   </button>
                 </>
               ) : null}
@@ -397,10 +472,16 @@ export function SessionPage(props: SessionPageProps) {
                     </div>
                     <div className="space-y-3">
                       {[0, 1, 2].map((idx) => (
-                        <div key={idx} className="rounded-2xl border border-dls-border bg-dls-hover/40 p-4">
+                        <div
+                          key={idx}
+                          className="rounded-2xl border border-dls-border bg-dls-hover/40 p-4"
+                        >
                           <div
                             className="mb-3 h-3 animate-pulse rounded-full bg-dls-hover/80"
-                            style={{ width: idx === 0 ? "42%" : idx === 1 ? "56%" : "36%" }}
+                            style={{
+                              width:
+                                idx === 0 ? "42%" : idx === 1 ? "56%" : "36%",
+                            }}
                           />
                           <div className="space-y-2">
                             <div className="h-2.5 animate-pulse rounded-full bg-dls-hover/70" />
@@ -451,21 +532,30 @@ export function SessionPage(props: SessionPageProps) {
                 />
               ) : null}
 
-              {!props.sessionSurfaceOverride && !showDelayedSessionLoadingState && !canRenderReactSurface && !showStartupSkeleton ? (
-                <div className={`mx-auto max-w-[800px] px-6 ${showWorkspaceSetupEmptyState ? "pt-20" : "pt-10"}`}>
+              {!props.sessionSurfaceOverride &&
+              !showDelayedSessionLoadingState &&
+              !canRenderReactSurface &&
+              !showStartupSkeleton ? (
+                <div
+                  className={`mx-auto max-w-[800px] px-6 ${showWorkspaceSetupEmptyState ? "pt-20" : "pt-10"}`}
+                >
                   {showWorkspaceSetupEmptyState ? (
                     <div className="space-y-6 px-6 text-center">
                       <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-3xl border border-dls-border bg-dls-hover">
                         <Zap className="text-dls-secondary" />
                       </div>
                       <div className="space-y-2">
-                        <h3 className="text-xl font-medium">{t("session.create_or_connect_workspace")}</h3>
+                        <h3 className="text-xl font-medium">
+                          {t("session.create_or_connect_workspace")}
+                        </h3>
                         <p className="mx-auto max-w-sm text-sm text-dls-secondary">
                           {t("workspace.empty_state_body")}
                         </p>
                       </div>
                       <div className="flex justify-center">
-                        <Button onClick={props.sidebar.onOpenCreateWorkspace}>{t("workspace.create_workspace")}</Button>
+                        <Button onClick={props.sidebar.onOpenCreateWorkspace}>
+                          {t("workspace.create_workspace")}
+                        </Button>
                       </div>
                     </div>
                   ) : (
@@ -489,9 +579,14 @@ export function SessionPage(props: SessionPageProps) {
                   onClick={() => setTodoExpanded((current) => !current)}
                 >
                   <div className="flex items-center gap-2">
-                    <span className="text-gray-11 font-medium">{todoLabel}</span>
+                    <span className="text-gray-11 font-medium">
+                      {todoLabel}
+                    </span>
                   </div>
-                  <Minimize2 size={12} className={`text-gray-8 transition-transform ${todoExpanded ? "" : "rotate-180"}`} />
+                  <Minimize2
+                    size={12}
+                    className={`text-gray-8 transition-transform ${todoExpanded ? "" : "rotate-180"}`}
+                  />
                 </button>
                 {todoExpanded ? (
                   <div className="max-h-60 space-y-2.5 overflow-auto border-t border-dls-border px-4 pb-3">
@@ -500,7 +595,10 @@ export function SessionPage(props: SessionPageProps) {
                       const cancelled = todo.status === "cancelled";
                       const active = todo.status === "in_progress";
                       return (
-                        <div key={`${todo.content}-${index}`} className="flex items-start gap-2.5 pt-2.5 first:pt-2.5">
+                        <div
+                          key={`${todo.content}-${index}`}
+                          className="flex items-start gap-2.5 pt-2.5 first:pt-2.5"
+                        >
                           <div className="flex items-center gap-1.5 pt-0.5">
                             <div
                               className={`flex h-4.5 w-4.5 items-center justify-center rounded-full border ${
@@ -513,11 +611,19 @@ export function SessionPage(props: SessionPageProps) {
                                       : "border-gray-6 bg-gray-1 text-gray-8"
                               }`}
                             >
-                              {done ? <Check size={10} /> : active ? <span className="h-1.5 w-1.5 rounded-full bg-amber-9" /> : null}
+                              {done ? (
+                                <Check size={10} />
+                              ) : active ? (
+                                <span className="h-1.5 w-1.5 rounded-full bg-amber-9" />
+                              ) : null}
                             </div>
                           </div>
-                          <div className={`flex-1 text-sm leading-relaxed ${cancelled ? "text-gray-9 line-through" : "text-gray-12"}`}>
-                            <span className="mr-1.5 text-gray-9">{index + 1}.</span>
+                          <div
+                            className={`flex-1 text-sm leading-relaxed ${cancelled ? "text-gray-9 line-through" : "text-gray-12"}`}
+                          >
+                            <span className="mr-1.5 text-gray-9">
+                              {index + 1}.
+                            </span>
                             {todo.content}
                           </div>
                         </div>
@@ -548,14 +654,19 @@ export function SessionPage(props: SessionPageProps) {
         </main>
       </div>
 
-      {props.providerAuthModal ? <ProviderAuthModal {...props.providerAuthModal} /> : null}
+      {props.providerAuthModal ? (
+        <ProviderAuthModal {...props.providerAuthModal} />
+      ) : null}
 
       {props.onRenameSession ? (
         <RenameSessionModal
           open={renameOpen}
           title={renameTitle}
           busy={renameBusy}
-          canSave={renameTitle.trim().length > 0 && renameTitle.trim() !== selectedSessionTitle.trim()}
+          canSave={
+            renameTitle.trim().length > 0 &&
+            renameTitle.trim() !== selectedSessionTitle.trim()
+          }
           onClose={() => {
             if (!renameBusy) setRenameOpen(false);
           }}
@@ -569,21 +680,32 @@ export function SessionPage(props: SessionPageProps) {
           open={deleteOpen}
           title={t("session.delete_session_title")}
           message={
-            selectedSessionTitle.trim()
-              ? t("session.delete_named_session_message", undefined, { title: selectedSessionTitle.trim() })
-              : t("session.delete_session_generic")
+            deleteError
+              ? deleteError
+              : selectedSessionTitle.trim()
+                ? t("session.delete_named_session_message", undefined, {
+                    title: selectedSessionTitle.trim(),
+                  })
+                : t("session.delete_session_generic")
           }
-          confirmLabel={deleteBusy ? t("session.deleting") : t("session.delete")}
+          confirmLabel={
+            deleteBusy ? t("session.deleting") : t("session.delete")
+          }
           cancelLabel={t("common.cancel")}
-          variant="danger"
+          variant={deleteError ? "warning" : "danger"}
           onConfirm={() => void confirmDelete()}
           onCancel={() => {
-            if (!deleteBusy) setDeleteOpen(false);
+            if (!deleteBusy) {
+              setDeleteOpen(false);
+              setDeleteError(null);
+            }
           }}
         />
       ) : null}
 
-      {props.shareWorkspaceModal ? <ShareWorkspaceModal {...props.shareWorkspaceModal} /> : null}
+      {props.shareWorkspaceModal ? (
+        <ShareWorkspaceModal {...props.shareWorkspaceModal} />
+      ) : null}
 
       {props.activePermission ? (
         <PermissionApprovalModal

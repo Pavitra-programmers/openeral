@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import type { ReactNode } from "react";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Loader2 } from "lucide-react";
 
 export type ConfirmModalProps = {
   open: boolean;
@@ -9,8 +9,20 @@ export type ConfirmModalProps = {
   confirmLabel: string;
   cancelLabel: string;
   variant?: "danger" | "warning";
-  confirmButtonVariant?: "primary" | "secondary" | "ghost" | "outline" | "danger";
-  cancelButtonVariant?: "primary" | "secondary" | "ghost" | "outline" | "danger";
+  confirmButtonVariant?:
+    | "primary"
+    | "secondary"
+    | "ghost"
+    | "outline"
+    | "danger";
+  cancelButtonVariant?:
+    | "primary"
+    | "secondary"
+    | "ghost"
+    | "outline"
+    | "danger";
+  /** When true, the confirm button is disabled and shows a spinner. */
+  busy?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 };
@@ -24,12 +36,16 @@ const buttonClasses = {
   ghost: `${buttonBaseClass} bg-transparent text-dls-secondary hover:bg-[var(--dls-hover)] hover:text-dls-text`,
   outline: `${buttonBaseClass} border border-dls-border bg-dls-surface text-dls-text hover:bg-[var(--dls-hover)]`,
   danger: `${buttonBaseClass} bg-red-9 text-white hover:bg-red-10`,
-} satisfies Record<NonNullable<ConfirmModalProps["confirmButtonVariant"]>, string>;
+} satisfies Record<
+  NonNullable<ConfirmModalProps["confirmButtonVariant"]>,
+  string
+>;
 
 export function ConfirmModal(props: ConfirmModalProps) {
   if (!props.open) return null;
   const variant = props.variant ?? "warning";
-  const confirmVariant = props.confirmButtonVariant ?? (variant === "danger" ? "danger" : "primary");
+  const confirmVariant =
+    props.confirmButtonVariant ?? (variant === "danger" ? "danger" : "primary");
   const cancelVariant = props.cancelButtonVariant ?? "outline";
 
   const iconTileClass =
@@ -60,6 +76,7 @@ export function ConfirmModal(props: ConfirmModalProps) {
               type="button"
               className={buttonClasses[cancelVariant]}
               onClick={props.onCancel}
+              disabled={props.busy}
             >
               {props.cancelLabel}
             </button>
@@ -67,8 +84,16 @@ export function ConfirmModal(props: ConfirmModalProps) {
               type="button"
               className={buttonClasses[confirmVariant]}
               onClick={props.onConfirm}
+              disabled={props.busy}
             >
-              {props.confirmLabel}
+              {props.busy ? (
+                <span className="flex items-center gap-2">
+                  <Loader2 size={14} className="animate-spin" />
+                  {props.confirmLabel}
+                </span>
+              ) : (
+                props.confirmLabel
+              )}
             </button>
           </div>
         </div>
