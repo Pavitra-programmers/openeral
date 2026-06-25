@@ -15,11 +15,21 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from "electron";
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  nativeImage,
+  shell,
+} from "electron";
 import { registerMigrationIpc } from "./migration.mjs";
 import { createRuntimeManager } from "./runtime.mjs";
 import { registerUpdaterIpc } from "./updater.mjs";
-import { exportWorkspaceConfig, importWorkspaceConfig } from "./workspace-archive.mjs";
+import {
+  exportWorkspaceConfig,
+  importWorkspaceConfig,
+} from "./workspace-archive.mjs";
 import * as openshellClient from "./openshell/client.mjs";
 import * as openshellCli from "./openshell/cli.mjs";
 import * as openeral from "./openshell/openeral.mjs";
@@ -34,7 +44,12 @@ import {
   installOpenShellStack,
   loadInstallerState as loadOpenShellInstallerState,
 } from "./openshell/installer.mjs";
-import { DISTRO_NAME as OPENSHELL_DISTRO_NAME, distroExists, ensureDistroRunning, wslRun } from "./openshell/wsl.mjs";
+import {
+  DISTRO_NAME as OPENSHELL_DISTRO_NAME,
+  distroExists,
+  ensureDistroRunning,
+  wslRun,
+} from "./openshell/wsl.mjs";
 
 // Preflight gate for every OpenEral entry point. If the WSL distro
 // isn't registered, the very first `wsl -d openwork-openshell -- docker
@@ -115,9 +130,16 @@ function resolveAppIconPath() {
 }
 
 const APP_ICON_PATH = resolveAppIconPath();
-const APP_ICON_IMAGE = APP_ICON_PATH ? nativeImage.createFromPath(APP_ICON_PATH) : null;
+const APP_ICON_IMAGE = APP_ICON_PATH
+  ? nativeImage.createFromPath(APP_ICON_PATH)
+  : null;
 
-if (process.platform === "darwin" && APP_ICON_IMAGE && !APP_ICON_IMAGE.isEmpty() && app.dock) {
+if (
+  process.platform === "darwin" &&
+  APP_ICON_IMAGE &&
+  !APP_ICON_IMAGE.isEmpty() &&
+  app.dock
+) {
   app.dock.setIcon(APP_ICON_IMAGE);
 }
 
@@ -129,7 +151,10 @@ const remoteDebugPort = Number.parseInt(
   10,
 );
 if (Number.isFinite(remoteDebugPort) && remoteDebugPort > 0) {
-  app.commandLine.appendSwitch("remote-debugging-port", String(remoteDebugPort));
+  app.commandLine.appendSwitch(
+    "remote-debugging-port",
+    String(remoteDebugPort),
+  );
   app.commandLine.appendSwitch("remote-debugging-address", "127.0.0.1");
 }
 const DEFAULT_DEN_BASE_URL = "https://app.openworklabs.com";
@@ -152,9 +177,12 @@ async function installReactDevToolsForDev() {
           : typeof mod.default?.installExtension === "function"
             ? mod.default.installExtension
             : null;
-    const reactDevtools = mod.REACT_DEVELOPER_TOOLS ?? mod.default?.REACT_DEVELOPER_TOOLS;
+    const reactDevtools =
+      mod.REACT_DEVELOPER_TOOLS ?? mod.default?.REACT_DEVELOPER_TOOLS;
     if (typeof installExtension !== "function" || !reactDevtools) {
-      throw new Error("electron-devtools-installer did not expose React DevTools");
+      throw new Error(
+        "electron-devtools-installer did not expose React DevTools",
+      );
     }
     const name = await installExtension(reactDevtools);
     console.info(`[devtools] installed ${name}`);
@@ -281,7 +309,11 @@ function emitOpenEralPtyData(sessionId, data) {
 
 function emitOpenEralPtyExit(sessionId, exitCode, signal) {
   try {
-    mainWindow?.webContents.send("openeral:pty-exit", { sessionId, exitCode, signal });
+    mainWindow?.webContents.send("openeral:pty-exit", {
+      sessionId,
+      exitCode,
+      signal,
+    });
   } catch {
     // ignore
   }
@@ -301,13 +333,19 @@ function emitOpenEralPtyExit(sessionId, exitCode, signal) {
 async function buildOpenEralPtyEnv(cols, rows) {
   const extraEnv = {};
   try {
-    const anthropicApiKey = await openeralCredentials.getCredential("anthropicApiKey");
+    const anthropicApiKey =
+      await openeralCredentials.getCredential("anthropicApiKey");
     if (anthropicApiKey) extraEnv.ANTHROPIC_API_KEY = anthropicApiKey;
-  } catch { /* safeStorage may be unavailable in some test environments */ }
+  } catch {
+    /* safeStorage may be unavailable in some test environments */
+  }
   try {
-    const stringcostApiKey = await openeralCredentials.getCredential("stringcostApiKey");
+    const stringcostApiKey =
+      await openeralCredentials.getCredential("stringcostApiKey");
     if (stringcostApiKey) extraEnv.STRINGCOST_API_KEY = stringcostApiKey;
-  } catch { /* optional — StringCost tracking only */ }
+  } catch {
+    /* optional — StringCost tracking only */
+  }
   const effectiveCols = Number.isFinite(cols) && cols > 0 ? cols : 120;
   const effectiveRows = Number.isFinite(rows) && rows > 0 ? rows : 32;
   extraEnv.COLUMNS = String(effectiveCols);
@@ -353,7 +391,12 @@ function desktopBootstrapPath() {
   if (process.env.OPENWORK_DESKTOP_BOOTSTRAP_PATH?.trim()) {
     return process.env.OPENWORK_DESKTOP_BOOTSTRAP_PATH.trim();
   }
-  return path.join(os.homedir(), ".config", "openwork", "desktop-bootstrap.json");
+  return path.join(
+    os.homedir(),
+    ".config",
+    "openwork",
+    "desktop-bootstrap.json",
+  );
 }
 
 function workspaceStatePath() {
@@ -382,7 +425,10 @@ async function migrateLegacyElectronWorkspaceStateIfNeeded() {
     );
     return true;
   } catch (error) {
-    console.warn("[migration] legacy Electron workspace-state copy failed", error);
+    console.warn(
+      "[migration] legacy Electron workspace-state copy failed",
+      error,
+    );
     return false;
   }
 }
@@ -432,7 +478,8 @@ async function readJsonFile(targetPath, fallback) {
 }
 
 function normalizeDesktopBootstrapConfig(input) {
-  const baseUrl = typeof input?.baseUrl === "string" ? input.baseUrl.trim() : "";
+  const baseUrl =
+    typeof input?.baseUrl === "string" ? input.baseUrl.trim() : "";
   if (!baseUrl) {
     throw new Error("baseUrl is required");
   }
@@ -466,12 +513,18 @@ async function setDesktopBootstrapConfig(config) {
   const normalized = normalizeDesktopBootstrapConfig(config);
   const outputPath = desktopBootstrapPath();
   await mkdir(path.dirname(outputPath), { recursive: true });
-  await writeFile(outputPath, `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+  await writeFile(
+    outputPath,
+    `${JSON.stringify(normalized, null, 2)}\n`,
+    "utf8",
+  );
   return normalized;
 }
 
 function sanitizeCommandName(raw) {
-  const trimmed = String(raw ?? "").trim().replace(/^\/+/, "");
+  const trimmed = String(raw ?? "")
+    .trim()
+    .replace(/^\/+/, "");
   if (!trimmed) return null;
   const safe = Array.from(trimmed)
     .filter((char) => /[A-Za-z0-9_-]/.test(char))
@@ -532,11 +585,12 @@ function defaultWorkspaceOpenworkConfig(workspacePath, preset = null) {
 async function normalizeLocalWorkspacePath(rawPath) {
   const trimmed = String(rawPath ?? "").trim();
   if (!trimmed) return "";
-  const expanded = trimmed === "~"
-    ? os.homedir()
-    : trimmed.startsWith("~/") || trimmed.startsWith("~\\")
-      ? path.join(os.homedir(), trimmed.slice(2))
-      : trimmed;
+  const expanded =
+    trimmed === "~"
+      ? os.homedir()
+      : trimmed.startsWith("~/") || trimmed.startsWith("~\\")
+        ? path.join(os.homedir(), trimmed.slice(2))
+        : trimmed;
   const resolved = path.resolve(expanded);
   return realpath(resolved).catch(() => resolved);
 }
@@ -609,7 +663,8 @@ async function readWorkspaceState() {
 async function writeWorkspaceState(nextState) {
   const outputPath = workspaceStatePath();
   const selectedId = String(nextState?.selectedId ?? nextState?.activeId ?? "");
-  const watchedId = typeof nextState?.watchedId === "string" ? nextState.watchedId : "";
+  const watchedId =
+    typeof nextState?.watchedId === "string" ? nextState.watchedId : "";
   const output = {
     ...nextState,
     // Tauri's Rust state uses selectedWorkspaceId/watchedWorkspaceId on disk
@@ -630,8 +685,7 @@ const runtimeManager = createRuntimeManager({
   app,
   desktopRoot: path.resolve(__dirname, ".."),
   listLocalWorkspacePaths: async () =>
-    (await readWorkspaceState())
-      .workspaces
+    (await readWorkspaceState()).workspaces
       .filter((entry) => entry?.workspaceType !== "remote")
       .map((entry) => String(entry?.path ?? "").trim())
       .filter(Boolean),
@@ -654,14 +708,17 @@ function assertOpenworkServerReady(info) {
     throw new Error("OpenWork server did not report a base URL after startup.");
   }
   if (!info.ownerToken && !info.clientToken) {
-    throw new Error("OpenWork server did not report an access token after startup.");
+    throw new Error(
+      "OpenWork server did not report an access token after startup.",
+    );
   }
   return info;
 }
 
 async function bootRuntimeForSelectedWorkspace() {
   const list = await readWorkspaceState();
-  const selectedId = list.selectedId || list.activeId || list.workspaces[0]?.id || "";
+  const selectedId =
+    list.selectedId || list.activeId || list.workspaces[0]?.id || "";
   const workspace = selectedId
     ? list.workspaces.find((entry) => entry?.id === selectedId)
     : list.workspaces[0];
@@ -674,9 +731,11 @@ async function bootRuntimeForSelectedWorkspace() {
   for (const entry of list.workspaces) {
     if (entry?.workspaceType === "remote") continue;
     const workspacePath = String(entry?.path ?? "").trim();
-    if (workspacePath && !workspacePaths.includes(workspacePath)) workspacePaths.push(workspacePath);
+    if (workspacePath && !workspacePaths.includes(workspacePath))
+      workspacePaths.push(workspacePath);
   }
-  if (!workspacePaths.includes(workspaceRoot)) workspacePaths.unshift(workspaceRoot);
+  if (!workspacePaths.includes(workspaceRoot))
+    workspacePaths.unshift(workspaceRoot);
 
   let bootWorkspace = workspace;
   let bootWorkspaceRoot = workspaceRoot;
@@ -689,18 +748,27 @@ async function bootRuntimeForSelectedWorkspace() {
   } catch (error) {
     const fallback = list.workspaces.find((entry) => {
       const candidatePath = String(entry?.path ?? "").trim();
-      return entry?.workspaceType !== "remote" && candidatePath && candidatePath !== workspaceRoot;
+      return (
+        entry?.workspaceType !== "remote" &&
+        candidatePath &&
+        candidatePath !== workspaceRoot
+      );
     });
     const fallbackRoot = String(fallback?.path ?? "").trim();
     if (!fallback || !fallbackRoot) throw error;
-    console.warn("[runtime] selected workspace failed during boot; trying fallback workspace", {
-      selectedWorkspaceId: workspace?.id ?? null,
-      fallbackWorkspaceId: fallback.id ?? null,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    console.warn(
+      "[runtime] selected workspace failed during boot; trying fallback workspace",
+      {
+        selectedWorkspaceId: workspace?.id ?? null,
+        fallbackWorkspaceId: fallback.id ?? null,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
     const fallbackWorkspacePaths = [
       fallbackRoot,
-      ...workspacePaths.filter((entry) => entry !== fallbackRoot && entry !== workspaceRoot),
+      ...workspacePaths.filter(
+        (entry) => entry !== fallbackRoot && entry !== workspaceRoot,
+      ),
     ];
     engine = await runtimeManager.engineStart(fallbackRoot, {
       runtime: "direct",
@@ -714,20 +782,32 @@ async function bootRuntimeForSelectedWorkspace() {
       watchedId: String(fallback.id ?? ""),
     }).catch(() => undefined);
   }
-  await runtimeManager.orchestratorWorkspaceActivate({
-    workspacePath: bootWorkspaceRoot,
-    name: bootWorkspace.name ?? bootWorkspace.displayName ?? null,
-  }).catch(() => undefined);
-  const openworkServer = assertOpenworkServerReady(await runtimeManager.openworkServerInfo());
-  return { ok: true, skipped: false, engine, openworkServer, workspaceId: bootWorkspace.id ?? null };
+  await runtimeManager
+    .orchestratorWorkspaceActivate({
+      workspacePath: bootWorkspaceRoot,
+      name: bootWorkspace.name ?? bootWorkspace.displayName ?? null,
+    })
+    .catch(() => undefined);
+  const openworkServer = assertOpenworkServerReady(
+    await runtimeManager.openworkServerInfo(),
+  );
+  return {
+    ok: true,
+    skipped: false,
+    engine,
+    openworkServer,
+    workspaceId: bootWorkspace.id ?? null,
+  };
 }
 
 function ensureRuntimeBootstrap() {
   if (!runtimeBootstrapPromise) {
-    runtimeBootstrapPromise = bootRuntimeForSelectedWorkspace().catch((error) => ({
-      ok: false,
-      error: error instanceof Error ? error.message : String(error),
-    }));
+    runtimeBootstrapPromise = bootRuntimeForSelectedWorkspace().catch(
+      (error) => ({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
   }
   return runtimeBootstrapPromise;
 }
@@ -758,7 +838,10 @@ function normalizeWorkspaceEntry(input) {
 
 async function mutateWorkspaceState(mutator) {
   const current = await readWorkspaceState();
-  const next = await mutator({ ...current, workspaces: [...current.workspaces] });
+  const next = await mutator({
+    ...current,
+    workspaces: [...current.workspaces],
+  });
   return writeWorkspaceState(next);
 }
 
@@ -782,7 +865,11 @@ function resolveOpencodeConfigPath(scope, projectDir) {
 
 async function readOpencodeConfig(scope, projectDir) {
   const { jsoncPath, jsonPath } = resolveOpencodeConfigPath(scope, projectDir);
-  const chosenPath = (await pathExists(jsoncPath)) ? jsoncPath : (await pathExists(jsonPath)) ? jsonPath : jsoncPath;
+  const chosenPath = (await pathExists(jsoncPath))
+    ? jsoncPath
+    : (await pathExists(jsonPath))
+      ? jsonPath
+      : jsoncPath;
   const exists = await pathExists(chosenPath);
   return {
     path: chosenPath,
@@ -793,7 +880,11 @@ async function readOpencodeConfig(scope, projectDir) {
 
 async function writeOpencodeConfig(scope, projectDir, content) {
   const { jsoncPath, jsonPath } = resolveOpencodeConfigPath(scope, projectDir);
-  const targetPath = (await pathExists(jsoncPath)) ? jsoncPath : (await pathExists(jsonPath)) ? jsonPath : jsoncPath;
+  const targetPath = (await pathExists(jsoncPath))
+    ? jsoncPath
+    : (await pathExists(jsonPath))
+      ? jsonPath
+      : jsoncPath;
   await mkdir(path.dirname(targetPath), { recursive: true });
   await writeFile(targetPath, content, "utf8");
   return execResult(true, `Wrote ${targetPath}`);
@@ -832,7 +923,11 @@ async function writeCommandFile(scope, projectDir, command) {
   const commandsDir = resolveCommandsDir(scope, projectDir);
   await mkdir(commandsDir, { recursive: true });
   const filePath = path.join(commandsDir, `${safeName}.md`);
-  await writeFile(filePath, serializeCommandFrontmatter({ ...command, name: safeName }), "utf8");
+  await writeFile(
+    filePath,
+    serializeCommandFrontmatter({ ...command, name: safeName }),
+    "utf8",
+  );
   return execResult(true, `Wrote ${filePath}`);
 }
 
@@ -893,7 +988,10 @@ async function collectGlobalSkillRoots() {
 }
 
 async function collectSkillRoots(projectDir) {
-  const roots = [...(await collectProjectSkillRoots(projectDir)), ...(await collectGlobalSkillRoots())];
+  const roots = [
+    ...(await collectProjectSkillRoots(projectDir)),
+    ...(await collectGlobalSkillRoots()),
+  ];
   return roots.filter((value, index) => roots.indexOf(value) === index);
 }
 
@@ -910,7 +1008,9 @@ async function findSkillDirsInRoot(root) {
       continue;
     }
 
-    const nestedEntries = await readdir(direct, { withFileTypes: true }).catch(() => []);
+    const nestedEntries = await readdir(direct, { withFileTypes: true }).catch(
+      () => [],
+    );
     for (const nested of nestedEntries) {
       if (!nested.isDirectory()) continue;
       const nestedDir = path.join(direct, nested.name);
@@ -931,7 +1031,10 @@ function extractFrontmatterValue(raw, keys) {
     if (separator <= 0) continue;
     const key = line.slice(0, separator).trim().toLowerCase();
     if (!keys.includes(key)) continue;
-    const value = line.slice(separator + 1).trim().replace(/^['"]|['"]$/g, "");
+    const value = line
+      .slice(separator + 1)
+      .trim()
+      .replace(/^['"]|['"]$/g, "");
     if (value) return value;
   }
   return null;
@@ -992,7 +1095,9 @@ async function findSkillFile(projectDir, name) {
     const direct = path.join(root, safeName, "SKILL.md");
     if (await pathExists(direct)) return direct;
 
-    const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+    const entries = await readdir(root, { withFileTypes: true }).catch(
+      () => [],
+    );
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const nested = path.join(root, entry.name, safeName, "SKILL.md");
@@ -1037,7 +1142,8 @@ async function handleDesktopInvoke(event, command, ...args) {
       });
     case "workspaceSetRuntimeActive":
       return mutateWorkspaceState((state) => {
-        state.watchedId = typeof args[0] === "string" && args[0].trim() ? args[0] : null;
+        state.watchedId =
+          typeof args[0] === "string" && args[0].trim() ? args[0] : null;
         return state;
       });
     case "workspaceCreate": {
@@ -1050,7 +1156,9 @@ async function handleDesktopInvoke(event, command, ...args) {
       const workspace = normalizeWorkspaceEntry({
         id: localWorkspaceId(folderPath),
         name: String(input.name ?? (path.basename(folderPath) || "Workspace")),
-        displayName: String(input.name ?? (path.basename(folderPath) || "Workspace")),
+        displayName: String(
+          input.name ?? (path.basename(folderPath) || "Workspace"),
+        ),
         path: folderPath,
         preset,
         workspaceType: "local",
@@ -1058,11 +1166,16 @@ async function handleDesktopInvoke(event, command, ...args) {
         sandboxProfile: input.sandboxProfile ?? null,
       });
       await mkdir(path.join(folderPath, ".opencode"), { recursive: true });
-      await writeWorkspaceOpenworkConfig(folderPath, defaultWorkspaceOpenworkConfig(folderPath, preset));
+      await writeWorkspaceOpenworkConfig(
+        folderPath,
+        defaultWorkspaceOpenworkConfig(folderPath, preset),
+      );
       return mutateWorkspaceState((state) => {
         const workspacePathKey = normalizeWorkspacePathKey(workspace.path);
         state.workspaces = state.workspaces.filter(
-          (entry) => entry.id !== workspace.id && normalizeWorkspacePathKey(entry.path) !== workspacePathKey,
+          (entry) =>
+            entry.id !== workspace.id &&
+            normalizeWorkspacePathKey(entry.path) !== workspacePathKey,
         );
         state.workspaces.push(workspace);
         state.selectedId = workspace.id;
@@ -1078,20 +1191,36 @@ async function handleDesktopInvoke(event, command, ...args) {
       if (!baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) {
         throw new Error("baseUrl must start with http:// or https://");
       }
-      const remoteType = input.remoteType === "opencode" ? "opencode" : "openwork";
-      const directory = typeof input.directory === "string" && input.directory.trim() ? input.directory.trim() : null;
-      const openworkHostUrl = typeof input.openworkHostUrl === "string" && input.openworkHostUrl.trim()
-        ? input.openworkHostUrl.trim()
-        : null;
-      const openworkWorkspaceId = typeof input.openworkWorkspaceId === "string" && input.openworkWorkspaceId.trim()
-        ? input.openworkWorkspaceId.trim()
-        : null;
-      const id = remoteType === "openwork"
-        ? openworkRemoteWorkspaceId(openworkHostUrl ?? baseUrl, openworkWorkspaceId)
-        : remoteWorkspaceId(baseUrl, directory);
+      const remoteType =
+        input.remoteType === "opencode" ? "opencode" : "openwork";
+      const directory =
+        typeof input.directory === "string" && input.directory.trim()
+          ? input.directory.trim()
+          : null;
+      const openworkHostUrl =
+        typeof input.openworkHostUrl === "string" &&
+        input.openworkHostUrl.trim()
+          ? input.openworkHostUrl.trim()
+          : null;
+      const openworkWorkspaceId =
+        typeof input.openworkWorkspaceId === "string" &&
+        input.openworkWorkspaceId.trim()
+          ? input.openworkWorkspaceId.trim()
+          : null;
+      const id =
+        remoteType === "openwork"
+          ? openworkRemoteWorkspaceId(
+              openworkHostUrl ?? baseUrl,
+              openworkWorkspaceId,
+            )
+          : remoteWorkspaceId(baseUrl, directory);
       const workspace = normalizeWorkspaceEntry({
         id,
-        name: String(input.displayName ?? input.openworkWorkspaceName ?? "Remote workspace"),
+        name: String(
+          input.displayName ??
+            input.openworkWorkspaceName ??
+            "Remote workspace",
+        ),
         displayName: input.displayName ?? null,
         path: directory ?? "",
         preset: "remote",
@@ -1111,7 +1240,9 @@ async function handleDesktopInvoke(event, command, ...args) {
         sandboxContainerName: input.sandboxContainerName ?? null,
       });
       return mutateWorkspaceState((state) => {
-        state.workspaces = state.workspaces.filter((entry) => entry.id !== workspace.id);
+        state.workspaces = state.workspaces.filter(
+          (entry) => entry.id !== workspace.id,
+        );
         state.workspaces.push(workspace);
         state.selectedId = workspace.id;
         state.activeId = workspace.id;
@@ -1135,7 +1266,9 @@ async function handleDesktopInvoke(event, command, ...args) {
       if (!workspaceId) throw new Error("workspaceId is required");
       return mutateWorkspaceState((state) => {
         state.workspaces = state.workspaces.map((entry) =>
-          entry.id === workspaceId ? { ...entry, displayName: input.displayName ?? null } : entry,
+          entry.id === workspaceId
+            ? { ...entry, displayName: input.displayName ?? null }
+            : entry,
         );
         return state;
       });
@@ -1144,7 +1277,9 @@ async function handleDesktopInvoke(event, command, ...args) {
       const workspaceId = String(args[0] ?? "").trim();
       if (!workspaceId) throw new Error("workspaceId is required");
       return mutateWorkspaceState((state) => {
-        state.workspaces = state.workspaces.filter((entry) => entry.id !== workspaceId);
+        state.workspaces = state.workspaces.filter(
+          (entry) => entry.id !== workspaceId,
+        );
         if (state.selectedId === workspaceId) state.selectedId = "";
         if (state.activeId === workspaceId) state.activeId = null;
         if (state.watchedId === workspaceId) state.watchedId = null;
@@ -1154,7 +1289,9 @@ async function handleDesktopInvoke(event, command, ...args) {
     case "workspaceAddAuthorizedRoot": {
       const input = args[0] ?? {};
       const workspacePath = String(input.workspacePath ?? "").trim();
-      const authorizedRoot = String(input.folderPath ?? input.authorizedRoot ?? "").trim();
+      const authorizedRoot = String(
+        input.folderPath ?? input.authorizedRoot ?? "",
+      ).trim();
       if (!workspacePath || !authorizedRoot) {
         throw new Error("workspacePath and folderPath are required");
       }
@@ -1168,7 +1305,9 @@ async function handleDesktopInvoke(event, command, ...args) {
       return writeWorkspaceOpenworkConfig(workspacePath, config);
     }
     case "workspaceOpenworkRead":
-      return readWorkspaceOpenworkConfig(String(args[0]?.workspacePath ?? "").trim());
+      return readWorkspaceOpenworkConfig(
+        String(args[0]?.workspacePath ?? "").trim(),
+      );
     case "workspaceOpenworkWrite":
       return writeWorkspaceOpenworkConfig(
         String(args[0]?.workspacePath ?? "").trim(),
@@ -1181,7 +1320,9 @@ async function handleDesktopInvoke(event, command, ...args) {
       if (!workspaceId) throw new Error("workspaceId is required");
       if (!outputPath) throw new Error("outputPath is required");
       const state = await readWorkspaceState();
-      const workspace = state.workspaces.find((entry) => entry.id === workspaceId);
+      const workspace = state.workspaces.find(
+        (entry) => entry.id === workspaceId,
+      );
       if (!workspace) throw new Error("Unknown workspaceId");
       return exportWorkspaceConfig({ workspace, outputPath });
     }
@@ -1208,7 +1349,9 @@ async function handleDesktopInvoke(event, command, ...args) {
       return mutateWorkspaceState((state) => {
         const workspacePathKey = normalizeWorkspacePathKey(workspace.path);
         state.workspaces = state.workspaces.filter(
-          (entry) => entry.id !== workspace.id && normalizeWorkspacePathKey(entry.path) !== workspacePathKey,
+          (entry) =>
+            entry.id !== workspace.id &&
+            normalizeWorkspacePathKey(entry.path) !== workspacePathKey,
         );
         state.workspaces.push(workspace);
         state.selectedId = workspace.id;
@@ -1218,7 +1361,10 @@ async function handleDesktopInvoke(event, command, ...args) {
       });
     }
     case "opencodeCommandList":
-      return listCommandNames(String(args[0]?.scope ?? "").trim(), String(args[0]?.projectDir ?? "").trim());
+      return listCommandNames(
+        String(args[0]?.scope ?? "").trim(),
+        String(args[0]?.projectDir ?? "").trim(),
+      );
     case "opencodeCommandWrite":
       return writeCommandFile(
         String(args[0]?.scope ?? "").trim(),
@@ -1259,7 +1405,9 @@ async function handleDesktopInvoke(event, command, ...args) {
       return runtimeManager.orchestratorWorkspaceActivate(args[0] ?? {});
     }
     case "orchestratorInstanceDispose":
-      return runtimeManager.orchestratorInstanceDispose(String(args[0] ?? "").trim());
+      return runtimeManager.orchestratorInstanceDispose(
+        String(args[0] ?? "").trim(),
+      );
     case "appBuildInfo":
       return {
         version: app.getVersion(),
@@ -1303,12 +1451,16 @@ async function handleDesktopInvoke(event, command, ...args) {
         properties,
       });
       if (result.canceled) return null;
-      return options.multiple ? result.filePaths : (result.filePaths[0] ?? null);
+      return options.multiple
+        ? result.filePaths
+        : (result.filePaths[0] ?? null);
     }
     case "pickFile": {
       const options = args[0] ?? {};
       /** @type {import("electron").OpenDialogOptions["properties"]} */
-      const properties = options.multiple ? ["openFile", "multiSelections"] : ["openFile"];
+      const properties = options.multiple
+        ? ["openFile", "multiSelections"]
+        : ["openFile"];
       const result = await dialog.showOpenDialog(activeWindowFromEvent(event), {
         title: options.title,
         defaultPath: options.defaultPath,
@@ -1316,7 +1468,9 @@ async function handleDesktopInvoke(event, command, ...args) {
         properties,
       });
       if (result.canceled) return null;
-      return options.multiple ? result.filePaths : (result.filePaths[0] ?? null);
+      return options.multiple
+        ? result.filePaths
+        : (result.filePaths[0] ?? null);
     }
     case "saveFile": {
       const options = args[0] ?? {};
@@ -1339,7 +1493,11 @@ async function handleDesktopInvoke(event, command, ...args) {
       const destination = path.join(skillRoot, name);
       if (await pathExists(destination)) {
         if (!overwrite) {
-          return execResult(false, "", `Skill already exists at ${destination}`);
+          return execResult(
+            false,
+            "",
+            `Skill already exists at ${destination}`,
+          );
         }
         await rm(destination, { recursive: true, force: true });
       }
@@ -1355,7 +1513,11 @@ async function handleDesktopInvoke(event, command, ...args) {
       const destination = path.join(skillRoot, name);
       if (await pathExists(destination)) {
         if (!overwrite) {
-          return execResult(false, "", `Skill already exists at ${destination}`);
+          return execResult(
+            false,
+            "",
+            `Skill already exists at ${destination}`,
+          );
         }
         await rm(destination, { recursive: true, force: true });
       }
@@ -1382,19 +1544,28 @@ async function handleDesktopInvoke(event, command, ...args) {
       const content = String(args[2] ?? "");
       const next = content.endsWith("\n") ? content : `${content}\n`;
       await writeFile(skillPath, next, "utf8");
-      return execResult(true, `Saved skill ${path.basename(path.dirname(skillPath))}`);
+      return execResult(
+        true,
+        `Saved skill ${path.basename(path.dirname(skillPath))}`,
+      );
     }
     case "uninstallSkill": {
       const projectDir = String(args[0] ?? "").trim();
       const skillPath = await findSkillFile(projectDir, args[1]);
       if (!skillPath) {
-        return execResult(false, "", "Skill not found in .opencode/skills or .claude/skills");
+        return execResult(
+          false,
+          "",
+          "Skill not found in .opencode/skills or .claude/skills",
+        );
       }
       await rm(path.dirname(skillPath), { recursive: true, force: true });
       return execResult(true, `Removed skill ${args[1]}`);
     }
     case "updaterEnvironment": {
-      const executablePath = app.isPackaged ? app.getPath("exe") : process.execPath;
+      const executablePath = app.isPackaged
+        ? app.getPath("exe")
+        : process.execPath;
       return {
         supported: true,
         reason: null,
@@ -1406,7 +1577,10 @@ async function handleDesktopInvoke(event, command, ...args) {
       };
     }
     case "readOpencodeConfig":
-      return readOpencodeConfig(String(args[0] ?? "").trim(), String(args[1] ?? "").trim());
+      return readOpencodeConfig(
+        String(args[0] ?? "").trim(),
+        String(args[1] ?? "").trim(),
+      );
     case "writeOpencodeConfig":
       return writeOpencodeConfig(
         String(args[0] ?? "").trim(),
@@ -1421,7 +1595,10 @@ async function handleDesktopInvoke(event, command, ...args) {
     case "resetOpencodeCache":
       return { removed: [], missing: [], errors: [] };
     case "opencodeMcpAuth":
-      return runtimeManager.opencodeMcpAuth(String(args[0] ?? "").trim(), String(args[1] ?? "").trim());
+      return runtimeManager.opencodeMcpAuth(
+        String(args[0] ?? "").trim(),
+        String(args[1] ?? "").trim(),
+      );
     case "setWindowDecorations":
       return undefined;
     case "__openPath": {
@@ -1441,7 +1618,10 @@ async function handleDesktopInvoke(event, command, ...args) {
       if (!url) throw new Error("URL is required.");
       const response = await fetch(url, {
         method: typeof init.method === "string" ? init.method : undefined,
-        headers: init.headers && typeof init.headers === "object" ? init.headers : undefined,
+        headers:
+          init.headers && typeof init.headers === "object"
+            ? init.headers
+            : undefined,
         body: typeof init.body === "string" ? init.body : undefined,
       });
       return {
@@ -1484,7 +1664,13 @@ async function handleDesktopInvoke(event, command, ...args) {
       const attempts = [];
       const tryWsl = async (label, args, opts = {}) => {
         const r = await wslRun(
-          ["-d", OPENSHELL_DISTRO_NAME, ...(opts.user ? ["--user", opts.user] : []), "--", ...args],
+          [
+            "-d",
+            OPENSHELL_DISTRO_NAME,
+            ...(opts.user ? ["--user", opts.user] : []),
+            "--",
+            ...args,
+          ],
           { timeout: opts.timeout ?? 60_000 },
         );
         attempts.push({ label, r });
@@ -1493,18 +1679,46 @@ async function handleDesktopInvoke(event, command, ...args) {
 
       // Path 1 — legacy gateway start verb (will silently no-op on 0.0.37+).
       if (await openshellCli.hasSubcommand("gateway", "start")) {
-        if (await tryWsl("openshell gateway start --recreate", ["openshell", "gateway", "start", "--recreate"])) return { ok: true, recoveredVia: "gateway start --recreate" };
-        if (await tryWsl("openshell gateway start --detach", ["openshell", "gateway", "start", "--detach"])) return { ok: true, recoveredVia: "gateway start --detach" };
-        if (await tryWsl("openshell gateway start", ["openshell", "gateway", "start"])) return { ok: true, recoveredVia: "gateway start" };
+        if (
+          await tryWsl("openshell gateway start --recreate", [
+            "openshell",
+            "gateway",
+            "start",
+            "--recreate",
+          ])
+        )
+          return { ok: true, recoveredVia: "gateway start --recreate" };
+        if (
+          await tryWsl("openshell gateway start --detach", [
+            "openshell",
+            "gateway",
+            "start",
+            "--detach",
+          ])
+        )
+          return { ok: true, recoveredVia: "gateway start --detach" };
+        if (
+          await tryWsl("openshell gateway start", [
+            "openshell",
+            "gateway",
+            "start",
+          ])
+        )
+          return { ok: true, recoveredVia: "gateway start" };
       }
 
       // Path 2 — systemd user service (the current shape per install.sh).
-      if (await tryWsl(
-        "systemctl --user restart openshell-gateway",
-        ["systemctl", "--user", "restart", "openshell-gateway"],
-        { user: "banker", timeout: 60_000 },
-      )) {
-        return { ok: true, recoveredVia: "systemctl --user restart openshell-gateway" };
+      if (
+        await tryWsl(
+          "systemctl --user restart openshell-gateway",
+          ["systemctl", "--user", "restart", "openshell-gateway"],
+          { user: "banker", timeout: 60_000 },
+        )
+      ) {
+        return {
+          ok: true,
+          recoveredVia: "systemctl --user restart openshell-gateway",
+        };
       }
 
       // Path 3 — docker fallback for hand-rolled cluster containers.
@@ -1518,20 +1732,33 @@ async function handleDesktopInvoke(event, command, ...args) {
           "docker ps -a --filter 'name=openshell' --format '{{.Names}}'",
         ],
         { timeout: 15_000 },
-      ).catch((err) => ({ exitCode: -1, stdout: "", stderr: err?.message ?? String(err) }));
+      ).catch((err) => ({
+        exitCode: -1,
+        stdout: "",
+        stderr: err?.message ?? String(err),
+      }));
 
       const names = list.stdout
         .split(/\r?\n/)
         .map((s) => s.trim())
         .filter(Boolean);
       if (names.length === 1) {
-        if (await tryWsl(`docker restart ${names[0]}`, ["docker", "restart", names[0]])) {
+        if (
+          await tryWsl(`docker restart ${names[0]}`, [
+            "docker",
+            "restart",
+            names[0],
+          ])
+        ) {
           return { ok: true, recoveredVia: `docker restart ${names[0]}` };
         }
       }
 
       const detail = attempts
-        .map(({ label, r }) => `${label} → exit ${r.exitCode}: ${(r.stderr || r.stdout || "").trim().slice(0, 200) || "(no output)"}`)
+        .map(
+          ({ label, r }) =>
+            `${label} → exit ${r.exitCode}: ${(r.stderr || r.stdout || "").trim().slice(0, 200) || "(no output)"}`,
+        )
         .join(" | ");
       throw new Error(
         `Could not restart the OpenShell gateway. CLI ${cliInfo.version ?? "(unknown)"}. ` +
@@ -1578,7 +1805,8 @@ async function handleDesktopInvoke(event, command, ...args) {
         await dialog.showMessageBox(activeWindowFromEvent(event), {
           type: "info",
           title: "OpenShell setup",
-          message: "OpenShell installs WSL2, Ubuntu, Docker, and the OpenShell CLI.",
+          message:
+            "OpenShell installs WSL2, Ubuntu, Docker, and the OpenShell CLI.",
           detail:
             "Windows will ask for admin permission once. Your laptop may also ask for a " +
             "BitLocker recovery key after the first reboot — get this from IT before " +
@@ -1642,6 +1870,41 @@ async function handleDesktopInvoke(event, command, ...args) {
     }
     case "openeralCredentialStatus":
       return openeralCredentials.getCredentialStatus();
+    case "openeralStringCostStatus": {
+      // Reads the StringCost API key from the OS keyring (never exposes it
+      // to the renderer) and fetches billing status from StringCost.
+      // Returns null when no key is stored, or a status object on success.
+      // All errors are caught so the UI degrades gracefully.
+      const scApiKey =
+        await openeralCredentials.getCredential("stringcostApiKey");
+      if (!scApiKey) return { keyMissing: true };
+      const scBase = (
+        process.env.STRINGCOST_API_BASE || "https://app.stringcost.com"
+      ).replace(/\/+$/, "");
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 10000);
+        const res = await fetch(`${scBase}/api/v1/status`, {
+          headers: { Authorization: `Bearer ${scApiKey}` },
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          return {
+            keyMissing: false,
+            error: `StringCost returned ${res.status}: ${text.slice(0, 120)}`,
+          };
+        }
+        const data = await res.json();
+        return { keyMissing: false, ...data };
+      } catch (err) {
+        return {
+          keyMissing: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
     case "openeralSetCredential": {
       const input = args[0] ?? {};
       const key = String(input.key ?? "").trim();
@@ -1732,7 +1995,10 @@ async function handleDesktopInvoke(event, command, ...args) {
       // which left openshellClient.listSandboxes() (and this handler) empty.
       const list = await openeral.listSandboxes().catch(() => []);
       return Array.isArray(list)
-        ? list.filter((s) => typeof s?.name === "string" && s.name.startsWith("openeral-"))
+        ? list.filter(
+            (s) =>
+              typeof s?.name === "string" && s.name.startsWith("openeral-"),
+          )
         : [];
     }
     case "openeralEndSession": {
@@ -1741,7 +2007,11 @@ async function handleDesktopInvoke(event, command, ...args) {
       // closing the external terminal is what ends user interaction.
       // We still emit a status event so the UI can update.
       const name = String(args[0] ?? "").trim();
-      emitOpenEralSessionProgress({ sandboxName: name, phase: "closed", message: "Session closed." });
+      emitOpenEralSessionProgress({
+        sandboxName: name,
+        phase: "closed",
+        message: "Session closed.",
+      });
       return { status: "closed", sandboxName: name };
     }
     case "openeralDeleteSandbox": {
@@ -1755,7 +2025,11 @@ async function handleDesktopInvoke(event, command, ...args) {
           `openshell sandbox delete failed: ${(r.stderr || r.stdout).trim()}`,
         );
       }
-      emitOpenEralSessionProgress({ sandboxName: name, phase: "deleted", message: "Sandbox deleted." });
+      emitOpenEralSessionProgress({
+        sandboxName: name,
+        phase: "deleted",
+        message: "Sandbox deleted.",
+      });
       return { status: "deleted", sandboxName: name };
     }
     case "openeralDeriveSandboxName": {
@@ -1789,10 +2063,16 @@ async function handleDesktopInvoke(event, command, ...args) {
       // see or respond to (especially when the terminal is still sizing up).
       const extraEnv = await buildOpenEralPtyEnv(cols, rows);
 
-      const result = await openeralPty.openSession({ sandboxName, cols, rows, extraEnv });
+      const result = await openeralPty.openSession({
+        sandboxName,
+        cols,
+        rows,
+        extraEnv,
+      });
       openeralPty.attachHandlers(result.id, {
         onData: (data) => emitOpenEralPtyData(result.id, data),
-        onExit: (exitCode, signal) => emitOpenEralPtyExit(result.id, exitCode, signal),
+        onExit: (exitCode, signal) =>
+          emitOpenEralPtyExit(result.id, exitCode, signal),
       });
       return result;
     }
@@ -1827,10 +2107,16 @@ async function handleDesktopInvoke(event, command, ...args) {
       }
 
       const extraEnv = await buildOpenEralPtyEnv(cols, rows);
-      const result = await openeralPty.openSession({ sandboxName, cols, rows, extraEnv });
+      const result = await openeralPty.openSession({
+        sandboxName,
+        cols,
+        rows,
+        extraEnv,
+      });
       openeralPty.attachHandlers(result.id, {
         onData: (data) => emitOpenEralPtyData(result.id, data),
-        onExit: (exitCode, signal) => emitOpenEralPtyExit(result.id, exitCode, signal),
+        onExit: (exitCode, signal) =>
+          emitOpenEralPtyExit(result.id, exitCode, signal),
       });
       return { id: result.id, buffered: "", reused: false, exited: false };
     }
@@ -1863,7 +2149,11 @@ async function handleDesktopInvoke(event, command, ...args) {
       const input = args[0] ?? {};
       const id = String(input.sessionId ?? "").trim();
       if (!id) throw new Error("sessionId is required");
-      return openeralPty.resizeSession(id, Number(input.cols), Number(input.rows));
+      return openeralPty.resizeSession(
+        id,
+        Number(input.cols),
+        Number(input.rows),
+      );
     }
     case "openeralPtyClose": {
       const id = String(args[0] ?? "").trim();
@@ -1919,9 +2209,7 @@ async function handleDesktopInvoke(event, command, ...args) {
         const terminal = await launchExternalTerminalToSandbox(sandboxName);
         return terminal;
       } catch (err) {
-        throw new Error(
-          err instanceof Error ? err.message : String(err),
-        );
+        throw new Error(err instanceof Error ? err.message : String(err));
       }
     }
     case "openshellResetDistro": {
@@ -1932,7 +2220,8 @@ async function handleDesktopInvoke(event, command, ...args) {
       const choice = await dialog.showMessageBox(activeWindowFromEvent(event), {
         type: "warning",
         title: "Reset OpenShell distro?",
-        message: "This wipes the openwork-openshell WSL distro and clears installer state.",
+        message:
+          "This wipes the openwork-openshell WSL distro and clears installer state.",
         detail:
           "Any data inside the distro (Docker images, OpenShell sandboxes, downloaded packages) " +
           "is lost. Your OpenWork workspaces on the Windows side are untouched. " +
@@ -1952,14 +2241,20 @@ async function handleDesktopInvoke(event, command, ...args) {
         // Distro may already be stopped.
       }
       try {
-        await wslRun(["--unregister", OPENSHELL_DISTRO_NAME], { timeout: 30_000 });
+        await wslRun(["--unregister", OPENSHELL_DISTRO_NAME], {
+          timeout: 30_000,
+        });
       } catch (err) {
         throw new Error(
           `Could not unregister distro: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
       // Wipe installer state so the next run re-executes every phase.
-      const stateFile = path.join(os.homedir(), ".openwork", "openshell-install.json");
+      const stateFile = path.join(
+        os.homedir(),
+        ".openwork",
+        "openshell-install.json",
+      );
       try {
         await rm(stateFile, { force: true });
       } catch {
@@ -1968,7 +2263,9 @@ async function handleDesktopInvoke(event, command, ...args) {
       return { status: "reset", path: stateFile };
     }
     default:
-      throw new Error(`Electron desktop bridge method is not implemented yet: ${command}`);
+      throw new Error(
+        `Electron desktop bridge method is not implemented yet: ${command}`,
+      );
   }
 }
 
@@ -1981,7 +2278,9 @@ async function createMainWindow() {
     height: 820,
     title: "OpenWork",
     show: false,
-    ...(APP_ICON_IMAGE && !APP_ICON_IMAGE.isEmpty() ? { icon: APP_ICON_IMAGE } : {}),
+    ...(APP_ICON_IMAGE && !APP_ICON_IMAGE.isEmpty()
+      ? { icon: APP_ICON_IMAGE }
+      : {}),
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
@@ -1995,7 +2294,8 @@ async function createMainWindow() {
   const isMediaPermission = (permission) =>
     permission === "media" || permission === "audioCapture";
   mainWindow.webContents.session.setPermissionRequestHandler(
-    (_webContents, permission, callback) => callback(isMediaPermission(permission)),
+    (_webContents, permission, callback) =>
+      callback(isMediaPermission(permission)),
   );
   mainWindow.webContents.session.setPermissionCheckHandler(
     (_webContents, permission) => isMediaPermission(permission),
@@ -2022,13 +2322,21 @@ async function createMainWindow() {
     return { action: "allow" };
   });
 
-  const startUrl = process.env.OPENWORK_ELECTRON_START_URL?.trim() || process.env.ELECTRON_START_URL?.trim();
+  const startUrl =
+    process.env.OPENWORK_ELECTRON_START_URL?.trim() ||
+    process.env.ELECTRON_START_URL?.trim();
   if (startUrl) {
     await mainWindow.loadURL(startUrl);
   } else {
-    const packagedIndexPath = path.join(process.resourcesPath, "app-dist", "index.html");
+    const packagedIndexPath = path.join(
+      process.resourcesPath,
+      "app-dist",
+      "index.html",
+    );
     const devIndexPath = path.resolve(__dirname, "../../app/dist/index.html");
-    await mainWindow.loadFile(app.isPackaged ? packagedIndexPath : devIndexPath);
+    await mainWindow.loadFile(
+      app.isPackaged ? packagedIndexPath : devIndexPath,
+    );
   }
 
   return mainWindow;
@@ -2046,7 +2354,11 @@ ipcMain.handle("openwork:shell:relaunch", async () => {
 });
 
 registerMigrationIpc({ app, ipcMain });
-const { ensureAutoUpdater } = registerUpdaterIpc({ app, ipcMain, getMainWindow: () => mainWindow });
+const { ensureAutoUpdater } = registerUpdaterIpc({
+  app,
+  ipcMain,
+  getMainWindow: () => mainWindow,
+});
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -2081,10 +2393,12 @@ if (!app.requestSingleInstanceLock()) {
     // Electron see the same workspace list. Import the short-lived
     // Electron-only filename only when the shared file is missing.
     await migrateLegacyElectronWorkspaceStateIfNeeded();
-    runtimeBootstrapPromise = bootRuntimeForSelectedWorkspace().catch((error) => ({
-      ok: false,
-      error: error instanceof Error ? error.message : String(error),
-    }));
+    runtimeBootstrapPromise = bootRuntimeForSelectedWorkspace().catch(
+      (error) => ({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
 
     queueDeepLinks(forwardedDeepLinks(process.argv));
     const win = await createMainWindow();
