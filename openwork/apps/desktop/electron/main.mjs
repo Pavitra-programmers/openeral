@@ -803,10 +803,34 @@ async function bootRuntimeForSelectedWorkspace() {
 function ensureRuntimeBootstrap() {
   if (!runtimeBootstrapPromise) {
     runtimeBootstrapPromise = bootRuntimeForSelectedWorkspace().catch(
-      (error) => ({
-        ok: false,
-        error: error instanceof Error ? error.message : String(error),
-      }),
+      async (error) => {
+        const raw = error instanceof Error ? error.message : String(error);
+        // "fetch failed" / ECONNREFUSED means the server process started but
+        // never became healthy. Try to surface its stderr so the user can see
+        // WHY it failed instead of seeing the opaque network error.
+        if (/fetch failed|ECONNREFUSED|ECONNRESET/i.test(raw)) {
+          try {
+            const status = await runtimeManager.runtimeStatus();
+            const stderr = String(
+              status?.openworkServer?.lastStderr ?? "",
+            ).trim();
+            if (stderr) {
+              return {
+                ok: false,
+                error: `OpenWork server failed to start. Server output: ${stderr.slice(0, 400)}`,
+              };
+            }
+          } catch {
+            /* best-effort */
+          }
+          return {
+            ok: false,
+            error:
+              "OpenWork server did not start in time. Try restarting the app. If the problem persists, antivirus software may be blocking openwork-server.exe — check your security logs.",
+          };
+        }
+        return { ok: false, error: raw };
+      },
     );
   }
   return runtimeBootstrapPromise;
@@ -1871,10 +1895,10 @@ async function handleDesktopInvoke(event, command, ...args) {
     case "openeralCredentialStatus":
       return openeralCredentials.getCredentialStatus();
     case "openeralStringCostStatus": {
-      // Reads the StringCost API key from the OS keyring (never exposes it
-      // to the renderer) and fetches billing status from StringCost.
-      // Returns null when no key is stored, or a status object on success.
-      // All errors are caught so the UI degrades gracefully.
+      // Reads the StringCost API key from the OS keyring (never exposes the
+      // plaintext to the renderer) and fetches billing status from StringCost.
+      // Returns { keyMissing: true } when no key is stored, an error object on
+      // network failure, or the full status object on success.
       const scApiKey =
         await openeralCredentials.getCredential("stringcostApiKey");
       if (!scApiKey) return { keyMissing: true };
