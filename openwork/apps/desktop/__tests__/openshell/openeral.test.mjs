@@ -426,15 +426,17 @@ test("createOpenEralSandbox: claude profile builds canonical openeral argv", asy
   // splice via shellQuote (name, imageRef) appear single-quoted.
   const createLine = lines.find((l) => /openshell sandbox create/.test(l));
   assert.ok(createLine, `no create line. lines=${JSON.stringify(lines)}`);
-  assert.match(createLine, /sandbox create --tty/);
+  // --no-tty + `-- /bin/true`: create only provisions; the agent is launched
+  // later via `sandbox connect` + the /sandbox/.bashrc block (no TTY here, so
+  // running `-- openeral` would deadlock on the agent's interactive prompt).
+  assert.match(createLine, /sandbox create --no-tty/);
   assert.match(createLine, /--name 'openeral-new'/);
   assert.match(createLine, /--from 'ghcr\.io\/sandys\/openeral\/sandbox:just-bash'/);
   assert.match(createLine, /--upload \/tmp\/openeral-db-url-[\w-]+:\/sandbox\/db-url/);
   assert.match(createLine, /--provider claude --auto-providers/);
-  assert.match(createLine, /-- openeral$/);
+  assert.match(createLine, /-- \/bin\/true$/);
   // Things that should NOT be there.
   assert.doesNotMatch(createLine, /--gateway/, "no --gateway flag in canonical flow");
-  assert.doesNotMatch(createLine, /--no-tty/, "canonical flow uses --tty, not --no-tty");
   assert.doesNotMatch(createLine, /--provider db/, "no explicit db provider");
 });
 
@@ -456,7 +458,7 @@ test("createOpenEralSandbox: openclaw profile sets OPENERAL_AGENT env via WSLENV
   assert.ok(createLine);
   assert.match(createLine, /--name 'openeral-claws'/);
   assert.match(createLine, /--provider claude --auto-providers/);
-  assert.match(createLine, /-- openeral$/);
+  assert.match(createLine, /-- \/bin\/true$/);
 });
 
 test("createOpenEralSandbox: requires name and profile", async () => {
@@ -479,88 +481,208 @@ test("buildLaunchBlock (claude + proxy): exports proxy vars and unsets the real 
     "https://proxy.stringcost.com/stringcost-proxy/t/TOK",
   );
   assert.match(block, /ANTHROPIC_BASE_URL=.*TOK/, "must export proxy base URL");
+  assert.match(
+    block,
+    /^export ANTHROPIC_AUTH_TOKEN=/m,
+    "claude must export a placeholder auth token for the proxy",
+  );
+  // Compliance: the placeholder must never be a hardcoded token literal —
+  // it is env-sourced (OPENWORK_STRINGCOST_AUTH_TOKEN) or random per process.
+  assert.doesNotMatch(
+    block,
+    /openwork-stringcost/,
+    "placeholder token must not be the old hardcoded literal",
+  );
+  const tokenLine = block.match(/^export ANTHROPIC_AUTH_TOKEN='([^']+)'$/m);
+  assert.ok(tokenLine, "token export must be single-quoted and non-empty");
+  assert.ok(
+    process.env.OPENWORK_STRINGCOST_AUTH_TOKEN ||
+      /^openwork-[0-9a-f-]{36}$/.test(tokenLine[1]),
+    "unset env must yield a random per-process placeholder (openwork-<uuid>)",
+  );
   assert.match(block, /unset ANTHROPIC_API_KEY/, "claude must unset real key when proxy active");
   assert.doesNotMatch(block, /openclaw gateway/, "claude must not start openclaw gateway");
   assert.match(block, /exec claude/, "claude must exec claude");
 });
 
-test("buildLaunchBlock (openclaw + proxy): preserves key, starts gateway, writes auth profile", () => {
+test("buildLaunchBlock (openclaw + proxy): delegates to setup.sh with StringCost env", () => {
   const block = openeral.__testing.buildLaunchBlock(
     "openeral-openclaw",
     "https://proxy.stringcost.com/stringcost-proxy/t/TOK2",
   );
-  // Must NOT unset the key — openclaw needs it for the direct auth-profile write.
-  assert.doesNotMatch(block, /unset ANTHROPIC_API_KEY/, "openclaw must keep ANTHROPIC_API_KEY");
-  // Must still export the proxy URL.
-  assert.match(block, /ANTHROPIC_BASE_URL=.*TOK2/, "must export proxy base URL");
+  // Must NOT unset the key — setup.sh needs it for `openclaw onboard`.
+  assert.doesNotMatch(
+    block,
+    /unset ANTHROPIC_API_KEY/,
+    "openclaw must keep ANTHROPIC_API_KEY",
+  );
+  // The proxy is handed to setup.sh as STRINGCOST_PROXY_URL (its
+  // highest-priority presign source) — NOT as ANTHROPIC_BASE_URL, which
+  // setup.sh derives itself after normalizing/persisting the presign.
+  assert.match(
+    block,
+    /^export STRINGCOST_PROXY_URL=.*TOK2/m,
+    "must export STRINGCOST_PROXY_URL for setup.sh",
+  );
+  assert.doesNotMatch(
+    block,
+    /^export ANTHROPIC_BASE_URL=/m,
+    "openclaw must not export ANTHROPIC_BASE_URL directly — setup.sh owns it",
+  );
+  assert.doesNotMatch(
+    block,
+    /^export ANTHROPIC_AUTH_TOKEN=/m,
+    "openclaw must not export the claude-only placeholder auth token",
+  );
   // Must load the key from the file deposited by finalizeSandboxLaunch.
-  assert.match(block, /anthropic-api-key/, "must load key from /sandbox/anthropic-api-key");
-  // Must start the gateway supervision loop.
-  assert.match(block, /openclaw gateway --port 18789/, "must start openclaw gateway");
-  // Must wait for the gateway to be reachable.
-  assert.match(block, /18789\/readyz/, "must wait for gateway /readyz");
-  // Must write auth-profiles.json directly (no openclaw onboard — it hangs on
-  // npm-via-git installs blocked by the sandbox network policy).
-  assert.doesNotMatch(block, /openclaw onboard/, "must NOT run openclaw onboard (hangs on blocked npm-via-git)");
-  assert.match(block, /auth-profiles\.json/, "must check/write auth-profiles.json directly");
-  assert.match(block, /openwork-direct/, "must write auth profile with openwork-direct source marker");
-  // Must exec with HOME set and OPENCLAW_PLUGIN_STAGE_DIR explicitly unset
-  // (forwarding it to the TUI causes a concurrent staging loop that freezes the terminal).
-  assert.match(block, /exec env -u OPENCLAW_PLUGIN_STAGE_DIR/, "exec must unset OPENCLAW_PLUGIN_STAGE_DIR");
+  assert.match(
+    block,
+    /anthropic-api-key/,
+    "must load key from /sandbox/anthropic-api-key",
+  );
+  // Must set the agent gate that setup.sh switches on.
+  assert.match(
+    block,
+    /^export OPENERAL_AGENT=openclaw$/m,
+    "must export OPENERAL_AGENT=openclaw for setup.sh",
+  );
+  // Cold start must delegate to the image's tested entry point instead of
+  // re-implementing the bootstrap (auth profile, openclaw.json, gateway) here.
+  // History: the hand-rolled block broke on openclaw 2026.4.29 — invalid auth
+  // profile shape, meta-less config overwritten by the gateway, and a cold
+  // gateway staging 35 bundled deps at startup that hung /readyz for 10 min.
+  assert.match(
+    block,
+    /exec openeral/,
+    "cold start must exec openeral (setup.sh)",
+  );
+  assert.doesNotMatch(
+    block,
+    /openclaw gateway --port/,
+    "must NOT start the gateway — setup.sh owns the gateway lifecycle",
+  );
+  assert.doesNotMatch(
+    block,
+    /openclaw onboard/,
+    "must NOT run onboard — setup.sh owns onboarding",
+  );
+  assert.doesNotMatch(
+    block,
+    /auth-profiles\.json/,
+    "must NOT hand-write auth-profiles.json — openclaw rejects the shape",
+  );
+  assert.doesNotMatch(
+    block,
+    /models\.providers\.stringcost/,
+    "must NOT hand-write openclaw.json — setup.sh registers the provider",
+  );
+  assert.doesNotMatch(
+    block,
+    /status --deep|doctor --fix/,
+    "plugin pre-stage belongs to setup.sh",
+  );
+  // Reconnect fast path: when the gateway from a previous session is healthy,
+  // exec the TUI directly (mirrors setup.sh's final exec).
+  assert.match(
+    block,
+    /18789\/readyz/,
+    "must probe gateway /readyz for the fast path",
+  );
+  assert.match(
+    block,
+    /\. \/home\/agent\/\.openeral\/env\.sh/,
+    "fast path must source env.sh for the StringCost proxy env",
+  );
+  assert.match(
+    block,
+    /exec env -u STRINGCOST_API_KEY -u OPENCLAW_PLUGIN_STAGE_DIR -u ANTHROPIC_AUTH_TOKEN/,
+    "fast-path exec must scrub setup-only env (mirrors setup.sh's exec)",
+  );
   assert.match(block, /HOME=\/home\/agent/, "exec must set HOME=/home/agent");
-  assert.match(block, /^\s+openclaw\s*$/m, "exec must end with openclaw on its own line");
+  assert.match(
+    block,
+    /^\s+openclaw\s*$/m,
+    "exec must end with openclaw on its own line",
+  );
   // SHELL must be set so openclaw agent tool invocations use openeral's workspace
   // filesystem layer (PostgreSQL-backed) rather than raw /bin/bash.
-  assert.match(block, /SHELL=\/usr\/local\/bin\/openeral-bash/, "exec must set SHELL to openeral-bash");
+  assert.match(
+    block,
+    /SHELL=\/usr\/local\/bin\/openeral-bash/,
+    "exec must set SHELL to openeral-bash",
+  );
   // OPENCLAW_HANDSHAKE_TIMEOUT_MS must be set for the TUI exec so the client
   // doesn't time out connecting to the gateway on a cold container.
-  assert.match(block, /OPENCLAW_HANDSHAKE_TIMEOUT_MS=30000/, "exec must set OPENCLAW_HANDSHAKE_TIMEOUT_MS for TUI client");
-  // StringCost provider config must be present (openclaw's built-in anthropic
-  // provider hardcodes api.anthropic.com — a custom provider is the only way
-  // to route traffic through the StringCost proxy).
-  assert.match(block, /models\.providers\.stringcost/, "must add stringcost provider to openclaw.json");
-  assert.match(block, /anthropic-messages/, "stringcost provider must use anthropic-messages API");
-  assert.match(block, /_remap/, "must have model remap logic (anthropic/ → stringcost/)");
-  // Recovery restart must be present OUTSIDE the main gateway block to handle
-  // gateway crashes during plugin pre-stage (the gateway watches openclaw.json via
-  // inotify; any write while it's running can trigger a live reload that crashes it).
-  assert.match(block, /Restarting gateway \(crashed during setup\)/, "must have recovery restart for crashed gateway");
-  assert.match(block, /_gw_final/, "recovery restart must use a distinct wait counter (_gw_final)");
-  // openclaw status --deep must run BEFORE doctor --fix to pre-stage all TUI
-  // plugin deps. Without this, first user prompt hangs ~10 min on plugin install.
-  assert.match(block, /openclaw status --deep/, "must run openclaw status --deep to pre-stage TUI plugins");
-  // Plugin registry consolidation must follow status --deep.
-  assert.match(block, /doctor --fix/, "must run openclaw doctor --fix to consolidate plugins");
+  assert.match(
+    block,
+    /OPENCLAW_HANDSHAKE_TIMEOUT_MS=30000/,
+    "exec must set OPENCLAW_HANDSHAKE_TIMEOUT_MS for TUI client",
+  );
 });
 
-test("buildLaunchBlock (openclaw): auth-profiles.json written BEFORE openclaw.json", () => {
-  // auth-profiles.json is written directly (no openclaw onboard) to avoid the
-  // 10–30 min hang caused by blocked npm-via-git installs. It must be written
-  // BEFORE openclaw.json so the gateway starts with a valid auth context.
+test("buildLaunchBlock (openclaw): fast path precedes the setup.sh handoff", () => {
   const block = openeral.__testing.buildLaunchBlock("openeral-openclaw", null);
 
-  // Must NOT run openclaw onboard — it hangs on blocked npm-via-git installs.
-  assert.doesNotMatch(block, /openclaw onboard/, "must NOT call openclaw onboard");
-
-  // Must write auth-profiles.json directly.
-  const authWriteIdx = block.indexOf("openwork-direct");
-  assert.ok(authWriteIdx > -1, "must write auth-profiles.json with openwork-direct source marker");
-
-  // auth-profiles.json write must appear BEFORE openclaw.json write (uses `c`/`file`).
-  const jsonWriteIdx = block.indexOf("writeFileSync(file, JSON.stringify(c,");
-  assert.ok(jsonWriteIdx > -1, "openclaw.json write must be present");
+  // The readyz fast path must come first — reconnects with a live gateway
+  // exec the TUI immediately instead of re-running setup.sh.
+  const readyzIdx = block.indexOf("18789/readyz");
+  const execOpeneralIdx = block.indexOf("exec openeral");
+  assert.ok(readyzIdx > -1, "readyz fast-path probe must be present");
+  assert.ok(execOpeneralIdx > -1, "exec openeral handoff must be present");
   assert.ok(
-    authWriteIdx < jsonWriteIdx,
-    `auth-profiles.json write (pos ${authWriteIdx}) must appear BEFORE openclaw.json write (pos ${jsonWriteIdx})`,
+    readyzIdx < execOpeneralIdx,
+    `readyz fast path (pos ${readyzIdx}) must appear BEFORE exec openeral (pos ${execOpeneralIdx})`,
   );
 
-  // Plugin stage dir must still be seeded from image cache (for gateway startup
-  // and openclaw status --deep which follow).
-  const pluginSeedIdx = block.indexOf("cp -rn /opt/openclaw-plugin-cache/. /tmp/openclaw-plugin-runtime-deps/");
-  assert.ok(pluginSeedIdx > -1, "plugin stage dir must be seeded from /opt/openclaw-plugin-cache");
+  // A zombie gateway process holding port 18789 would make setup.sh's own
+  // gateway fail to bind (setup.sh assumes a fresh container and does not
+  // pkill). The block must clear it before handing off.
+  const pkillIdx = block.indexOf("pkill -f 'openclaw gateway'");
+  assert.ok(pkillIdx > -1, "must pkill zombie gateways before exec openeral");
   assert.ok(
-    pluginSeedIdx < authWriteIdx,
-    `plugin cache seed (pos ${pluginSeedIdx}) must appear BEFORE auth write (pos ${authWriteIdx})`,
+    pkillIdx < execOpeneralIdx,
+    `pkill (pos ${pkillIdx}) must appear BEFORE exec openeral (pos ${execOpeneralIdx})`,
+  );
+
+  // Both the env prep and the launch must stay inside the managed markers.
+  assert.match(block, /^# >>> openwork launch >>>/m);
+  assert.match(block, /^# <<< openwork launch <<<$/m);
+});
+
+test("buildLaunchBlock: proxyBase is shell-quoted (no command substitution)", () => {
+  // proxyBase is sandbox-controlled (parsed from an uploaded presign.json)
+  // or an HTTP response body. Inside double quotes bash still expands
+  // $(...), so the exports must single-quote the value.
+  const evil = "https://x.example/stringcost-proxy/t/$(touch /tmp/pwned)";
+  const claude = openeral.__testing.buildLaunchBlock("openeral-claude", evil);
+  assert.ok(
+    claude.includes(`export ANTHROPIC_BASE_URL='${evil}'`),
+    "claude proxy export must be single-quoted",
+  );
+  const claw = openeral.__testing.buildLaunchBlock("openeral-openclaw", evil);
+  assert.ok(
+    claw.includes(`export STRINGCOST_PROXY_URL='${evil}'`),
+    "openclaw proxy export must be single-quoted",
+  );
+});
+
+test("buildLaunchBlock (openclaw): fast path preserves ANTHROPIC_API_KEY across env.sh", () => {
+  // env.sh (written by setup.sh) contains `unset ANTHROPIC_API_KEY` for
+  // Claude Code's benefit. The fast path must save the key it just loaded
+  // and re-export it after sourcing, or the TUI is exec'd without the
+  // literal key that setup.sh documents OpenClaw requires.
+  const block = openeral.__testing.buildLaunchBlock("openeral-openclaw", null);
+  const saveIdx = block.indexOf('_saved_key="${ANTHROPIC_API_KEY:-}"');
+  const sourceIdx = block.indexOf(". /home/agent/.openeral/env.sh");
+  const restoreIdx = block.indexOf(
+    '[ -n "$_saved_key" ] && export ANTHROPIC_API_KEY="$_saved_key"',
+  );
+  assert.ok(saveIdx > -1, "must capture the key before sourcing env.sh");
+  assert.ok(sourceIdx > -1, "must still source env.sh for ANTHROPIC_BASE_URL");
+  assert.ok(restoreIdx > -1, "must re-export the key after sourcing env.sh");
+  assert.ok(
+    saveIdx < sourceIdx && sourceIdx < restoreIdx,
+    `order must be save (${saveIdx}) -> source (${sourceIdx}) -> restore (${restoreIdx})`,
   );
 });
 
@@ -582,20 +704,50 @@ test("buildLaunchBlock (openclaw + apiKey): embeds key directly in block", () =>
   assert.match(block, /anthropic-api-key/, "file-read fallback must also be present");
 });
 
-test("buildLaunchBlock (openclaw + no proxy): gateway present, no onboard, auth written directly", () => {
+test("buildLaunchBlock (openclaw + no proxy): no StringCost env, still delegates to setup.sh", () => {
   const block = openeral.__testing.buildLaunchBlock("openeral-openclaw", null);
   assert.doesNotMatch(block, /unset ANTHROPIC_API_KEY/);
-  // The StringCost node scripts always appear in the block as JS source (their
-  // runtime `if (_baseUrl)` gate activates only when ANTHROPIC_BASE_URL is set).
-  // What must be absent is the top-level bash `export ANTHROPIC_BASE_URL=` that
-  // only appears when proxyBase is non-null.
-  assert.doesNotMatch(block, /^export ANTHROPIC_BASE_URL=/m, "no top-level ANTHROPIC_BASE_URL export when proxyBase is null");
-  assert.match(block, /openclaw gateway --port 18789/);
-  assert.doesNotMatch(block, /openclaw onboard/, "must NOT run openclaw onboard (hangs on blocked network)");
-  assert.match(block, /auth-profiles\.json/, "must write auth-profiles.json directly");
-  assert.match(block, /openclaw status --deep/, "must run status --deep to pre-stage plugins");
-  assert.match(block, /exec env -u OPENCLAW_PLUGIN_STAGE_DIR/, "exec must unset plugin stage dir");
-  assert.match(block, /SHELL=\/usr\/local\/bin\/openeral-bash/, "exec must set SHELL to openeral-bash");
+  assert.doesNotMatch(
+    block,
+    /^export STRINGCOST_PROXY_URL=/m,
+    "no STRINGCOST_PROXY_URL export when proxyBase is null",
+  );
+  assert.doesNotMatch(
+    block,
+    /^export ANTHROPIC_BASE_URL=/m,
+    "no ANTHROPIC_BASE_URL export when proxyBase is null",
+  );
+  assert.match(
+    block,
+    /^export OPENERAL_AGENT=openclaw$/m,
+    "must export OPENERAL_AGENT=openclaw for setup.sh",
+  );
+  assert.match(
+    block,
+    /exec openeral/,
+    "cold start must exec openeral (setup.sh)",
+  );
+  assert.doesNotMatch(
+    block,
+    /openclaw gateway --port/,
+    "must NOT start the gateway — setup.sh owns the gateway lifecycle",
+  );
+  assert.doesNotMatch(
+    block,
+    /auth-profiles\.json/,
+    "must NOT hand-write auth-profiles.json",
+  );
+  // Fast path still present without a proxy.
+  assert.match(
+    block,
+    /exec env -u STRINGCOST_API_KEY -u OPENCLAW_PLUGIN_STAGE_DIR -u ANTHROPIC_AUTH_TOKEN/,
+    "fast-path exec must scrub setup-only env",
+  );
+  assert.match(
+    block,
+    /SHELL=\/usr\/local\/bin\/openeral-bash/,
+    "exec must set SHELL to openeral-bash",
+  );
   assert.match(block, /HOME=\/home\/agent/, "exec must set HOME");
 });
 
