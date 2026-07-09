@@ -38,13 +38,23 @@ import { randomUUID } from "node:crypto";
 
 import { getCliInfo } from "./cli.mjs";
 import { getCredential } from "./openeral-credentials.mjs";
-import { DISTRO_NAME, wslRun, wslSpawn } from "./wsl.mjs";
+import { DISTRO_NAME, ensureWslKeepalive, wslRun, wslSpawn } from "./wsl.mjs";
 
 const SANDBOX_IMAGE = "ghcr.io/sandys/openeral/sandbox:just-bash";
 const IMAGE_BY_PROFILE = {
   "openeral-claude": SANDBOX_IMAGE,
   "openeral-openclaw": SANDBOX_IMAGE,
 };
+
+// Dev/local override: point the sandbox at a locally-built or alternate image
+// without editing source. Set OPENWORK_SANDBOX_IMAGE to a tag reachable by the
+// distro's Docker (e.g. a `docker build`-produced local tag). Applies to both
+// profiles. Pair with OPENWORK_SANDBOX_SKIP_PULL=1 for local-only tags that
+// have no registry to pull from.
+function resolveSandboxImageOverride() {
+  const override = process.env.OPENWORK_SANDBOX_IMAGE?.trim();
+  return override || null;
+}
 
 const DEFAULT_PULL_TIMEOUT_MS = 10 * 60_000;
 const DEFAULT_CREATE_TIMEOUT_MS = 3 * 60_000;
@@ -54,10 +64,9 @@ const DEFAULT_PROBE_TIMEOUT_MS = 15_000;
 // override with STRINGCOST_API_BASE=http://<host>:8080 to point at a
 // self-hosted stack for local end-to-end testing. Mirrors the same default
 // and override the sandbox's setup.sh uses internally.
-const STRINGCOST_API_BASE = (process.env.STRINGCOST_API_BASE || "https://app.stringcost.com").replace(
-  /\/+$/,
-  "",
-);
+const STRINGCOST_API_BASE = (
+  process.env.STRINGCOST_API_BASE || "https://app.stringcost.com"
+).replace(/\/+$/, "");
 const STRINGCOST_PRESIGN_TIMEOUT_MS = 30_000;
 
 // Placeholder ANTHROPIC_AUTH_TOKEN for StringCost-proxied Claude Code.
@@ -86,6 +95,8 @@ const STRINGCOST_PLACEHOLDER_AUTH_TOKEN =
 const DOCKER_CONFIG_DIR = "/tmp/openwork-docker-config";
 
 export function imageForProfile(profile) {
+  const override = resolveSandboxImageOverride();
+  if (override) return override;
   const img = IMAGE_BY_PROFILE[profile];
   if (!img) throw new Error(`Unknown OpenEral profile: ${profile}`);
   return img;
@@ -123,7 +134,9 @@ export async function pullImage(imageRef, options = {}) {
       } catch {
         // ignore
       }
-      reject(new Error(`docker pull ${imageRef} timed out after ${timeoutMs}ms`));
+      reject(
+        new Error(`docker pull ${imageRef} timed out after ${timeoutMs}ms`),
+      );
     }, timeoutMs);
     child.on("error", (err) => {
       clearTimeout(timer);
@@ -132,7 +145,12 @@ export async function pullImage(imageRef, options = {}) {
     child.on("exit", (code) => {
       clearTimeout(timer);
       if (code === 0) resolve({ ok: true });
-      else reject(new Error(`docker pull ${imageRef} failed (exit ${code}): ${lastStderr.trim()}`));
+      else
+        reject(
+          new Error(
+            `docker pull ${imageRef} failed (exit ${code}): ${lastStderr.trim()}`,
+          ),
+        );
     });
   });
 }
@@ -251,7 +269,14 @@ export async function listSandboxes() {
   let r;
   try {
     r = await wslRun(
-      ["-d", DISTRO_NAME, "--", "bash", "-c", "timeout 15 openshell sandbox list"],
+      [
+        "-d",
+        DISTRO_NAME,
+        "--",
+        "bash",
+        "-c",
+        "timeout 15 openshell sandbox list",
+      ],
       { timeout: 25_000 },
     );
   } catch {
@@ -333,13 +358,23 @@ async function waitForSandboxReady(name, opts = {}) {
       // to stdout, causing parseSandboxList to return null every time.
       // parseListTextPhase reads the phase directly from the ANSI text table.
       r = await wslRun(
-        ["-d", DISTRO_NAME, "--", "bash", "-c", "timeout 10 openshell sandbox list"],
+        [
+          "-d",
+          DISTRO_NAME,
+          "--",
+          "bash",
+          "-c",
+          "timeout 10 openshell sandbox list",
+        ],
         { timeout: 20_000 },
       );
     } catch {
       // Gateway unreachable during polling — report progress and keep
       // waiting; the sandbox may still transition to Ready.
-      onProgress?.({ phase: "waiting", message: `Gateway unresponsive (attempt ${attempt}), retrying…` });
+      onProgress?.({
+        phase: "waiting",
+        message: `Gateway unresponsive (attempt ${attempt}), retrying…`,
+      });
       await new Promise((resolve) => setTimeout(resolve, pollMs));
       continue;
     }
@@ -349,14 +384,19 @@ async function waitForSandboxReady(name, opts = {}) {
         // Sandbox is visible in the list — check its phase.
         if (!phase || /ready|running/i.test(phase)) return;
         if (/error|failed/i.test(phase)) {
-          throw new Error(`Sandbox ${name} is in error state (${phase}). Delete it and reconnect.`);
+          throw new Error(
+            `Sandbox ${name} is in error state (${phase}). Delete it and reconnect.`,
+          );
         }
         // Sandbox is being deleted — record that we saw it deleting so when
         // it disappears from the list we know to create fresh rather than
         // treating the absence as "still provisioning".
         if (/delet/i.test(phase)) {
           sawDeleting = true;
-          onProgress?.({ phase: "waiting", message: `Sandbox is deleting; waiting for deletion to complete…` });
+          onProgress?.({
+            phase: "waiting",
+            message: `Sandbox is deleting; waiting for deletion to complete…`,
+          });
           await new Promise((resolve) => setTimeout(resolve, pollMs));
           continue;
         }
@@ -379,7 +419,10 @@ async function waitForSandboxReady(name, opts = {}) {
           // Phase changed away from Provisioning — reset the timer.
           firstProvisioningAt = null;
         }
-        onProgress?.({ phase: "waiting", message: `Sandbox is ${phase} (attempt ${attempt}), waiting…` });
+        onProgress?.({
+          phase: "waiting",
+          message: `Sandbox is ${phase} (attempt ${attempt}), waiting…`,
+        });
       } else if (sawDeleting) {
         // phase === null and we previously saw "Deleting" → sandbox is gone.
         // Signal the caller to create a fresh sandbox instead of proceeding
@@ -407,7 +450,11 @@ async function waitForSandboxReady(name, opts = {}) {
     );
   }
   // Non-provisioning timeout — proceed; exec may succeed if setup.sh just finished.
-  onProgress?.({ phase: "timeout", message: "Sandbox did not confirm Ready state; attempting to connect anyway." });
+  onProgress?.({
+    phase: "timeout",
+    message:
+      "Sandbox did not confirm Ready state; attempting to connect anyway.",
+  });
 }
 
 /**
@@ -436,7 +483,14 @@ export async function sandboxExists(name) {
   let r;
   try {
     r = await wslRun(
-      ["-d", DISTRO_NAME, "--", "bash", "-c", "timeout 15 openshell sandbox list --names"],
+      [
+        "-d",
+        DISTRO_NAME,
+        "--",
+        "bash",
+        "-c",
+        "timeout 15 openshell sandbox list --names",
+      ],
       { timeout: 25_000 },
     );
   } catch (err) {
@@ -458,13 +512,18 @@ export async function sandboxExists(name) {
   }
   if (r.exitCode !== 0) return false;
   // --names outputs one sandbox name per line (no JSON).
-  const names = r.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const names = r.stdout
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
   if (names.includes(name)) return true;
   // Fallback: if --names flag is not supported by a future CLI version and the
   // output falls back to a text/JSON format, check whether the raw output
   // contains the sandbox name anywhere (conservative — avoids a spurious create).
   if (names.length === 0 && r.stdout.includes(name)) {
-    console.warn(`[sandboxExists] --names may be unsupported; found "${name}" via text search.`);
+    console.warn(
+      `[sandboxExists] --names may be unsupported; found "${name}" via text search.`,
+    );
     return true;
   }
   return false;
@@ -560,7 +619,14 @@ function sandboxRunScriptCmd(name, script) {
  */
 async function ensureOpensshClient(onProgress) {
   const present = await wslRun(
-    ["-d", DISTRO_NAME, "--", "bash", "-c", "command -v scp >/dev/null && command -v ssh >/dev/null"],
+    [
+      "-d",
+      DISTRO_NAME,
+      "--",
+      "bash",
+      "-c",
+      "command -v scp >/dev/null && command -v ssh >/dev/null",
+    ],
     { timeout: 15_000 },
   ).catch(() => ({ exitCode: 1 }));
   if (present.exitCode === 0) return;
@@ -578,7 +644,11 @@ async function ensureOpensshClient(onProgress) {
   const r = await wslRun(
     ["-d", DISTRO_NAME, "--user", "root", "--", "bash", "-c", script],
     { timeout: 5 * 60_000 },
-  ).catch((err) => ({ exitCode: -1, stdout: "", stderr: err?.message ?? String(err) }));
+  ).catch((err) => ({
+    exitCode: -1,
+    stdout: "",
+    stderr: err?.message ?? String(err),
+  }));
   if (r.exitCode !== 0) {
     throw new Error(
       `openssh-client is missing from the "${DISTRO_NAME}" distro and could not be ` +
@@ -731,6 +801,16 @@ function buildLaunchBlock(profile, proxyBase, apiKey = null) {
       //     Code's benefit; the canonical openclaw env never has it;
       //   - SHELL=/usr/local/bin/openeral-bash: agent tool shell invocations
       //     go through openeral's PostgreSQL-backed workspace layer.
+      // `openclaw tui`, NOT bare `openclaw`: as of 2026.4.x the bare command
+      // opens the "crestodian" setup concierge instead of the coding agent
+      // (setup.sh's final exec uses `openclaw tui` for the same reason).
+      // 600 s handshake timeout matches setup.sh — the TUI blocks its own
+      // event loop during plugin loading (a single pass can exceed 2 min in
+      // the sandbox), and a shorter timeout aborts the connect and re-runs
+      // the whole plugin pass in a 100%-CPU retry loop that ends with the
+      // TUI stranded in a permanent "disconnected" state.
+      // NODE_NO_WARNINGS: hide the UNDICI-EHPA experimental warnings that
+      // otherwise print above the TUI banner in the user's terminal.
       "  if curl -fsS http://127.0.0.1:18789/readyz >/dev/null 2>&1; then",
       '    _saved_key="${ANTHROPIC_API_KEY:-}"',
       "    [ -f /home/agent/.openeral/env.sh ] && . /home/agent/.openeral/env.sh",
@@ -741,8 +821,9 @@ function buildLaunchBlock(profile, proxyBase, apiKey = null) {
       "      OPENCLAW_NO_RESPAWN=1 \\",
       "      NODE_COMPILE_CACHE=/tmp/openclaw-compile-cache \\",
       "      GIT_SSL_NO_VERIFY=true npm_config_strict_ssl=false \\",
-      "      OPENCLAW_HANDSHAKE_TIMEOUT_MS=30000 \\",
-      "      openclaw",
+      "      OPENCLAW_HANDSHAKE_TIMEOUT_MS=600000 \\",
+      "      NODE_NO_WARNINGS=1 \\",
+      "      openclaw tui",
       "  fi",
       // Cold start (or crashed gateway): clear any zombie process that may
       // still hold port 18789 — setup.sh starts its gateway without a pkill,
@@ -761,7 +842,15 @@ function buildLaunchBlock(profile, proxyBase, apiKey = null) {
   return block.join("\n");
 }
 
-async function configureAgentLaunch({ name, profile, proxyBase, env, onProgress, apiKey, presignUrl }) {
+async function configureAgentLaunch({
+  name,
+  profile,
+  proxyBase,
+  env,
+  onProgress,
+  apiKey,
+  presignUrl,
+}) {
   const isClaude = profile !== "openeral-openclaw";
 
   // Built literally into /sandbox/.bashrc via a quoted heredoc — `$` stays
@@ -794,7 +883,7 @@ async function configureAgentLaunch({ name, profile, proxyBase, env, onProgress,
     '[ -f "$RC" ] || : > "$RC"',
     // Idempotent: drop any prior managed block so re-creates update cleanly.
     "sed -i '/# >>> openwork launch >>>/,/# <<< openwork launch <<</d' \"$RC\" 2>/dev/null || true",
-    'cat >> "$RC" <<\'OPENWORK_LAUNCH_EOF\'',
+    "cat >> \"$RC\" <<'OPENWORK_LAUNCH_EOF'",
     blockContent,
     "OPENWORK_LAUNCH_EOF",
   ];
@@ -808,7 +897,14 @@ async function configureAgentLaunch({ name, profile, proxyBase, env, onProgress,
   }
 
   await wslRun(
-    ["-d", DISTRO_NAME, "--", "bash", "-c", sandboxRunScriptCmd(name, lines.join("\n"))],
+    [
+      "-d",
+      DISTRO_NAME,
+      "--",
+      "bash",
+      "-c",
+      sandboxRunScriptCmd(name, lines.join("\n")),
+    ],
     { timeout: 180_000, env },
   )
     .then(() =>
@@ -823,6 +919,71 @@ async function configureAgentLaunch({ name, profile, proxyBase, env, onProgress,
       // Non-fatal — sandbox still works; user can launch the agent manually.
       console.warn(
         "[createOpenEralSandbox] agent launch configuration failed (non-fatal):",
+        e.message,
+      );
+    });
+}
+
+/**
+ * Run the OpenClaw runtime setup headlessly while the app is still showing
+ * the sandbox-creation loading screen, so the user's terminal never streams
+ * setup.sh output. setup.sh in OPENERAL_SETUP_ONLY mode brings up everything
+ * (DB migrations, workspace seed, openeral-bash daemon, openclaw onboard,
+ * gateway + readiness, plugin/compile caches) and exits without launching the
+ * TUI; the terminal's .bashrc fast path then sees a healthy gateway and execs
+ * the TUI directly, painting only the agent UI.
+ *
+ * Idempotent + best-effort: skips instantly when the gateway is already
+ * healthy (workspace reopen), and on failure the .bashrc block still falls
+ * back to running `openeral` interactively — the previous behavior — so the
+ * worst case is setup output in the terminal, never a broken session.
+ *
+ * @param {{ name: string, profile: string, env: NodeJS.ProcessEnv,
+ *           onProgress?: Function }} args
+ */
+async function prewarmAgentRuntime({ name, profile, env, onProgress }) {
+  if (profile !== "openeral-openclaw") return;
+  onProgress?.({
+    phase: "prewarm",
+    message: "Preparing OpenClaw runtime (first run can take a few minutes)…",
+  });
+  const script = [
+    // Already warm (reopen / repeated finalize): nothing to do.
+    "if curl -fsS http://127.0.0.1:18789/readyz >/dev/null 2>&1; then",
+    "  echo prewarm: gateway already healthy",
+    "  exit 0",
+    "fi",
+    // A dead gateway process may still hold the port after a container
+    // restart — clear it so setup.sh's own gateway start binds cleanly.
+    "pkill -f 'openclaw gateway' 2>/dev/null || true",
+    // setup.sh self-configures from the uploaded /sandbox files (db-url,
+    // anthropic-api-key, openeral-input/presign.json) — written by create
+    // and configureAgentLaunch before this runs.
+    "export OPENERAL_AGENT=openclaw OPENERAL_SETUP_ONLY=1 HOME=/sandbox",
+    "openeral > /tmp/openeral-setup.log 2>&1",
+    "rc=$?",
+    "tail -5 /tmp/openeral-setup.log",
+    'exit "$rc"',
+  ].join("\n");
+  await wslRun(
+    ["-d", DISTRO_NAME, "--", "bash", "-c", sandboxRunScriptCmd(name, script)],
+    { timeout: 600_000, env },
+  )
+    .then((r) => {
+      if (r.exitCode === 0) {
+        onProgress?.({ phase: "prewarm", message: "OpenClaw runtime ready." });
+      } else {
+        // Non-fatal: .bashrc falls back to interactive setup in the terminal.
+        console.warn(
+          "[prewarmAgentRuntime] setup-only run exited non-zero (non-fatal):",
+          r.stdout?.slice(-500),
+          r.stderr?.slice(-500),
+        );
+      }
+    })
+    .catch((e) => {
+      console.warn(
+        "[prewarmAgentRuntime] prewarm failed (non-fatal):",
         e.message,
       );
     });
@@ -876,21 +1037,26 @@ async function readSandboxPresignUrl(name, env) {
  *           onProgress?: Function }} args
  */
 async function finalizeSandboxLaunch({ name, profile, env, onProgress }) {
-  const anthropicApiKey = await getCredential("anthropicApiKey").catch(() => null);
+  const anthropicApiKey = await getCredential("anthropicApiKey").catch(
+    () => null,
+  );
 
   // Resolve the StringCost presign before calling configureAgentLaunch so we
   // can pass both the API key and the presign URL into the single combined
   // exec that writes all files + the .bashrc block.
   let proxyBase = null;
   let mintedPresignUrl = null; // only set when we mint a new presign this session
-  const stringcostApiKey = await getCredential("stringcostApiKey").catch(() => null);
+  const stringcostApiKey = await getCredential("stringcostApiKey").catch(
+    () => null,
+  );
   if (stringcostApiKey) {
     // Reuse a presign already uploaded on a prior launch before minting anew.
     const existingUrl = await readSandboxPresignUrl(name, env);
     if (existingUrl) {
       proxyBase = stringcostBaseUrlForAgent(existingUrl);
     } else if (anthropicApiKey) {
-      const agentLabel = profile === "openeral-openclaw" ? "openclaw" : "claude-code";
+      const agentLabel =
+        profile === "openeral-openclaw" ? "openclaw" : "claude-code";
       const presignUrl = await createStringcostPresign({
         anthropicApiKey,
         stringcostApiKey,
@@ -943,13 +1109,22 @@ async function finalizeSandboxLaunch({ name, profile, env, onProgress }) {
  * @param {{ anthropicApiKey: string, stringcostApiKey: string, agentLabel: "claude-code" | "openclaw" }} args
  * @returns {Promise<string | null>}
  */
-async function createStringcostPresign({ anthropicApiKey, stringcostApiKey, agentLabel }) {
+async function createStringcostPresign({
+  anthropicApiKey,
+  stringcostApiKey,
+  agentLabel,
+}) {
   if (typeof fetch !== "function") {
-    console.warn("[createOpenEralSandbox] global fetch unavailable — skipping StringCost presign");
+    console.warn(
+      "[createOpenEralSandbox] global fetch unavailable — skipping StringCost presign",
+    );
     return null;
   }
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), STRINGCOST_PRESIGN_TIMEOUT_MS);
+  const timer = setTimeout(
+    () => controller.abort(),
+    STRINGCOST_PRESIGN_TIMEOUT_MS,
+  );
   try {
     const res = await fetch(`${STRINGCOST_API_BASE}/v1/presign`, {
       method: "POST",
@@ -984,7 +1159,9 @@ async function createStringcostPresign({ anthropicApiKey, stringcostApiKey, agen
     const data = await res.json().catch(() => null);
     const url = data && typeof data.url === "string" ? data.url : null;
     if (!url) {
-      console.warn("[createOpenEralSandbox] StringCost presign returned no URL");
+      console.warn(
+        "[createOpenEralSandbox] StringCost presign returned no URL",
+      );
       return null;
     }
     return url;
@@ -1011,11 +1188,22 @@ async function createStringcostPresign({ anthropicApiKey, stringcostApiKey, agen
  * @param {number} [opts.createTimeoutMs]
  */
 export async function createOpenEralSandbox(opts) {
-  const { name, profile, onProgress, skipImagePull = false } = opts;
+  const { name, profile, onProgress } = opts;
+  // OPENWORK_SANDBOX_SKIP_PULL=1 skips the docker pull (for locally-built /
+  // local-only image tags that can't be resolved against a registry).
+  const skipImagePull =
+    opts.skipImagePull === true ||
+    process.env.OPENWORK_SANDBOX_SKIP_PULL === "1";
   if (!name) throw new Error("createOpenEralSandbox: name is required");
   if (!profile) throw new Error("createOpenEralSandbox: profile is required");
 
   const imageRef = imageForProfile(profile);
+
+  // Pin the WSL distro for the app's lifetime BEFORE any sandbox work: without
+  // a persistent wsl.exe client, WSL starts tearing the distro down between
+  // our short-lived commands, killing the OpenShell gateway mid-create and
+  // leaving sandboxes flapping (see ensureWslKeepalive in wsl.mjs).
+  ensureWslKeepalive();
 
   // openshell shells out to scp/ssh for create --upload AND for exec/connect.
   // Make sure they exist before any sandbox op so we never dead-end at the
@@ -1033,11 +1221,15 @@ export async function createOpenEralSandbox(opts) {
   // recover from a broken container.  /home/agent data is in PostgreSQL
   // and survives the container deletion.
   if (await sandboxExists(name)) {
-    onProgress?.({ phase: "exists", message: `Sandbox ${name} already exists; checking state…` });
+    onProgress?.({
+      phase: "exists",
+      message: `Sandbox ${name} already exists; checking state…`,
+    });
     let existingReady = false;
     try {
       await waitForSandboxReady(name, {
-        onProgress: (evt) => onProgress?.({ phase: evt.phase, message: evt.message }),
+        onProgress: (evt) =>
+          onProgress?.({ phase: evt.phase, message: evt.message }),
       });
       existingReady = true;
     } catch (waitErr) {
@@ -1057,7 +1249,10 @@ export async function createOpenEralSandbox(opts) {
           message: `Sandbox ${name} is broken (${/STUCK/.test(waitMsg) ? "stuck in Provisioning" : "error state"}); auto-deleting for fresh creation…`,
         });
         await deleteOpenEralSandbox(name).catch((e) =>
-          console.warn("[createOpenEralSandbox] auto-delete (broken existing):", e.message),
+          console.warn(
+            "[createOpenEralSandbox] auto-delete (broken existing):",
+            e.message,
+          ),
         );
         // existingReady stays false → fall through to full creation below.
       } else {
@@ -1069,7 +1264,18 @@ export async function createOpenEralSandbox(opts) {
       // the agent starts directly and meters even on reconnect. env isn't built
       // until after credential validation below, so use process.env here — the
       // exec just writes files with values baked into the script (no WSLENV).
-      await finalizeSandboxLaunch({ name, profile, env: process.env, onProgress });
+      await finalizeSandboxLaunch({
+        name,
+        profile,
+        env: process.env,
+        onProgress,
+      });
+      await prewarmAgentRuntime({
+        name,
+        profile,
+        env: process.env,
+        onProgress,
+      });
       return { name, profile, imageRef, existed: true };
     }
     // Fall through to create a fresh sandbox.
@@ -1089,11 +1295,14 @@ export async function createOpenEralSandbox(opts) {
     );
   }
 
-  // Image pull (~1.5 GB on first run for :just-bash).
+  // Image pull (~1.5 GB on first run for :just-bash). Skipped for local
+  // images (OPENWORK_SANDBOX_SKIP_PULL=1) so a `docker build`-produced tag
+  // isn't clobbered by a registry fetch that would fail or overwrite it.
   if (!skipImagePull) {
     onProgress?.({ phase: "pull", message: `Pulling ${imageRef}...` });
     await pullImage(imageRef, {
-      onProgress: (text) => onProgress?.({ phase: "pull", message: text.trimEnd() }),
+      onProgress: (text) =>
+        onProgress?.({ phase: "pull", message: text.trimEnd() }),
     });
   }
 
@@ -1175,14 +1384,11 @@ export async function createOpenEralSandbox(opts) {
   onProgress?.({ phase: "create", message: `Creating sandbox ${name}…` });
   let r;
   try {
-    r = await wslRun(
-      ["-d", DISTRO_NAME, "--", "bash", "-c", script],
-      {
-        timeout: opts.createTimeoutMs ?? DEFAULT_CREATE_TIMEOUT_MS,
-        env,
-        stdin: databaseUrl,
-      },
-    );
+    r = await wslRun(["-d", DISTRO_NAME, "--", "bash", "-c", script], {
+      timeout: opts.createTimeoutMs ?? DEFAULT_CREATE_TIMEOUT_MS,
+      env,
+      stdin: databaseUrl,
+    });
   } catch (err) {
     if (/wsl\.exe timed out/i.test(err?.message ?? "")) {
       throw new Error(
@@ -1199,7 +1405,10 @@ export async function createOpenEralSandbox(opts) {
     // a false-negative (e.g. unexpected JSON shape from sandbox list). Treat
     // this as a successful reconnect instead of a hard failure.
     if (/already exists/i.test(output)) {
-      onProgress?.({ phase: "exists", message: `Sandbox ${name} already exists; reconnecting.` });
+      onProgress?.({
+        phase: "exists",
+        message: `Sandbox ${name} already exists; reconnecting.`,
+      });
       return { name, profile, imageRef, existed: true };
     }
     // openshell CLI 0.0.42 race: the gRPC stream sometimes closes with
@@ -1212,13 +1421,18 @@ export async function createOpenEralSandbox(opts) {
         console.warn(
           `[createOpenEralSandbox] create exited 1 with NotFound but ${name} found in list; treating as provisioning.`,
         );
-        onProgress?.({ phase: "waiting", message: `Sandbox ${name} is provisioning; waiting for Ready state…` });
+        onProgress?.({
+          phase: "waiting",
+          message: `Sandbox ${name} is provisioning; waiting for Ready state…`,
+        });
         try {
           await waitForSandboxReady(name, {
             timeoutMs: 5 * 60_000,
-            onProgress: (evt) => onProgress?.({ phase: evt.phase, message: evt.message }),
+            onProgress: (evt) =>
+              onProgress?.({ phase: evt.phase, message: evt.message }),
           });
           await finalizeSandboxLaunch({ name, profile, env, onProgress });
+          await prewarmAgentRuntime({ name, profile, env, onProgress });
           return { name, profile, imageRef, existed: false };
         } catch (waitErr) {
           const waitMsg = waitErr?.message ?? "";
@@ -1230,7 +1444,10 @@ export async function createOpenEralSandbox(opts) {
               message: `Sandbox ${name} failed to provision; auto-deleting for next attempt…`,
             });
             await deleteOpenEralSandbox(name).catch((e) =>
-              console.warn("[createOpenEralSandbox] auto-delete (NotFound path, broken):", e.message),
+              console.warn(
+                "[createOpenEralSandbox] auto-delete (NotFound path, broken):",
+                e.message,
+              ),
             );
             throw new Error(
               `Sandbox ${name} failed to provision and was automatically deleted. ` +
@@ -1252,11 +1469,15 @@ export async function createOpenEralSandbox(opts) {
   // the sandbox, but setup.sh inside the container may still be running.
   // Wait for Ready before returning so the PTY never connects to a
   // still-Provisioning sandbox.
-  onProgress?.({ phase: "waiting", message: `Sandbox ${name} created; waiting for Ready state…` });
+  onProgress?.({
+    phase: "waiting",
+    message: `Sandbox ${name} created; waiting for Ready state…`,
+  });
   try {
     await waitForSandboxReady(name, {
       timeoutMs: 5 * 60_000,
-      onProgress: (evt) => onProgress?.({ phase: evt.phase, message: evt.message }),
+      onProgress: (evt) =>
+        onProgress?.({ phase: evt.phase, message: evt.message }),
     });
   } catch (waitErr) {
     const waitMsg = waitErr?.message ?? "";
@@ -1270,7 +1491,10 @@ export async function createOpenEralSandbox(opts) {
         message: `New sandbox ${name} failed to reach Ready state; auto-deleting…`,
       });
       await deleteOpenEralSandbox(name).catch((e) =>
-        console.warn("[createOpenEralSandbox] auto-delete (fresh create broken):", e.message),
+        console.warn(
+          "[createOpenEralSandbox] auto-delete (fresh create broken):",
+          e.message,
+        ),
       );
       throw new Error(
         `New sandbox ${name} failed to reach Ready state and was automatically deleted. ` +
@@ -1285,6 +1509,7 @@ export async function createOpenEralSandbox(opts) {
   // essential — `openshell sandbox exec` refuses while the sandbox is still
   // Provisioning, which silently skipped these steps when they ran pre-Ready.
   await finalizeSandboxLaunch({ name, profile, env, onProgress });
+  await prewarmAgentRuntime({ name, profile, env, onProgress });
   onProgress?.({ phase: "ready", message: `Sandbox ${name} ready.` });
   return { name, profile, imageRef, existed: false };
 }
@@ -1297,7 +1522,14 @@ export async function deleteOpenEralSandbox(name) {
   let r;
   try {
     r = await wslRun(
-      ["-d", DISTRO_NAME, "--", "bash", "-c", `timeout 20 openshell sandbox delete ${shellQuote(name)}`],
+      [
+        "-d",
+        DISTRO_NAME,
+        "--",
+        "bash",
+        "-c",
+        `timeout 20 openshell sandbox delete ${shellQuote(name)}`,
+      ],
       { timeout: 30_000 },
     );
   } catch (err) {
@@ -1320,7 +1552,9 @@ export async function deleteOpenEralSandbox(name) {
           "then try again.",
       );
     }
-    throw new Error(`openshell sandbox delete failed: ${output || "(no output)"}`);
+    throw new Error(
+      `openshell sandbox delete failed: ${output || "(no output)"}`,
+    );
   }
   return r;
 }
@@ -1331,7 +1565,9 @@ export async function deleteOpenEralSandbox(name) {
  * first call (~6 MB). Returns `{ ok: true, reachable: true }` on
  * successful `SELECT 1`, throws otherwise.
  */
-export async function probeDatabaseUrl({ timeoutMs = DEFAULT_PROBE_TIMEOUT_MS } = {}) {
+export async function probeDatabaseUrl({
+  timeoutMs = DEFAULT_PROBE_TIMEOUT_MS,
+} = {}) {
   const url = await getCredential("databaseUrl");
   if (!url) {
     throw new Error("DATABASE_URL is not configured.");
@@ -1367,4 +1603,5 @@ export const __testing = {
   sandboxRunScriptCmd,
   buildLaunchBlock,
   configureAgentLaunch,
+  prewarmAgentRuntime,
 };

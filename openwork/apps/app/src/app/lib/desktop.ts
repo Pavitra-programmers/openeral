@@ -14,6 +14,9 @@ declare global {
         openExternal?: (url: string) => Promise<void>;
         relaunch?: () => Promise<void>;
       };
+      onMenuAction?: (
+        callback: (payload: { action: string }) => void,
+      ) => () => void;
       migration?: {
         readSnapshot?: () => Promise<unknown>;
         ackSnapshot?: () => Promise<{ ok: boolean; moved: boolean }>;
@@ -82,7 +85,9 @@ declare global {
 }
 
 function missingElectronMethod(method: string): never {
-  throw new Error(`Electron desktop bridge method is not implemented yet: ${method}`);
+  throw new Error(
+    `Electron desktop bridge method is not implemented yet: ${method}`,
+  );
 }
 
 function isElectronDesktopRuntime() {
@@ -90,10 +95,15 @@ function isElectronDesktopRuntime() {
 }
 
 function isTauriDesktopRuntime() {
-  return typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__ != null;
+  return (
+    typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__ != null
+  );
 }
 
-async function invokeElectronHelper<T>(command: string, ...args: unknown[]): Promise<T> {
+async function invokeElectronHelper<T>(
+  command: string,
+  ...args: unknown[]
+): Promise<T> {
   const invokeDesktop = window.__OPENWORK_ELECTRON__?.invokeDesktop;
   if (!invokeDesktop) {
     throw new Error(`Electron desktop helper is unavailable: ${command}`);
@@ -131,7 +141,8 @@ function resolveElectronBridge(): DesktopBridge {
 function resolveDesktopBridge(): DesktopBridge {
   if (
     typeof window !== "undefined" &&
-    (window.__OPENWORK_ELECTRON__?.bridge || window.__OPENWORK_ELECTRON__?.invokeDesktop)
+    (window.__OPENWORK_ELECTRON__?.bridge ||
+      window.__OPENWORK_ELECTRON__?.invokeDesktop)
   ) {
     return resolveElectronBridge();
   }
@@ -145,10 +156,23 @@ export const desktopBridge: DesktopBridge = new Proxy({} as DesktopBridge, {
 });
 
 function isLoopbackUrl(input: RequestInfo | URL): boolean {
-  const raw = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+  const raw =
+    typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : input.url;
   try {
     const url = new URL(raw);
-    return url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "[::1]";
+    // URL.hostname yields "[::1]" in Node but "::1" in Chromium (this runs in
+    // the renderer), so strip any surrounding brackets and match both forms.
+    // Aligns with isLoopbackOpenworkServerUrl. Getting this wrong routes a
+    // loopback URL through the main-process __fetch proxy, which now rejects
+    // non-public hosts.
+    const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    return (
+      hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1"
+    );
   } catch {
     return false;
   }
@@ -165,11 +189,21 @@ export const desktopFetch: typeof globalThis.fetch = (input, init) => {
       statusText: string;
       headers: [string, string][];
       body: string;
-    }>("__fetch", typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url, {
-      method: init?.method,
-      headers: init?.headers ? Object.fromEntries(new Headers(init.headers).entries()) : undefined,
-      body: typeof init?.body === "string" ? init.body : undefined,
-    }).then(
+    }>(
+      "__fetch",
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url,
+      {
+        method: init?.method,
+        headers: init?.headers
+          ? Object.fromEntries(new Headers(init.headers).entries())
+          : undefined,
+        body: typeof init?.body === "string" ? init.body : undefined,
+      },
+    ).then(
       (result) =>
         new Response(result.body, {
           status: result.status,
@@ -197,7 +231,10 @@ export async function openDesktopUrl(url: string): Promise<void> {
 
 export async function openDesktopPath(target: string): Promise<void> {
   if (isElectronDesktopRuntime()) {
-    const result = await invokeElectronHelper<string | null>("__openPath", target);
+    const result = await invokeElectronHelper<string | null>(
+      "__openPath",
+      target,
+    );
     if (typeof result === "string" && result.trim()) {
       throw new Error(result);
     }
@@ -259,7 +296,10 @@ export async function subscribeDesktopDeepLinks(
       handler(initialUrls);
     }
     return () => {
-      window.removeEventListener(nativeDeepLinkEvent, listener as EventListener);
+      window.removeEventListener(
+        nativeDeepLinkEvent,
+        listener as EventListener,
+      );
     };
   }
 

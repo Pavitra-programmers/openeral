@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
+import { lookup as dnsLookup } from "node:dns/promises";
 import { existsSync } from "node:fs";
+import https from "node:https";
+import net from "node:net";
 import {
   cp,
   mkdir,
@@ -15,11 +18,22 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from "electron";
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  Menu,
+  nativeImage,
+  shell,
+} from "electron";
 import { registerMigrationIpc } from "./migration.mjs";
 import { createRuntimeManager } from "./runtime.mjs";
 import { registerUpdaterIpc } from "./updater.mjs";
-import { exportWorkspaceConfig, importWorkspaceConfig } from "./workspace-archive.mjs";
+import {
+  exportWorkspaceConfig,
+  importWorkspaceConfig,
+} from "./workspace-archive.mjs";
 import * as openshellClient from "./openshell/client.mjs";
 import * as openshellCli from "./openshell/cli.mjs";
 import * as openeral from "./openshell/openeral.mjs";
@@ -34,7 +48,12 @@ import {
   installOpenShellStack,
   loadInstallerState as loadOpenShellInstallerState,
 } from "./openshell/installer.mjs";
-import { DISTRO_NAME as OPENSHELL_DISTRO_NAME, distroExists, ensureDistroRunning, wslRun } from "./openshell/wsl.mjs";
+import {
+  DISTRO_NAME as OPENSHELL_DISTRO_NAME,
+  distroExists,
+  ensureDistroRunning,
+  wslRun,
+} from "./openshell/wsl.mjs";
 
 // Preflight gate for every OpenEral entry point. If the WSL distro
 // isn't registered, the very first `wsl -d openwork-openshell -- docker
@@ -115,9 +134,16 @@ function resolveAppIconPath() {
 }
 
 const APP_ICON_PATH = resolveAppIconPath();
-const APP_ICON_IMAGE = APP_ICON_PATH ? nativeImage.createFromPath(APP_ICON_PATH) : null;
+const APP_ICON_IMAGE = APP_ICON_PATH
+  ? nativeImage.createFromPath(APP_ICON_PATH)
+  : null;
 
-if (process.platform === "darwin" && APP_ICON_IMAGE && !APP_ICON_IMAGE.isEmpty() && app.dock) {
+if (
+  process.platform === "darwin" &&
+  APP_ICON_IMAGE &&
+  !APP_ICON_IMAGE.isEmpty() &&
+  app.dock
+) {
   app.dock.setIcon(APP_ICON_IMAGE);
 }
 
@@ -129,7 +155,10 @@ const remoteDebugPort = Number.parseInt(
   10,
 );
 if (Number.isFinite(remoteDebugPort) && remoteDebugPort > 0) {
-  app.commandLine.appendSwitch("remote-debugging-port", String(remoteDebugPort));
+  app.commandLine.appendSwitch(
+    "remote-debugging-port",
+    String(remoteDebugPort),
+  );
   app.commandLine.appendSwitch("remote-debugging-address", "127.0.0.1");
 }
 const DEFAULT_DEN_BASE_URL = "https://app.openworklabs.com";
@@ -138,6 +167,221 @@ const DEFAULT_LOCAL_BASE_URL = "http://127.0.0.1:4096";
 function envFlagDisabled(name) {
   const value = process.env[name]?.trim().toLowerCase();
   return value === "0" || value === "false" || value === "off";
+}
+
+// SSRF guard for the renderer-facing __fetch proxy. The renderer can ask the
+// main process to fetch arbitrary URLs (bundle/publisher/cloud flows). Without
+// restrictions this is a server-side request-forgery hole: injected renderer
+// content could read cloud metadata (169.254.169.254), loopback admin
+// services, or LAN hosts with the main process's network privileges, bypassing
+// CORS. We require https and reject any host that resolves to a private,
+// loopback, link-local, or otherwise reserved address (checked post-DNS so
+// rebinding to an internal IP is also blocked).
+function isReservedIp(ip) {
+  const kind = net.isIP(ip);
+  if (kind === 4) {
+    const parts = ip.split(".").map((n) => Number.parseInt(n, 10));
+    if (parts.length !== 4 || parts.some((n) => Number.isNaN(n))) return true;
+    const [a, b] = parts;
+    if (a === 10) return true; // 10.0.0.0/8
+    if (a === 127) return true; // 127.0.0.0/8 loopback
+    if (a === 0) return true; // 0.0.0.0/8
+    if (a === 169 && b === 254) return true; // 169.254.0.0/16 link-local
+    if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
+    if (a === 192 && b === 168) return true; // 192.168.0.0/16
+    if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 CGNAT
+    if (a >= 224) return true; // multicast + reserved
+    return false;
+  }
+  if (kind === 6) {
+    const v = ip.toLowerCase();
+    if (v === "::1" || v === "::") return true; // loopback / unspecified
+    if (v.startsWith("fe80")) return true; // link-local
+    if (v.startsWith("fc") || v.startsWith("fd")) return true; // unique-local fc00::/7
+    if (v.startsWith("ff")) return true; // multicast
+    // IPv4-mapped (::ffff:a.b.c.d) — extract and re-check as v4.
+    const mapped = v.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    if (mapped) return isReservedIp(mapped[1]);
+    return false;
+  }
+  return true; // not a valid IP literal — reject
+}
+
+// A DNS lookup that resolves a hostname AND rejects it when any resolved
+// address is reserved — in the SAME call whose result is then used for the
+// actual TCP connection. Passing this as the socket `lookup` for every request
+// (including each redirect hop) means the address that was validated is the
+// exact address connected to. This closes the DNS-rebinding TOCTOU where a
+// host validates as public and then re-resolves to a private/loopback IP for
+// the real fetch: there is no second, unvalidated resolution.
+function pinnedPublicLookup(hostname, options, callback) {
+  const opts = { all: true };
+  if (options && typeof options.family === "number" && options.family !== 0) {
+    opts.family = options.family;
+  }
+  dnsLookup(hostname, opts).then(
+    (addresses) => {
+      if (
+        addresses.length === 0 ||
+        addresses.some((a) => isReservedIp(a.address))
+      ) {
+        callback(
+          new Error(`Blocked request to a non-public host: ${hostname}`),
+        );
+        return;
+      }
+      if (options && options.all) {
+        callback(null, addresses);
+      } else {
+        callback(null, addresses[0].address, addresses[0].family);
+      }
+    },
+    (err) => callback(err),
+  );
+}
+
+// Synchronous pre-checks that need no DNS: scheme, obvious loopback names, and
+// reserved IP literals. Hostname resolution + reserved-range rejection happens
+// at connect time in pinnedPublicLookup (the real security boundary).
+function requirePublicHttpsUrl(rawUrl) {
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error("Invalid URL.");
+  }
+  if (parsed.protocol !== "https:") {
+    throw new Error("Only https URLs are allowed.");
+  }
+  const host = parsed.hostname.replace(/^\[|\]$/g, "");
+  if (/^(localhost|.*\.localhost)$/i.test(host)) {
+    throw new Error("Blocked request to a loopback host.");
+  }
+  if (net.isIP(host) && isReservedIp(host)) {
+    throw new Error(`Blocked request to a non-public host: ${host}`);
+  }
+  return parsed;
+}
+
+const MAIN_FETCH_MAX_REDIRECTS = 5;
+const MAIN_FETCH_MAX_BODY_BYTES = 32 * 1024 * 1024;
+const MAIN_FETCH_TIMEOUT_MS = 30_000;
+
+// SSRF-safe replacement for a bare fetch() in the __fetch IPC handler. Uses
+// node:https with the pinned, validating DNS lookup above so the connection can
+// only reach the vetted public address, and follows redirects MANUALLY so
+// every hop is re-validated (https scheme + resolved address) instead of
+// trusting fetch's automatic redirect following. Returns the same shape the
+// renderer's desktopFetch expects: { status, statusText, headers, body }.
+async function mainProcessFetch(
+  rawUrl,
+  init,
+  redirectsLeft = MAIN_FETCH_MAX_REDIRECTS,
+) {
+  const parsed = requirePublicHttpsUrl(rawUrl);
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      parsed,
+      {
+        method: init && typeof init.method === "string" ? init.method : "GET",
+        headers:
+          init && init.headers && typeof init.headers === "object"
+            ? init.headers
+            : undefined,
+        lookup: pinnedPublicLookup,
+      },
+      (res) => {
+        const status = res.statusCode ?? 0;
+        const location = res.headers.location;
+        if (
+          [301, 302, 303, 307, 308].includes(status) &&
+          typeof location === "string"
+        ) {
+          res.resume(); // discard the redirect body before following
+          if (redirectsLeft <= 0) {
+            reject(new Error("Too many redirects."));
+            return;
+          }
+          let nextUrl;
+          try {
+            nextUrl = new URL(location, parsed).toString();
+          } catch {
+            reject(new Error("Invalid redirect location."));
+            return;
+          }
+          // 303 downgrades to GET and drops the body; 307/308 preserve both.
+          const nextInit =
+            status === 303 ? { headers: init?.headers, method: "GET" } : init;
+          mainProcessFetch(nextUrl, nextInit, redirectsLeft - 1).then(
+            resolve,
+            reject,
+          );
+          return;
+        }
+        const chunks = [];
+        let total = 0;
+        let aborted = false;
+        res.on("data", (chunk) => {
+          if (aborted) return;
+          total += chunk.length;
+          if (total > MAIN_FETCH_MAX_BODY_BYTES) {
+            aborted = true;
+            req.destroy();
+            reject(new Error("Response body exceeded size limit."));
+            return;
+          }
+          chunks.push(chunk);
+        });
+        res.on("end", () => {
+          if (aborted) return;
+          const headers = [];
+          for (const [key, value] of Object.entries(res.headers)) {
+            if (Array.isArray(value)) {
+              for (const v of value) headers.push([key, String(v)]);
+            } else if (value != null) {
+              headers.push([key, String(value)]);
+            }
+          }
+          resolve({
+            status,
+            statusText: res.statusMessage ?? "",
+            headers,
+            body: Buffer.concat(chunks).toString("utf8"),
+          });
+        });
+        res.on("error", reject);
+      },
+    );
+    req.on("error", reject);
+    req.setTimeout(MAIN_FETCH_TIMEOUT_MS, () => {
+      req.destroy(new Error("Request timed out."));
+    });
+    if (init && typeof init.body === "string") {
+      req.write(init.body);
+    }
+    req.end();
+  });
+}
+
+// Only hand these schemes to the OS handler. Blocks file:/smb:/custom protocol
+// URIs that a malicious deep link or bundle value could otherwise use to
+// disclose local files or launch arbitrary registered handlers.
+const OPEN_EXTERNAL_ALLOWED_SCHEMES = new Set(["https:", "http:", "mailto:"]);
+
+async function openExternalSafe(url) {
+  if (typeof url !== "string" || url.trim().length === 0) return;
+  let target;
+  try {
+    target = new URL(url);
+  } catch {
+    console.warn("[openExternal] blocked malformed URL");
+    return;
+  }
+  if (!OPEN_EXTERNAL_ALLOWED_SCHEMES.has(target.protocol)) {
+    console.warn(`[openExternal] blocked URL scheme: ${target.protocol}`);
+    return;
+  }
+  await shell.openExternal(target.toString());
 }
 
 async function installReactDevToolsForDev() {
@@ -152,9 +396,12 @@ async function installReactDevToolsForDev() {
           : typeof mod.default?.installExtension === "function"
             ? mod.default.installExtension
             : null;
-    const reactDevtools = mod.REACT_DEVELOPER_TOOLS ?? mod.default?.REACT_DEVELOPER_TOOLS;
+    const reactDevtools =
+      mod.REACT_DEVELOPER_TOOLS ?? mod.default?.REACT_DEVELOPER_TOOLS;
     if (typeof installExtension !== "function" || !reactDevtools) {
-      throw new Error("electron-devtools-installer did not expose React DevTools");
+      throw new Error(
+        "electron-devtools-installer did not expose React DevTools",
+      );
     }
     const name = await installExtension(reactDevtools);
     console.info(`[devtools] installed ${name}`);
@@ -281,7 +528,11 @@ function emitOpenEralPtyData(sessionId, data) {
 
 function emitOpenEralPtyExit(sessionId, exitCode, signal) {
   try {
-    mainWindow?.webContents.send("openeral:pty-exit", { sessionId, exitCode, signal });
+    mainWindow?.webContents.send("openeral:pty-exit", {
+      sessionId,
+      exitCode,
+      signal,
+    });
   } catch {
     // ignore
   }
@@ -301,13 +552,19 @@ function emitOpenEralPtyExit(sessionId, exitCode, signal) {
 async function buildOpenEralPtyEnv(cols, rows) {
   const extraEnv = {};
   try {
-    const anthropicApiKey = await openeralCredentials.getCredential("anthropicApiKey");
+    const anthropicApiKey =
+      await openeralCredentials.getCredential("anthropicApiKey");
     if (anthropicApiKey) extraEnv.ANTHROPIC_API_KEY = anthropicApiKey;
-  } catch { /* safeStorage may be unavailable in some test environments */ }
+  } catch {
+    /* safeStorage may be unavailable in some test environments */
+  }
   try {
-    const stringcostApiKey = await openeralCredentials.getCredential("stringcostApiKey");
+    const stringcostApiKey =
+      await openeralCredentials.getCredential("stringcostApiKey");
     if (stringcostApiKey) extraEnv.STRINGCOST_API_KEY = stringcostApiKey;
-  } catch { /* optional — StringCost tracking only */ }
+  } catch {
+    /* optional — StringCost tracking only */
+  }
   const effectiveCols = Number.isFinite(cols) && cols > 0 ? cols : 120;
   const effectiveRows = Number.isFinite(rows) && rows > 0 ? rows : 32;
   extraEnv.COLUMNS = String(effectiveCols);
@@ -322,15 +579,19 @@ function normalizePlatform(value) {
 }
 
 function forwardedDeepLinks(argv) {
+  // Only accept the app's own custom schemes from OS-forwarded argv. The app is
+  // registered only for openwork:// (see setAsDefaultProtocolClient), so a
+  // forwarded http(s) argument is never a genuine OS deep link — accepting it
+  // would let a crafted launch argument inject an arbitrary web URL into the
+  // renderer's deep-link parsers (connect-remote / den-auth / bundle). Web
+  // deep-linking is unaffected: the web build drives links from window.location
+  // via startDeepLinkBridge, not through this desktop argv path.
   return argv
     .slice(1)
     .map((entry) => entry.trim())
     .filter(
       (entry) =>
-        entry.startsWith("openwork://") ||
-        entry.startsWith("openwork-dev://") ||
-        entry.startsWith("https://") ||
-        entry.startsWith("http://"),
+        entry.startsWith("openwork://") || entry.startsWith("openwork-dev://"),
     );
 }
 
@@ -353,7 +614,12 @@ function desktopBootstrapPath() {
   if (process.env.OPENWORK_DESKTOP_BOOTSTRAP_PATH?.trim()) {
     return process.env.OPENWORK_DESKTOP_BOOTSTRAP_PATH.trim();
   }
-  return path.join(os.homedir(), ".config", "openwork", "desktop-bootstrap.json");
+  return path.join(
+    os.homedir(),
+    ".config",
+    "openwork",
+    "desktop-bootstrap.json",
+  );
 }
 
 function workspaceStatePath() {
@@ -382,7 +648,10 @@ async function migrateLegacyElectronWorkspaceStateIfNeeded() {
     );
     return true;
   } catch (error) {
-    console.warn("[migration] legacy Electron workspace-state copy failed", error);
+    console.warn(
+      "[migration] legacy Electron workspace-state copy failed",
+      error,
+    );
     return false;
   }
 }
@@ -432,7 +701,8 @@ async function readJsonFile(targetPath, fallback) {
 }
 
 function normalizeDesktopBootstrapConfig(input) {
-  const baseUrl = typeof input?.baseUrl === "string" ? input.baseUrl.trim() : "";
+  const baseUrl =
+    typeof input?.baseUrl === "string" ? input.baseUrl.trim() : "";
   if (!baseUrl) {
     throw new Error("baseUrl is required");
   }
@@ -466,12 +736,18 @@ async function setDesktopBootstrapConfig(config) {
   const normalized = normalizeDesktopBootstrapConfig(config);
   const outputPath = desktopBootstrapPath();
   await mkdir(path.dirname(outputPath), { recursive: true });
-  await writeFile(outputPath, `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+  await writeFile(
+    outputPath,
+    `${JSON.stringify(normalized, null, 2)}\n`,
+    "utf8",
+  );
   return normalized;
 }
 
 function sanitizeCommandName(raw) {
-  const trimmed = String(raw ?? "").trim().replace(/^\/+/, "");
+  const trimmed = String(raw ?? "")
+    .trim()
+    .replace(/^\/+/, "");
   if (!trimmed) return null;
   const safe = Array.from(trimmed)
     .filter((char) => /[A-Za-z0-9_-]/.test(char))
@@ -532,11 +808,12 @@ function defaultWorkspaceOpenworkConfig(workspacePath, preset = null) {
 async function normalizeLocalWorkspacePath(rawPath) {
   const trimmed = String(rawPath ?? "").trim();
   if (!trimmed) return "";
-  const expanded = trimmed === "~"
-    ? os.homedir()
-    : trimmed.startsWith("~/") || trimmed.startsWith("~\\")
-      ? path.join(os.homedir(), trimmed.slice(2))
-      : trimmed;
+  const expanded =
+    trimmed === "~"
+      ? os.homedir()
+      : trimmed.startsWith("~/") || trimmed.startsWith("~\\")
+        ? path.join(os.homedir(), trimmed.slice(2))
+        : trimmed;
   const resolved = path.resolve(expanded);
   return realpath(resolved).catch(() => resolved);
 }
@@ -609,7 +886,8 @@ async function readWorkspaceState() {
 async function writeWorkspaceState(nextState) {
   const outputPath = workspaceStatePath();
   const selectedId = String(nextState?.selectedId ?? nextState?.activeId ?? "");
-  const watchedId = typeof nextState?.watchedId === "string" ? nextState.watchedId : "";
+  const watchedId =
+    typeof nextState?.watchedId === "string" ? nextState.watchedId : "";
   const output = {
     ...nextState,
     // Tauri's Rust state uses selectedWorkspaceId/watchedWorkspaceId on disk
@@ -630,8 +908,7 @@ const runtimeManager = createRuntimeManager({
   app,
   desktopRoot: path.resolve(__dirname, ".."),
   listLocalWorkspacePaths: async () =>
-    (await readWorkspaceState())
-      .workspaces
+    (await readWorkspaceState()).workspaces
       .filter((entry) => entry?.workspaceType !== "remote")
       .map((entry) => String(entry?.path ?? "").trim())
       .filter(Boolean),
@@ -654,14 +931,17 @@ function assertOpenworkServerReady(info) {
     throw new Error("OpenWork server did not report a base URL after startup.");
   }
   if (!info.ownerToken && !info.clientToken) {
-    throw new Error("OpenWork server did not report an access token after startup.");
+    throw new Error(
+      "OpenWork server did not report an access token after startup.",
+    );
   }
   return info;
 }
 
 async function bootRuntimeForSelectedWorkspace() {
   const list = await readWorkspaceState();
-  const selectedId = list.selectedId || list.activeId || list.workspaces[0]?.id || "";
+  const selectedId =
+    list.selectedId || list.activeId || list.workspaces[0]?.id || "";
   const workspace = selectedId
     ? list.workspaces.find((entry) => entry?.id === selectedId)
     : list.workspaces[0];
@@ -674,9 +954,11 @@ async function bootRuntimeForSelectedWorkspace() {
   for (const entry of list.workspaces) {
     if (entry?.workspaceType === "remote") continue;
     const workspacePath = String(entry?.path ?? "").trim();
-    if (workspacePath && !workspacePaths.includes(workspacePath)) workspacePaths.push(workspacePath);
+    if (workspacePath && !workspacePaths.includes(workspacePath))
+      workspacePaths.push(workspacePath);
   }
-  if (!workspacePaths.includes(workspaceRoot)) workspacePaths.unshift(workspaceRoot);
+  if (!workspacePaths.includes(workspaceRoot))
+    workspacePaths.unshift(workspaceRoot);
 
   let bootWorkspace = workspace;
   let bootWorkspaceRoot = workspaceRoot;
@@ -689,18 +971,27 @@ async function bootRuntimeForSelectedWorkspace() {
   } catch (error) {
     const fallback = list.workspaces.find((entry) => {
       const candidatePath = String(entry?.path ?? "").trim();
-      return entry?.workspaceType !== "remote" && candidatePath && candidatePath !== workspaceRoot;
+      return (
+        entry?.workspaceType !== "remote" &&
+        candidatePath &&
+        candidatePath !== workspaceRoot
+      );
     });
     const fallbackRoot = String(fallback?.path ?? "").trim();
     if (!fallback || !fallbackRoot) throw error;
-    console.warn("[runtime] selected workspace failed during boot; trying fallback workspace", {
-      selectedWorkspaceId: workspace?.id ?? null,
-      fallbackWorkspaceId: fallback.id ?? null,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    console.warn(
+      "[runtime] selected workspace failed during boot; trying fallback workspace",
+      {
+        selectedWorkspaceId: workspace?.id ?? null,
+        fallbackWorkspaceId: fallback.id ?? null,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
     const fallbackWorkspacePaths = [
       fallbackRoot,
-      ...workspacePaths.filter((entry) => entry !== fallbackRoot && entry !== workspaceRoot),
+      ...workspacePaths.filter(
+        (entry) => entry !== fallbackRoot && entry !== workspaceRoot,
+      ),
     ];
     engine = await runtimeManager.engineStart(fallbackRoot, {
       runtime: "direct",
@@ -714,20 +1005,32 @@ async function bootRuntimeForSelectedWorkspace() {
       watchedId: String(fallback.id ?? ""),
     }).catch(() => undefined);
   }
-  await runtimeManager.orchestratorWorkspaceActivate({
-    workspacePath: bootWorkspaceRoot,
-    name: bootWorkspace.name ?? bootWorkspace.displayName ?? null,
-  }).catch(() => undefined);
-  const openworkServer = assertOpenworkServerReady(await runtimeManager.openworkServerInfo());
-  return { ok: true, skipped: false, engine, openworkServer, workspaceId: bootWorkspace.id ?? null };
+  await runtimeManager
+    .orchestratorWorkspaceActivate({
+      workspacePath: bootWorkspaceRoot,
+      name: bootWorkspace.name ?? bootWorkspace.displayName ?? null,
+    })
+    .catch(() => undefined);
+  const openworkServer = assertOpenworkServerReady(
+    await runtimeManager.openworkServerInfo(),
+  );
+  return {
+    ok: true,
+    skipped: false,
+    engine,
+    openworkServer,
+    workspaceId: bootWorkspace.id ?? null,
+  };
 }
 
 function ensureRuntimeBootstrap() {
   if (!runtimeBootstrapPromise) {
-    runtimeBootstrapPromise = bootRuntimeForSelectedWorkspace().catch((error) => ({
-      ok: false,
-      error: error instanceof Error ? error.message : String(error),
-    }));
+    runtimeBootstrapPromise = bootRuntimeForSelectedWorkspace().catch(
+      (error) => ({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
   }
   return runtimeBootstrapPromise;
 }
@@ -758,7 +1061,10 @@ function normalizeWorkspaceEntry(input) {
 
 async function mutateWorkspaceState(mutator) {
   const current = await readWorkspaceState();
-  const next = await mutator({ ...current, workspaces: [...current.workspaces] });
+  const next = await mutator({
+    ...current,
+    workspaces: [...current.workspaces],
+  });
   return writeWorkspaceState(next);
 }
 
@@ -782,7 +1088,11 @@ function resolveOpencodeConfigPath(scope, projectDir) {
 
 async function readOpencodeConfig(scope, projectDir) {
   const { jsoncPath, jsonPath } = resolveOpencodeConfigPath(scope, projectDir);
-  const chosenPath = (await pathExists(jsoncPath)) ? jsoncPath : (await pathExists(jsonPath)) ? jsonPath : jsoncPath;
+  const chosenPath = (await pathExists(jsoncPath))
+    ? jsoncPath
+    : (await pathExists(jsonPath))
+      ? jsonPath
+      : jsoncPath;
   const exists = await pathExists(chosenPath);
   return {
     path: chosenPath,
@@ -793,7 +1103,11 @@ async function readOpencodeConfig(scope, projectDir) {
 
 async function writeOpencodeConfig(scope, projectDir, content) {
   const { jsoncPath, jsonPath } = resolveOpencodeConfigPath(scope, projectDir);
-  const targetPath = (await pathExists(jsoncPath)) ? jsoncPath : (await pathExists(jsonPath)) ? jsonPath : jsoncPath;
+  const targetPath = (await pathExists(jsoncPath))
+    ? jsoncPath
+    : (await pathExists(jsonPath))
+      ? jsonPath
+      : jsoncPath;
   await mkdir(path.dirname(targetPath), { recursive: true });
   await writeFile(targetPath, content, "utf8");
   return execResult(true, `Wrote ${targetPath}`);
@@ -832,7 +1146,11 @@ async function writeCommandFile(scope, projectDir, command) {
   const commandsDir = resolveCommandsDir(scope, projectDir);
   await mkdir(commandsDir, { recursive: true });
   const filePath = path.join(commandsDir, `${safeName}.md`);
-  await writeFile(filePath, serializeCommandFrontmatter({ ...command, name: safeName }), "utf8");
+  await writeFile(
+    filePath,
+    serializeCommandFrontmatter({ ...command, name: safeName }),
+    "utf8",
+  );
   return execResult(true, `Wrote ${filePath}`);
 }
 
@@ -893,7 +1211,10 @@ async function collectGlobalSkillRoots() {
 }
 
 async function collectSkillRoots(projectDir) {
-  const roots = [...(await collectProjectSkillRoots(projectDir)), ...(await collectGlobalSkillRoots())];
+  const roots = [
+    ...(await collectProjectSkillRoots(projectDir)),
+    ...(await collectGlobalSkillRoots()),
+  ];
   return roots.filter((value, index) => roots.indexOf(value) === index);
 }
 
@@ -910,7 +1231,9 @@ async function findSkillDirsInRoot(root) {
       continue;
     }
 
-    const nestedEntries = await readdir(direct, { withFileTypes: true }).catch(() => []);
+    const nestedEntries = await readdir(direct, { withFileTypes: true }).catch(
+      () => [],
+    );
     for (const nested of nestedEntries) {
       if (!nested.isDirectory()) continue;
       const nestedDir = path.join(direct, nested.name);
@@ -931,7 +1254,10 @@ function extractFrontmatterValue(raw, keys) {
     if (separator <= 0) continue;
     const key = line.slice(0, separator).trim().toLowerCase();
     if (!keys.includes(key)) continue;
-    const value = line.slice(separator + 1).trim().replace(/^['"]|['"]$/g, "");
+    const value = line
+      .slice(separator + 1)
+      .trim()
+      .replace(/^['"]|['"]$/g, "");
     if (value) return value;
   }
   return null;
@@ -992,7 +1318,9 @@ async function findSkillFile(projectDir, name) {
     const direct = path.join(root, safeName, "SKILL.md");
     if (await pathExists(direct)) return direct;
 
-    const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+    const entries = await readdir(root, { withFileTypes: true }).catch(
+      () => [],
+    );
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const nested = path.join(root, entry.name, safeName, "SKILL.md");
@@ -1037,7 +1365,8 @@ async function handleDesktopInvoke(event, command, ...args) {
       });
     case "workspaceSetRuntimeActive":
       return mutateWorkspaceState((state) => {
-        state.watchedId = typeof args[0] === "string" && args[0].trim() ? args[0] : null;
+        state.watchedId =
+          typeof args[0] === "string" && args[0].trim() ? args[0] : null;
         return state;
       });
     case "workspaceCreate": {
@@ -1050,7 +1379,9 @@ async function handleDesktopInvoke(event, command, ...args) {
       const workspace = normalizeWorkspaceEntry({
         id: localWorkspaceId(folderPath),
         name: String(input.name ?? (path.basename(folderPath) || "Workspace")),
-        displayName: String(input.name ?? (path.basename(folderPath) || "Workspace")),
+        displayName: String(
+          input.name ?? (path.basename(folderPath) || "Workspace"),
+        ),
         path: folderPath,
         preset,
         workspaceType: "local",
@@ -1058,11 +1389,16 @@ async function handleDesktopInvoke(event, command, ...args) {
         sandboxProfile: input.sandboxProfile ?? null,
       });
       await mkdir(path.join(folderPath, ".opencode"), { recursive: true });
-      await writeWorkspaceOpenworkConfig(folderPath, defaultWorkspaceOpenworkConfig(folderPath, preset));
+      await writeWorkspaceOpenworkConfig(
+        folderPath,
+        defaultWorkspaceOpenworkConfig(folderPath, preset),
+      );
       return mutateWorkspaceState((state) => {
         const workspacePathKey = normalizeWorkspacePathKey(workspace.path);
         state.workspaces = state.workspaces.filter(
-          (entry) => entry.id !== workspace.id && normalizeWorkspacePathKey(entry.path) !== workspacePathKey,
+          (entry) =>
+            entry.id !== workspace.id &&
+            normalizeWorkspacePathKey(entry.path) !== workspacePathKey,
         );
         state.workspaces.push(workspace);
         state.selectedId = workspace.id;
@@ -1078,20 +1414,36 @@ async function handleDesktopInvoke(event, command, ...args) {
       if (!baseUrl.startsWith("http://") && !baseUrl.startsWith("https://")) {
         throw new Error("baseUrl must start with http:// or https://");
       }
-      const remoteType = input.remoteType === "opencode" ? "opencode" : "openwork";
-      const directory = typeof input.directory === "string" && input.directory.trim() ? input.directory.trim() : null;
-      const openworkHostUrl = typeof input.openworkHostUrl === "string" && input.openworkHostUrl.trim()
-        ? input.openworkHostUrl.trim()
-        : null;
-      const openworkWorkspaceId = typeof input.openworkWorkspaceId === "string" && input.openworkWorkspaceId.trim()
-        ? input.openworkWorkspaceId.trim()
-        : null;
-      const id = remoteType === "openwork"
-        ? openworkRemoteWorkspaceId(openworkHostUrl ?? baseUrl, openworkWorkspaceId)
-        : remoteWorkspaceId(baseUrl, directory);
+      const remoteType =
+        input.remoteType === "opencode" ? "opencode" : "openwork";
+      const directory =
+        typeof input.directory === "string" && input.directory.trim()
+          ? input.directory.trim()
+          : null;
+      const openworkHostUrl =
+        typeof input.openworkHostUrl === "string" &&
+        input.openworkHostUrl.trim()
+          ? input.openworkHostUrl.trim()
+          : null;
+      const openworkWorkspaceId =
+        typeof input.openworkWorkspaceId === "string" &&
+        input.openworkWorkspaceId.trim()
+          ? input.openworkWorkspaceId.trim()
+          : null;
+      const id =
+        remoteType === "openwork"
+          ? openworkRemoteWorkspaceId(
+              openworkHostUrl ?? baseUrl,
+              openworkWorkspaceId,
+            )
+          : remoteWorkspaceId(baseUrl, directory);
       const workspace = normalizeWorkspaceEntry({
         id,
-        name: String(input.displayName ?? input.openworkWorkspaceName ?? "Remote workspace"),
+        name: String(
+          input.displayName ??
+            input.openworkWorkspaceName ??
+            "Remote workspace",
+        ),
         displayName: input.displayName ?? null,
         path: directory ?? "",
         preset: "remote",
@@ -1111,7 +1463,9 @@ async function handleDesktopInvoke(event, command, ...args) {
         sandboxContainerName: input.sandboxContainerName ?? null,
       });
       return mutateWorkspaceState((state) => {
-        state.workspaces = state.workspaces.filter((entry) => entry.id !== workspace.id);
+        state.workspaces = state.workspaces.filter(
+          (entry) => entry.id !== workspace.id,
+        );
         state.workspaces.push(workspace);
         state.selectedId = workspace.id;
         state.activeId = workspace.id;
@@ -1135,7 +1489,9 @@ async function handleDesktopInvoke(event, command, ...args) {
       if (!workspaceId) throw new Error("workspaceId is required");
       return mutateWorkspaceState((state) => {
         state.workspaces = state.workspaces.map((entry) =>
-          entry.id === workspaceId ? { ...entry, displayName: input.displayName ?? null } : entry,
+          entry.id === workspaceId
+            ? { ...entry, displayName: input.displayName ?? null }
+            : entry,
         );
         return state;
       });
@@ -1144,7 +1500,9 @@ async function handleDesktopInvoke(event, command, ...args) {
       const workspaceId = String(args[0] ?? "").trim();
       if (!workspaceId) throw new Error("workspaceId is required");
       return mutateWorkspaceState((state) => {
-        state.workspaces = state.workspaces.filter((entry) => entry.id !== workspaceId);
+        state.workspaces = state.workspaces.filter(
+          (entry) => entry.id !== workspaceId,
+        );
         if (state.selectedId === workspaceId) state.selectedId = "";
         if (state.activeId === workspaceId) state.activeId = null;
         if (state.watchedId === workspaceId) state.watchedId = null;
@@ -1154,7 +1512,9 @@ async function handleDesktopInvoke(event, command, ...args) {
     case "workspaceAddAuthorizedRoot": {
       const input = args[0] ?? {};
       const workspacePath = String(input.workspacePath ?? "").trim();
-      const authorizedRoot = String(input.folderPath ?? input.authorizedRoot ?? "").trim();
+      const authorizedRoot = String(
+        input.folderPath ?? input.authorizedRoot ?? "",
+      ).trim();
       if (!workspacePath || !authorizedRoot) {
         throw new Error("workspacePath and folderPath are required");
       }
@@ -1168,7 +1528,9 @@ async function handleDesktopInvoke(event, command, ...args) {
       return writeWorkspaceOpenworkConfig(workspacePath, config);
     }
     case "workspaceOpenworkRead":
-      return readWorkspaceOpenworkConfig(String(args[0]?.workspacePath ?? "").trim());
+      return readWorkspaceOpenworkConfig(
+        String(args[0]?.workspacePath ?? "").trim(),
+      );
     case "workspaceOpenworkWrite":
       return writeWorkspaceOpenworkConfig(
         String(args[0]?.workspacePath ?? "").trim(),
@@ -1181,7 +1543,9 @@ async function handleDesktopInvoke(event, command, ...args) {
       if (!workspaceId) throw new Error("workspaceId is required");
       if (!outputPath) throw new Error("outputPath is required");
       const state = await readWorkspaceState();
-      const workspace = state.workspaces.find((entry) => entry.id === workspaceId);
+      const workspace = state.workspaces.find(
+        (entry) => entry.id === workspaceId,
+      );
       if (!workspace) throw new Error("Unknown workspaceId");
       return exportWorkspaceConfig({ workspace, outputPath });
     }
@@ -1208,7 +1572,9 @@ async function handleDesktopInvoke(event, command, ...args) {
       return mutateWorkspaceState((state) => {
         const workspacePathKey = normalizeWorkspacePathKey(workspace.path);
         state.workspaces = state.workspaces.filter(
-          (entry) => entry.id !== workspace.id && normalizeWorkspacePathKey(entry.path) !== workspacePathKey,
+          (entry) =>
+            entry.id !== workspace.id &&
+            normalizeWorkspacePathKey(entry.path) !== workspacePathKey,
         );
         state.workspaces.push(workspace);
         state.selectedId = workspace.id;
@@ -1218,7 +1584,10 @@ async function handleDesktopInvoke(event, command, ...args) {
       });
     }
     case "opencodeCommandList":
-      return listCommandNames(String(args[0]?.scope ?? "").trim(), String(args[0]?.projectDir ?? "").trim());
+      return listCommandNames(
+        String(args[0]?.scope ?? "").trim(),
+        String(args[0]?.projectDir ?? "").trim(),
+      );
     case "opencodeCommandWrite":
       return writeCommandFile(
         String(args[0]?.scope ?? "").trim(),
@@ -1259,7 +1628,9 @@ async function handleDesktopInvoke(event, command, ...args) {
       return runtimeManager.orchestratorWorkspaceActivate(args[0] ?? {});
     }
     case "orchestratorInstanceDispose":
-      return runtimeManager.orchestratorInstanceDispose(String(args[0] ?? "").trim());
+      return runtimeManager.orchestratorInstanceDispose(
+        String(args[0] ?? "").trim(),
+      );
     case "appBuildInfo":
       return {
         version: app.getVersion(),
@@ -1303,12 +1674,16 @@ async function handleDesktopInvoke(event, command, ...args) {
         properties,
       });
       if (result.canceled) return null;
-      return options.multiple ? result.filePaths : (result.filePaths[0] ?? null);
+      return options.multiple
+        ? result.filePaths
+        : (result.filePaths[0] ?? null);
     }
     case "pickFile": {
       const options = args[0] ?? {};
       /** @type {import("electron").OpenDialogOptions["properties"]} */
-      const properties = options.multiple ? ["openFile", "multiSelections"] : ["openFile"];
+      const properties = options.multiple
+        ? ["openFile", "multiSelections"]
+        : ["openFile"];
       const result = await dialog.showOpenDialog(activeWindowFromEvent(event), {
         title: options.title,
         defaultPath: options.defaultPath,
@@ -1316,7 +1691,9 @@ async function handleDesktopInvoke(event, command, ...args) {
         properties,
       });
       if (result.canceled) return null;
-      return options.multiple ? result.filePaths : (result.filePaths[0] ?? null);
+      return options.multiple
+        ? result.filePaths
+        : (result.filePaths[0] ?? null);
     }
     case "saveFile": {
       const options = args[0] ?? {};
@@ -1339,7 +1716,11 @@ async function handleDesktopInvoke(event, command, ...args) {
       const destination = path.join(skillRoot, name);
       if (await pathExists(destination)) {
         if (!overwrite) {
-          return execResult(false, "", `Skill already exists at ${destination}`);
+          return execResult(
+            false,
+            "",
+            `Skill already exists at ${destination}`,
+          );
         }
         await rm(destination, { recursive: true, force: true });
       }
@@ -1355,7 +1736,11 @@ async function handleDesktopInvoke(event, command, ...args) {
       const destination = path.join(skillRoot, name);
       if (await pathExists(destination)) {
         if (!overwrite) {
-          return execResult(false, "", `Skill already exists at ${destination}`);
+          return execResult(
+            false,
+            "",
+            `Skill already exists at ${destination}`,
+          );
         }
         await rm(destination, { recursive: true, force: true });
       }
@@ -1382,19 +1767,28 @@ async function handleDesktopInvoke(event, command, ...args) {
       const content = String(args[2] ?? "");
       const next = content.endsWith("\n") ? content : `${content}\n`;
       await writeFile(skillPath, next, "utf8");
-      return execResult(true, `Saved skill ${path.basename(path.dirname(skillPath))}`);
+      return execResult(
+        true,
+        `Saved skill ${path.basename(path.dirname(skillPath))}`,
+      );
     }
     case "uninstallSkill": {
       const projectDir = String(args[0] ?? "").trim();
       const skillPath = await findSkillFile(projectDir, args[1]);
       if (!skillPath) {
-        return execResult(false, "", "Skill not found in .opencode/skills or .claude/skills");
+        return execResult(
+          false,
+          "",
+          "Skill not found in .opencode/skills or .claude/skills",
+        );
       }
       await rm(path.dirname(skillPath), { recursive: true, force: true });
       return execResult(true, `Removed skill ${args[1]}`);
     }
     case "updaterEnvironment": {
-      const executablePath = app.isPackaged ? app.getPath("exe") : process.execPath;
+      const executablePath = app.isPackaged
+        ? app.getPath("exe")
+        : process.execPath;
       return {
         supported: true,
         reason: null,
@@ -1406,7 +1800,10 @@ async function handleDesktopInvoke(event, command, ...args) {
       };
     }
     case "readOpencodeConfig":
-      return readOpencodeConfig(String(args[0] ?? "").trim(), String(args[1] ?? "").trim());
+      return readOpencodeConfig(
+        String(args[0] ?? "").trim(),
+        String(args[1] ?? "").trim(),
+      );
     case "writeOpencodeConfig":
       return writeOpencodeConfig(
         String(args[0] ?? "").trim(),
@@ -1421,7 +1818,10 @@ async function handleDesktopInvoke(event, command, ...args) {
     case "resetOpencodeCache":
       return { removed: [], missing: [], errors: [] };
     case "opencodeMcpAuth":
-      return runtimeManager.opencodeMcpAuth(String(args[0] ?? "").trim(), String(args[1] ?? "").trim());
+      return runtimeManager.opencodeMcpAuth(
+        String(args[0] ?? "").trim(),
+        String(args[1] ?? "").trim(),
+      );
     case "setWindowDecorations":
       return undefined;
     case "__openPath": {
@@ -1439,17 +1839,12 @@ async function handleDesktopInvoke(event, command, ...args) {
       const url = String(args[0] ?? "").trim();
       const init = args[1] ?? {};
       if (!url) throw new Error("URL is required.");
-      const response = await fetch(url, {
-        method: typeof init.method === "string" ? init.method : undefined,
-        headers: init.headers && typeof init.headers === "object" ? init.headers : undefined,
-        body: typeof init.body === "string" ? init.body : undefined,
-      });
-      return {
-        status: response.status,
-        statusText: response.statusText,
-        headers: Array.from(response.headers.entries()),
-        body: await response.text(),
-      };
+      // SSRF-safe fetch: node:https with a pinned, validating DNS lookup so the
+      // address that passes validation is the exact address connected to (no
+      // DNS-rebinding TOCTOU), and redirects are followed manually so every hop
+      // is re-validated. Loopback traffic never reaches here — desktopFetch
+      // short-circuits localhost to a direct renderer fetch.
+      return await mainProcessFetch(url, init);
     }
     case "__homeDir":
       return os.homedir();
@@ -1484,7 +1879,13 @@ async function handleDesktopInvoke(event, command, ...args) {
       const attempts = [];
       const tryWsl = async (label, args, opts = {}) => {
         const r = await wslRun(
-          ["-d", OPENSHELL_DISTRO_NAME, ...(opts.user ? ["--user", opts.user] : []), "--", ...args],
+          [
+            "-d",
+            OPENSHELL_DISTRO_NAME,
+            ...(opts.user ? ["--user", opts.user] : []),
+            "--",
+            ...args,
+          ],
           { timeout: opts.timeout ?? 60_000 },
         );
         attempts.push({ label, r });
@@ -1493,18 +1894,46 @@ async function handleDesktopInvoke(event, command, ...args) {
 
       // Path 1 — legacy gateway start verb (will silently no-op on 0.0.37+).
       if (await openshellCli.hasSubcommand("gateway", "start")) {
-        if (await tryWsl("openshell gateway start --recreate", ["openshell", "gateway", "start", "--recreate"])) return { ok: true, recoveredVia: "gateway start --recreate" };
-        if (await tryWsl("openshell gateway start --detach", ["openshell", "gateway", "start", "--detach"])) return { ok: true, recoveredVia: "gateway start --detach" };
-        if (await tryWsl("openshell gateway start", ["openshell", "gateway", "start"])) return { ok: true, recoveredVia: "gateway start" };
+        if (
+          await tryWsl("openshell gateway start --recreate", [
+            "openshell",
+            "gateway",
+            "start",
+            "--recreate",
+          ])
+        )
+          return { ok: true, recoveredVia: "gateway start --recreate" };
+        if (
+          await tryWsl("openshell gateway start --detach", [
+            "openshell",
+            "gateway",
+            "start",
+            "--detach",
+          ])
+        )
+          return { ok: true, recoveredVia: "gateway start --detach" };
+        if (
+          await tryWsl("openshell gateway start", [
+            "openshell",
+            "gateway",
+            "start",
+          ])
+        )
+          return { ok: true, recoveredVia: "gateway start" };
       }
 
       // Path 2 — systemd user service (the current shape per install.sh).
-      if (await tryWsl(
-        "systemctl --user restart openshell-gateway",
-        ["systemctl", "--user", "restart", "openshell-gateway"],
-        { user: "banker", timeout: 60_000 },
-      )) {
-        return { ok: true, recoveredVia: "systemctl --user restart openshell-gateway" };
+      if (
+        await tryWsl(
+          "systemctl --user restart openshell-gateway",
+          ["systemctl", "--user", "restart", "openshell-gateway"],
+          { user: "banker", timeout: 60_000 },
+        )
+      ) {
+        return {
+          ok: true,
+          recoveredVia: "systemctl --user restart openshell-gateway",
+        };
       }
 
       // Path 3 — docker fallback for hand-rolled cluster containers.
@@ -1518,20 +1947,33 @@ async function handleDesktopInvoke(event, command, ...args) {
           "docker ps -a --filter 'name=openshell' --format '{{.Names}}'",
         ],
         { timeout: 15_000 },
-      ).catch((err) => ({ exitCode: -1, stdout: "", stderr: err?.message ?? String(err) }));
+      ).catch((err) => ({
+        exitCode: -1,
+        stdout: "",
+        stderr: err?.message ?? String(err),
+      }));
 
       const names = list.stdout
         .split(/\r?\n/)
         .map((s) => s.trim())
         .filter(Boolean);
       if (names.length === 1) {
-        if (await tryWsl(`docker restart ${names[0]}`, ["docker", "restart", names[0]])) {
+        if (
+          await tryWsl(`docker restart ${names[0]}`, [
+            "docker",
+            "restart",
+            names[0],
+          ])
+        ) {
           return { ok: true, recoveredVia: `docker restart ${names[0]}` };
         }
       }
 
       const detail = attempts
-        .map(({ label, r }) => `${label} → exit ${r.exitCode}: ${(r.stderr || r.stdout || "").trim().slice(0, 200) || "(no output)"}`)
+        .map(
+          ({ label, r }) =>
+            `${label} → exit ${r.exitCode}: ${(r.stderr || r.stdout || "").trim().slice(0, 200) || "(no output)"}`,
+        )
         .join(" | ");
       throw new Error(
         `Could not restart the OpenShell gateway. CLI ${cliInfo.version ?? "(unknown)"}. ` +
@@ -1578,7 +2020,8 @@ async function handleDesktopInvoke(event, command, ...args) {
         await dialog.showMessageBox(activeWindowFromEvent(event), {
           type: "info",
           title: "OpenShell setup",
-          message: "OpenShell installs WSL2, Ubuntu, Docker, and the OpenShell CLI.",
+          message:
+            "OpenShell installs WSL2, Ubuntu, Docker, and the OpenShell CLI.",
           detail:
             "Windows will ask for admin permission once. Your laptop may also ask for a " +
             "BitLocker recovery key after the first reboot — get this from IT before " +
@@ -1662,23 +2105,31 @@ async function handleDesktopInvoke(event, command, ...args) {
       const input = args[0] ?? {};
       const audio = input.audio;
       const mimeType =
-        typeof input.mimeType === "string" && input.mimeType ? input.mimeType : "audio/webm";
+        typeof input.mimeType === "string" && input.mimeType
+          ? input.mimeType
+          : "audio/webm";
       if (!audio) throw new Error("No audio was provided for transcription.");
-      const apiKey = await openeralCredentials.getCredential("elevenLabsApiKey");
+      const apiKey =
+        await openeralCredentials.getCredential("elevenLabsApiKey");
       if (!apiKey) {
-        throw new Error("ElevenLabs API key not configured. Add it in Settings → Sandbox.");
+        throw new Error(
+          "ElevenLabs API key not configured. Add it in Settings → Sandbox.",
+        );
       }
       const bytes = audio instanceof Uint8Array ? audio : new Uint8Array(audio);
       const form = new FormData();
       form.append("model_id", "scribe_v1");
       form.append("file", new Blob([bytes], { type: mimeType }), "audio.webm");
-      const response = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
-        method: "POST",
-        // Do NOT set Content-Type — fetch derives the multipart boundary from
-        // the FormData body automatically.
-        headers: { "xi-api-key": apiKey },
-        body: form,
-      });
+      const response = await fetch(
+        "https://api.elevenlabs.io/v1/speech-to-text",
+        {
+          method: "POST",
+          // Do NOT set Content-Type — fetch derives the multipart boundary from
+          // the FormData body automatically.
+          headers: { "xi-api-key": apiKey },
+          body: form,
+        },
+      );
       if (!response.ok) {
         let detail = "";
         try {
@@ -1771,7 +2222,10 @@ async function handleDesktopInvoke(event, command, ...args) {
       // which left openshellClient.listSandboxes() (and this handler) empty.
       const list = await openeral.listSandboxes().catch(() => []);
       return Array.isArray(list)
-        ? list.filter((s) => typeof s?.name === "string" && s.name.startsWith("openeral-"))
+        ? list.filter(
+            (s) =>
+              typeof s?.name === "string" && s.name.startsWith("openeral-"),
+          )
         : [];
     }
     case "openeralEndSession": {
@@ -1780,7 +2234,11 @@ async function handleDesktopInvoke(event, command, ...args) {
       // closing the external terminal is what ends user interaction.
       // We still emit a status event so the UI can update.
       const name = String(args[0] ?? "").trim();
-      emitOpenEralSessionProgress({ sandboxName: name, phase: "closed", message: "Session closed." });
+      emitOpenEralSessionProgress({
+        sandboxName: name,
+        phase: "closed",
+        message: "Session closed.",
+      });
       return { status: "closed", sandboxName: name };
     }
     case "openeralDeleteSandbox": {
@@ -1794,7 +2252,11 @@ async function handleDesktopInvoke(event, command, ...args) {
           `openshell sandbox delete failed: ${(r.stderr || r.stdout).trim()}`,
         );
       }
-      emitOpenEralSessionProgress({ sandboxName: name, phase: "deleted", message: "Sandbox deleted." });
+      emitOpenEralSessionProgress({
+        sandboxName: name,
+        phase: "deleted",
+        message: "Sandbox deleted.",
+      });
       return { status: "deleted", sandboxName: name };
     }
     case "openeralDeriveSandboxName": {
@@ -1828,10 +2290,16 @@ async function handleDesktopInvoke(event, command, ...args) {
       // see or respond to (especially when the terminal is still sizing up).
       const extraEnv = await buildOpenEralPtyEnv(cols, rows);
 
-      const result = await openeralPty.openSession({ sandboxName, cols, rows, extraEnv });
+      const result = await openeralPty.openSession({
+        sandboxName,
+        cols,
+        rows,
+        extraEnv,
+      });
       openeralPty.attachHandlers(result.id, {
         onData: (data) => emitOpenEralPtyData(result.id, data),
-        onExit: (exitCode, signal) => emitOpenEralPtyExit(result.id, exitCode, signal),
+        onExit: (exitCode, signal) =>
+          emitOpenEralPtyExit(result.id, exitCode, signal),
       });
       return result;
     }
@@ -1866,10 +2334,16 @@ async function handleDesktopInvoke(event, command, ...args) {
       }
 
       const extraEnv = await buildOpenEralPtyEnv(cols, rows);
-      const result = await openeralPty.openSession({ sandboxName, cols, rows, extraEnv });
+      const result = await openeralPty.openSession({
+        sandboxName,
+        cols,
+        rows,
+        extraEnv,
+      });
       openeralPty.attachHandlers(result.id, {
         onData: (data) => emitOpenEralPtyData(result.id, data),
-        onExit: (exitCode, signal) => emitOpenEralPtyExit(result.id, exitCode, signal),
+        onExit: (exitCode, signal) =>
+          emitOpenEralPtyExit(result.id, exitCode, signal),
       });
       return { id: result.id, buffered: "", reused: false, exited: false };
     }
@@ -1902,7 +2376,11 @@ async function handleDesktopInvoke(event, command, ...args) {
       const input = args[0] ?? {};
       const id = String(input.sessionId ?? "").trim();
       if (!id) throw new Error("sessionId is required");
-      return openeralPty.resizeSession(id, Number(input.cols), Number(input.rows));
+      return openeralPty.resizeSession(
+        id,
+        Number(input.cols),
+        Number(input.rows),
+      );
     }
     case "openeralPtyClose": {
       const id = String(args[0] ?? "").trim();
@@ -1958,9 +2436,7 @@ async function handleDesktopInvoke(event, command, ...args) {
         const terminal = await launchExternalTerminalToSandbox(sandboxName);
         return terminal;
       } catch (err) {
-        throw new Error(
-          err instanceof Error ? err.message : String(err),
-        );
+        throw new Error(err instanceof Error ? err.message : String(err));
       }
     }
     case "openshellResetDistro": {
@@ -1971,7 +2447,8 @@ async function handleDesktopInvoke(event, command, ...args) {
       const choice = await dialog.showMessageBox(activeWindowFromEvent(event), {
         type: "warning",
         title: "Reset OpenShell distro?",
-        message: "This wipes the openwork-openshell WSL distro and clears installer state.",
+        message:
+          "This wipes the openwork-openshell WSL distro and clears installer state.",
         detail:
           "Any data inside the distro (Docker images, OpenShell sandboxes, downloaded packages) " +
           "is lost. Your OpenWork workspaces on the Windows side are untouched. " +
@@ -1991,14 +2468,20 @@ async function handleDesktopInvoke(event, command, ...args) {
         // Distro may already be stopped.
       }
       try {
-        await wslRun(["--unregister", OPENSHELL_DISTRO_NAME], { timeout: 30_000 });
+        await wslRun(["--unregister", OPENSHELL_DISTRO_NAME], {
+          timeout: 30_000,
+        });
       } catch (err) {
         throw new Error(
           `Could not unregister distro: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
       // Wipe installer state so the next run re-executes every phase.
-      const stateFile = path.join(os.homedir(), ".openwork", "openshell-install.json");
+      const stateFile = path.join(
+        os.homedir(),
+        ".openwork",
+        "openshell-install.json",
+      );
       try {
         await rm(stateFile, { force: true });
       } catch {
@@ -2007,8 +2490,107 @@ async function handleDesktopInvoke(event, command, ...args) {
       return { status: "reset", path: stateFile };
     }
     default:
-      throw new Error(`Electron desktop bridge method is not implemented yet: ${command}`);
+      throw new Error(
+        `Electron desktop bridge method is not implemented yet: ${command}`,
+      );
   }
+}
+
+// Route an application-menu action to the renderer. The renderer's AppRoot
+// listens on the "openwork:menu" channel and maps actions to react-router
+// navigation (see app-root.tsx). Guard against a torn-down window.
+function sendMenuActionToRenderer(action) {
+  const win = mainWindow ?? BrowserWindow.getAllWindows()[0] ?? null;
+  if (!win || win.isDestroyed()) return;
+  win.webContents.send("openwork:menu", { action });
+}
+
+// Build and install the application menu.
+//
+// Without this the app fell back to Electron's built-in default menu, whose
+// File submenu on Windows/Linux contains only "Quit" (shown as "Exit") — the
+// reported bug. We replace it with a real menu: app-specific navigation under
+// File, plus the standard Edit/View/Window/Help roles the renderer previously
+// lacked (copy/paste, reload, zoom, devtools, etc.).
+function buildApplicationMenu() {
+  const isMac = process.platform === "darwin";
+
+  /** @type {import("electron").MenuItemConstructorOptions[]} */
+  const template = [];
+
+  if (isMac) {
+    template.push({ role: "appMenu" });
+  }
+
+  template.push({
+    label: "File",
+    submenu: [
+      {
+        label: "New Session",
+        accelerator: "CmdOrCtrl+N",
+        click: () => sendMenuActionToRenderer("new-session"),
+      },
+      {
+        label: "New Workspace…",
+        accelerator: "CmdOrCtrl+Shift+N",
+        click: () => sendMenuActionToRenderer("new-workspace"),
+      },
+      { type: "separator" },
+      {
+        label: "Settings…",
+        accelerator: "CmdOrCtrl+,",
+        click: () => sendMenuActionToRenderer("open-settings"),
+      },
+      {
+        label: "Sandboxes",
+        click: () => sendMenuActionToRenderer("open-sandboxes"),
+      },
+      { type: "separator" },
+      isMac ? { role: "close" } : { role: "quit", label: "Exit" },
+    ],
+  });
+
+  template.push({ role: "editMenu" });
+
+  template.push({
+    label: "View",
+    submenu: [
+      { role: "reload" },
+      { role: "forceReload" },
+      { role: "toggleDevTools" },
+      { type: "separator" },
+      { role: "resetZoom" },
+      { role: "zoomIn" },
+      { role: "zoomOut" },
+      { type: "separator" },
+      { role: "togglefullscreen" },
+    ],
+  });
+
+  template.push({ role: "windowMenu" });
+
+  template.push({
+    role: "help",
+    submenu: [
+      {
+        label: "OpenWork Documentation",
+        click: () => {
+          void openExternalSafe("https://github.com/different-ai/openwork");
+        },
+      },
+      ...(isMac
+        ? []
+        : [
+            { type: "separator" },
+            {
+              label: "About OpenWork",
+              click: () => sendMenuActionToRenderer("about"),
+            },
+          ]),
+    ],
+  });
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
 async function createMainWindow() {
@@ -2020,7 +2602,9 @@ async function createMainWindow() {
     height: 820,
     title: "OpenWork",
     show: false,
-    ...(APP_ICON_IMAGE && !APP_ICON_IMAGE.isEmpty() ? { icon: APP_ICON_IMAGE } : {}),
+    ...(APP_ICON_IMAGE && !APP_ICON_IMAGE.isEmpty()
+      ? { icon: APP_ICON_IMAGE }
+      : {}),
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
@@ -2050,7 +2634,10 @@ async function createMainWindow() {
     // Packaged build serves the renderer over file://.
     if (url.startsWith("file://")) return true;
     // Local dev server (Vite binds IPv4 loopback; localhost covers both).
-    if (url.startsWith("http://127.0.0.1") || url.startsWith("http://localhost")) {
+    if (
+      url.startsWith("http://127.0.0.1") ||
+      url.startsWith("http://localhost")
+    ) {
       return true;
     }
     if (trustedStartOrigin) {
@@ -2065,7 +2652,10 @@ async function createMainWindow() {
   const isAudioOnlyMediaPermission = (permission, details) => {
     if (permission !== "media" && permission !== "audioCapture") return false;
     // Request handler exposes mediaTypes[]; the check handler exposes mediaType.
-    if (Array.isArray(details?.mediaTypes) && details.mediaTypes.includes("video")) {
+    if (
+      Array.isArray(details?.mediaTypes) &&
+      details.mediaTypes.includes("video")
+    ) {
       return false;
     }
     if (details?.mediaType === "video") return false;
@@ -2074,13 +2664,23 @@ async function createMainWindow() {
   mainWindow.webContents.session.setPermissionRequestHandler(
     (_webContents, permission, callback, details) => {
       const url = details?.requestingUrl || details?.securityOrigin || "";
-      callback(isAudioOnlyMediaPermission(permission, details) && isTrustedVoiceOrigin(url));
+      callback(
+        isAudioOnlyMediaPermission(permission, details) &&
+          isTrustedVoiceOrigin(url),
+      );
     },
   );
   mainWindow.webContents.session.setPermissionCheckHandler(
     (_webContents, permission, requestingOrigin, details) => {
-      const url = details?.requestingUrl || requestingOrigin || details?.securityOrigin || "";
-      return isAudioOnlyMediaPermission(permission, details) && isTrustedVoiceOrigin(url);
+      const url =
+        details?.requestingUrl ||
+        requestingOrigin ||
+        details?.securityOrigin ||
+        "";
+      return (
+        isAudioOnlyMediaPermission(permission, details) &&
+        isTrustedVoiceOrigin(url)
+      );
     },
   );
 
@@ -2099,19 +2699,41 @@ async function createMainWindow() {
       url.startsWith("http://127.0.0.1") ||
       url.startsWith("http://localhost");
     if (!local) {
-      void shell.openExternal(url);
+      void openExternalSafe(url);
       return { action: "deny" };
     }
     return { action: "allow" };
   });
 
-  const startUrl = process.env.OPENWORK_ELECTRON_START_URL?.trim() || process.env.ELECTRON_START_URL?.trim();
+  // Navigation guard: setWindowOpenHandler only covers NEW windows. Without a
+  // will-navigate/will-redirect guard, a renderer (or injected content / link /
+  // HTTP redirect) could navigate the MAIN frame to a remote origin while
+  // keeping the preload contextBridge + all IPC channels exposed — a full IPC
+  // takeover. Only allow the app's own origins (file://, loopback dev server,
+  // configured start origin); anything else is cancelled and opened externally.
+  const blockOffAppNavigation = (event, url) => {
+    if (isTrustedVoiceOrigin(url)) return; // reuses the trusted-app-origin test
+    event.preventDefault();
+    void openExternalSafe(url);
+  };
+  mainWindow.webContents.on("will-navigate", blockOffAppNavigation);
+  mainWindow.webContents.on("will-redirect", blockOffAppNavigation);
+
+  const startUrl =
+    process.env.OPENWORK_ELECTRON_START_URL?.trim() ||
+    process.env.ELECTRON_START_URL?.trim();
   if (startUrl) {
     await mainWindow.loadURL(startUrl);
   } else {
-    const packagedIndexPath = path.join(process.resourcesPath, "app-dist", "index.html");
+    const packagedIndexPath = path.join(
+      process.resourcesPath,
+      "app-dist",
+      "index.html",
+    );
     const devIndexPath = path.resolve(__dirname, "../../app/dist/index.html");
-    await mainWindow.loadFile(app.isPackaged ? packagedIndexPath : devIndexPath);
+    await mainWindow.loadFile(
+      app.isPackaged ? packagedIndexPath : devIndexPath,
+    );
   }
 
   return mainWindow;
@@ -2119,9 +2741,7 @@ async function createMainWindow() {
 
 ipcMain.handle("openwork:desktop", handleDesktopInvoke);
 ipcMain.handle("openwork:shell:openExternal", async (_event, url) => {
-  if (typeof url === "string" && url.trim().length > 0) {
-    await shell.openExternal(url);
-  }
+  await openExternalSafe(url);
 });
 ipcMain.handle("openwork:shell:relaunch", async () => {
   app.relaunch();
@@ -2129,7 +2749,11 @@ ipcMain.handle("openwork:shell:relaunch", async () => {
 });
 
 registerMigrationIpc({ app, ipcMain });
-const { ensureAutoUpdater } = registerUpdaterIpc({ app, ipcMain, getMainWindow: () => mainWindow });
+const { ensureAutoUpdater } = registerUpdaterIpc({
+  app,
+  ipcMain,
+  getMainWindow: () => mainWindow,
+});
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -2157,6 +2781,7 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(async () => {
+    buildApplicationMenu();
     await installReactDevToolsForDev();
     await runtimeManager.prepareFreshRuntime().catch(() => undefined);
 
@@ -2164,10 +2789,12 @@ if (!app.requestSingleInstanceLock()) {
     // Electron see the same workspace list. Import the short-lived
     // Electron-only filename only when the shared file is missing.
     await migrateLegacyElectronWorkspaceStateIfNeeded();
-    runtimeBootstrapPromise = bootRuntimeForSelectedWorkspace().catch((error) => ({
-      ok: false,
-      error: error instanceof Error ? error.message : String(error),
-    }));
+    runtimeBootstrapPromise = bootRuntimeForSelectedWorkspace().catch(
+      (error) => ({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
 
     queueDeepLinks(forwardedDeepLinks(process.argv));
     const win = await createMainWindow();
