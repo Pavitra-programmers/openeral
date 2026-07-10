@@ -1710,9 +1710,17 @@ export function SessionRoute() {
       selectedWorkspaceId={selectedWorkspaceId}
       sessionSurfaceOverride={
         openeralProfile && selectedWorkspaceId && openeralView === "terminal" ? (
+          // key on the session id so switching tasks in the sidebar fully
+          // remounts the terminal: the previous PTY is torn down (one agent
+          // conversation per sandbox at a time) and the selected session
+          // conversation is attached or launched fresh. Without this the
+          // surface stayed keyed to the workspace and every session showed
+          // the same PTY.
           <OpenEralTerminal
+            key={`${selectedWorkspaceId}:${selectedSessionId ?? "__no_session__"}`}
             workspaceId={selectedWorkspaceId}
             profile={openeralProfile}
+            sessionId={selectedSessionId}
             onOpenSettings={() => navigate("/settings/sandbox")}
             onSwitchToChat={() => setOpeneralView("chat")}
           />

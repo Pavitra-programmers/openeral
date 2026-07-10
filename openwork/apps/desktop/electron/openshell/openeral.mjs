@@ -34,7 +34,7 @@
 //   - The rootfs MUST include openssh-client — openshell shells out
 //     to ssh/scp for upload, connect, exec, download.
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import { getCliInfo } from "./cli.mjs";
 import { getCredential } from "./openeral-credentials.mjs";
@@ -599,6 +599,118 @@ function sandboxRunScriptCmd(name, script) {
   );
 }
 
+// Container path of the per-connect "which agent conversation to launch"
+// marker. The .bashrc launch block (buildLaunchBlock) reads this file each
+// time an interactive connect auto-launches the agent; the desktop app
+// rewrites it (writeCurrentSessionMarker) before every FRESH connect so the
+// launched agent binds to the OpenWork session the user selected. Lives under
+// /sandbox (ephemeral, container-scoped) rather than /home/agent so it is
+// never captured by the PostgreSQL home sync.
+const SESSION_MARKER_PATH = "/sandbox/openwork-current-session";
+
+// Fixed namespace for deriving deterministic Claude Code session UUIDs from
+// OpenWork/opencode session ids (which are `ses_...`, not UUIDs). Any random
+// but STABLE UUID works — it just has to never change, so the same OpenWork
+// session always maps to the same Claude conversation across reconnects and
+// across machines (the sandbox home is portable via the DB sync).
+const CLAUDE_SESSION_NAMESPACE = "6f9b1e2a-0c3d-4b7a-9e21-8a4c1d5f7b30";
+
+function uuidToBytes(uuid) {
+  const hex = uuid.replace(/-/g, "");
+  const bytes = Buffer.alloc(16);
+  for (let i = 0; i < 16; i++) {
+    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return bytes;
+}
+
+function formatUuid(bytes) {
+  const hex = Buffer.from(bytes).toString("hex");
+  return (
+    `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-` +
+    `${hex.slice(16, 20)}-${hex.slice(20, 32)}`
+  );
+}
+
+/**
+ * Derive a deterministic RFC-4122 v5 (name-based, SHA-1) UUID from an
+ * arbitrary OpenWork session id. Claude Code's `--session-id`/`--resume`
+ * flags require a valid UUID; opencode session ids (`ses_...`) are not, so we
+ * hash them into a stable UUID. Deterministic so the same OpenWork session
+ * always resolves to the same Claude conversation.
+ *
+ * @param {string} openworkSessionId
+ * @returns {string} lowercase UUID
+ */
+function deriveClaudeSessionUuid(openworkSessionId) {
+  const ns = uuidToBytes(CLAUDE_SESSION_NAMESPACE);
+  const hash = createHash("sha1")
+    .update(ns)
+    .update(Buffer.from(String(openworkSessionId), "utf8"))
+    .digest();
+  const bytes = hash.subarray(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x50; // version 5
+  bytes[8] = (bytes[8] & 0x3f) | 0x80; // RFC-4122 variant
+  return formatUuid(bytes);
+}
+
+/**
+ * Sanitize an OpenWork session id into a safe OpenClaw `--session <key>`
+ * value: OpenClaw session keys are free-form names, but the value is
+ * interpolated (unquoted) into the launch block, so restrict it to a shell-
+ * and glob-safe alphabet. Falls back to null when nothing usable remains.
+ *
+ * @param {string} openworkSessionId
+ * @returns {string | null}
+ */
+function sanitizeOpenclawSessionKey(openworkSessionId) {
+  const key = String(openworkSessionId ?? "")
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+  return key || null;
+}
+
+/**
+ * Resolve the marker-file value for a given agent + OpenWork session id:
+ * a derived UUID for Claude Code, a sanitized key for OpenClaw. Returns null
+ * when no specific session was requested (falls back to the agent's default
+ * conversation — preserves pre-per-session behavior).
+ *
+ * @param {string} profile  "openeral-claude" | "openeral-openclaw"
+ * @param {string | null | undefined} openworkSessionId
+ * @returns {string | null}
+ */
+export function resolveAgentSessionValue(profile, openworkSessionId) {
+  const id = String(openworkSessionId ?? "").trim();
+  if (!id) return null;
+  return profile === "openeral-openclaw"
+    ? sanitizeOpenclawSessionKey(id)
+    : deriveClaudeSessionUuid(id);
+}
+
+/**
+ * Write (or clear) the per-connect session marker inside the container. Call
+ * this immediately before a FRESH connect so the .bashrc launch block binds
+ * the auto-launched agent to the requested OpenWork session. Passing a null/
+ * empty value removes the marker so the agent launches its default
+ * conversation. Best-effort: a failure just means the agent launches its
+ * default session, so it never blocks the connect.
+ *
+ * @param {string} name  Sandbox name
+ * @param {string | null} value  Resolved marker value (UUID / key) or null
+ * @param {NodeJS.ProcessEnv} [env]
+ */
+export async function writeCurrentSessionMarker(name, value, env) {
+  const script = value
+    ? `mkdir -p /sandbox && printf %s ${shellQuote(value)} > ${SESSION_MARKER_PATH} && chmod 600 ${SESSION_MARKER_PATH} 2>/dev/null || true`
+    : `rm -f ${SESSION_MARKER_PATH} 2>/dev/null || true`;
+  await wslRun(
+    ["-d", DISTRO_NAME, "--", "bash", "-c", sandboxRunScriptCmd(name, script)],
+    { timeout: 30_000, env },
+  );
+}
+
 /**
  * Ensure the distro has `scp`/`ssh` (openssh-client) before any sandbox op.
  *
@@ -780,7 +892,28 @@ function buildLaunchBlock(profile, proxyBase, apiKey = null) {
     "  printf '\\033[2J\\033[3J\\033[H'",
   );
   if (isClaude) {
-    block.push("  exec claude");
+    block.push(
+      // Bind Claude Code to the OpenWork session the desktop app selected.
+      // writeCurrentSessionMarker drops a derived UUID here before each fresh
+      // connect; an empty/absent marker (CLI flow, or no session selected)
+      // falls through to a plain `claude`. The UUID charset is validated
+      // defensively before it is interpolated into the exec.
+      `  _ow_sid=""`,
+      `  [ -f ${SESSION_MARKER_PATH} ] && _ow_sid="$(cat ${SESSION_MARKER_PATH} 2>/dev/null | tr -d '\\r\\n ')"`,
+      `  case "$_ow_sid" in *[!0-9a-fA-F-]*) _ow_sid="" ;; esac`,
+      `  if [ -n "$_ow_sid" ]; then`,
+      // --session-id refuses an id whose transcript already exists ("already
+      // in use"), and --resume refuses one that does NOT exist ("no
+      // conversation found"). Pick the right flag by probing Claude's own
+      // transcript store across every project dir so the choice is correct
+      // regardless of the launch cwd.
+      `    if ls "$HOME"/.claude/projects/*/"$_ow_sid".jsonl >/dev/null 2>&1; then`,
+      `      exec claude --resume "$_ow_sid"`,
+      `    fi`,
+      `    exec claude --session-id "$_ow_sid"`,
+      `  fi`,
+      "  exec claude",
+    );
   } else {
     block.push(
       // Reconnect fast path: the gateway from a previous session survives PTY
@@ -811,6 +944,16 @@ function buildLaunchBlock(profile, proxyBase, apiKey = null) {
       // TUI stranded in a permanent "disconnected" state.
       // NODE_NO_WARNINGS: hide the UNDICI-EHPA experimental warnings that
       // otherwise print above the TUI banner in the user's terminal.
+      //
+      // OpenClaw session binding: `openclaw tui --session <key>` selects the
+      // conversation thread (create-or-resume). writeCurrentSessionMarker
+      // drops the sanitized key here before each fresh connect; both the fast
+      // path (direct exec) and the cold path (setup.sh, via the exported
+      // OPENWORK_OPENCLAW_SESSION var) honor it. Empty marker keeps OpenClaw's
+      // default "main" session.
+      `  _ow_sk=""`,
+      `  [ -f ${SESSION_MARKER_PATH} ] && _ow_sk="$(cat ${SESSION_MARKER_PATH} 2>/dev/null | tr -d '\\r\\n ')"`,
+      `  case "$_ow_sk" in *[!a-zA-Z0-9._-]*) _ow_sk="" ;; esac`,
       "  if curl -fsS http://127.0.0.1:18789/readyz >/dev/null 2>&1; then",
       '    _saved_key="${ANTHROPIC_API_KEY:-}"',
       "    [ -f /home/agent/.openeral/env.sh ] && . /home/agent/.openeral/env.sh",
@@ -823,7 +966,7 @@ function buildLaunchBlock(profile, proxyBase, apiKey = null) {
       "      GIT_SSL_NO_VERIFY=true npm_config_strict_ssl=false \\",
       "      OPENCLAW_HANDSHAKE_TIMEOUT_MS=600000 \\",
       "      NODE_NO_WARNINGS=1 \\",
-      "      openclaw tui",
+      "      openclaw tui ${_ow_sk:+--session $_ow_sk}",
       "  fi",
       // Cold start (or crashed gateway): clear any zombie process that may
       // still hold port 18789 — setup.sh starts its gateway without a pkill,
@@ -835,6 +978,8 @@ function buildLaunchBlock(profile, proxyBase, apiKey = null) {
       // gateway start + readiness wait, TUI plugin pre-stage, doctor --fix,
       // and finally execs the OpenClaw TUI.
       "  pkill -f 'openclaw gateway' 2>/dev/null || true",
+      // Hand the session key to setup.sh's own final `openclaw tui` exec.
+      '  export OPENWORK_OPENCLAW_SESSION="$_ow_sk"',
       "  exec openeral",
     );
   }
@@ -877,6 +1022,29 @@ async function configureAgentLaunch({
           "mkdir -p /sandbox/openeral-input",
           `printf %s ${shellQuote(JSON.stringify({ url: presignUrl }))} > /sandbox/openeral-input/presign.json`,
           "chmod 600 /sandbox/openeral-input/presign.json",
+        ]
+      : []),
+    // Claude-only pre-launch hygiene — kills every paint that used to land
+    // above the welcome banner and survive as garbled scrollback:
+    //   1. Pre-accept folder trust for the connect cwd (/sandbox) so the
+    //      first thing Claude Code draws is the banner, not the "Quick
+    //      safety check" dialog. Accepting that dialog makes Ink erase and
+    //      repaint the screen, and ConPTY's reflow reliably leaves the
+    //      dialog's full-width separator as a gibberish line pinned above
+    //      the banner. The sandbox container is the security boundary here
+    //      and settings.json still carries the permission deny-list, so
+    //      pre-trusting the sandbox's own workspace folder gives up nothing.
+    //   2. Create ~/.local/bin and symlink the real binary into it
+    //      (HOME=/sandbox in the connect shell) so the native-installer
+    //      check doesn't print "installMethod is native, but claude command
+    //      not found at /sandbox/.local/bin/claude" into the terminal
+    //      before the TUI takes over.
+    // Static script — no runtime values are interpolated.
+    ...(isClaude
+      ? [
+          "mkdir -p /sandbox/.local/bin /sandbox/.claude",
+          'ln -sfn "$(command -v claude || echo /usr/local/bin/claude)" /sandbox/.local/bin/claude 2>/dev/null || true',
+          `node -e 'const fs=require("fs");const f="/sandbox/.claude.json";let s={};try{s=JSON.parse(fs.readFileSync(f,"utf8")||"{}")}catch(e){}s.projects=Object.assign({},s.projects);s.projects["/sandbox"]=Object.assign({},s.projects["/sandbox"],{hasTrustDialogAccepted:true});fs.writeFileSync(f,JSON.stringify(s,null,2))' 2>/dev/null || true`,
         ]
       : []),
     "RC=/sandbox/.bashrc",
@@ -1601,6 +1769,10 @@ export const __testing = {
   createStringcostPresign,
   stringcostBaseUrlForAgent,
   sandboxRunScriptCmd,
+  deriveClaudeSessionUuid,
+  sanitizeOpenclawSessionKey,
+  resolveAgentSessionValue,
+  SESSION_MARKER_PATH,
   buildLaunchBlock,
   configureAgentLaunch,
   prewarmAgentRuntime,

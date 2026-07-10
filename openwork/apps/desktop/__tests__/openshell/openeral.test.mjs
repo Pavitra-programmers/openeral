@@ -570,6 +570,70 @@ test("buildLaunchBlock (claude + proxy): exports proxy vars and unsets the real 
     "claude must not start openclaw gateway",
   );
   assert.match(block, /exec claude/, "claude must exec claude");
+  // Per-session binding: read the marker written before each connect and pick
+  // --resume (transcript exists) vs --session-id (new) so the flag is always
+  // valid, with a bare `exec claude` fallback when no session is selected.
+  assert.match(
+    block,
+    /\/sandbox\/openwork-current-session/,
+    "claude must read the per-connect session marker",
+  );
+  assert.match(
+    block,
+    /exec claude --resume "\$_ow_sid"/,
+    "claude must resume an existing conversation",
+  );
+  assert.match(
+    block,
+    /exec claude --session-id "\$_ow_sid"/,
+    "claude must create a new conversation with the derived id",
+  );
+});
+
+test("deriveClaudeSessionUuid: deterministic, valid v5 UUID for opencode ids", () => {
+  const a = openeral.__testing.deriveClaudeSessionUuid("ses_abc123");
+  const b = openeral.__testing.deriveClaudeSessionUuid("ses_abc123");
+  const c = openeral.__testing.deriveClaudeSessionUuid("ses_different");
+  assert.equal(a, b, "same input must map to the same UUID (stable resume)");
+  assert.notEqual(a, c, "distinct sessions must map to distinct UUIDs");
+  assert.match(
+    a,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    "must be a valid RFC-4122 v5 UUID (Claude requires a valid UUID)",
+  );
+});
+
+test("sanitizeOpenclawSessionKey: keeps a shell/glob-safe key, else null", () => {
+  assert.equal(
+    openeral.__testing.sanitizeOpenclawSessionKey("ses_Abc.1-2"),
+    "ses_Abc.1-2",
+  );
+  assert.equal(
+    openeral.__testing.sanitizeOpenclawSessionKey("a b/c*d"),
+    "a-b-c-d",
+  );
+  assert.equal(openeral.__testing.sanitizeOpenclawSessionKey(""), null);
+  assert.equal(openeral.__testing.sanitizeOpenclawSessionKey("***"), null);
+});
+
+test("resolveAgentSessionValue: UUID for claude, key for openclaw, null empty", () => {
+  const claude = openeral.__testing.resolveAgentSessionValue(
+    "openeral-claude",
+    "ses_abc",
+  );
+  assert.match(claude, /^[0-9a-f-]{36}$/);
+  assert.equal(
+    openeral.__testing.resolveAgentSessionValue("openeral-openclaw", "ses_abc"),
+    "ses_abc",
+  );
+  assert.equal(
+    openeral.__testing.resolveAgentSessionValue("openeral-claude", ""),
+    null,
+  );
+  assert.equal(
+    openeral.__testing.resolveAgentSessionValue("openeral-claude", null),
+    null,
+  );
 });
 
 test("buildLaunchBlock (openclaw + proxy): delegates to setup.sh with StringCost env", () => {
@@ -668,11 +732,25 @@ test("buildLaunchBlock (openclaw + proxy): delegates to setup.sh with StringCost
   assert.match(block, /HOME=\/home\/agent/, "exec must set HOME=/home/agent");
   // `openclaw tui`, not bare `openclaw` — the bare command opens the
   // crestodian setup concierge instead of the coding agent (mirrors
-  // setup.sh's final exec).
+  // setup.sh's final exec). The trailing `${_ow_sk:+--session $_ow_sk}`
+  // binds the TUI to the OpenWork session when a marker is present and is a
+  // no-op (default "main" session) when it is empty.
   assert.match(
     block,
-    /^\s+openclaw tui\s*$/m,
-    "exec must end with `openclaw tui` on its own line",
+    /^\s+openclaw tui \$\{_ow_sk:\+--session \$_ow_sk\}\s*$/m,
+    "fast-path exec must launch `openclaw tui` with the optional session flag",
+  );
+  // Per-session binding: read the marker the app writes before each connect.
+  assert.match(
+    block,
+    /\/sandbox\/openwork-current-session/,
+    "openclaw must read the per-connect session marker",
+  );
+  // Cold path must forward the key to setup.sh's own final exec.
+  assert.match(
+    block,
+    /export OPENWORK_OPENCLAW_SESSION=/,
+    "cold path must export the session key for setup.sh",
   );
   // SHELL must be set so openclaw agent tool invocations use openeral's workspace
   // filesystem layer (PostgreSQL-backed) rather than raw /bin/bash.

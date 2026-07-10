@@ -72,6 +72,10 @@ function appendToBuffer(session, data) {
  * @typedef {Object} Session
  * @property {string} id
  * @property {string} sandboxName
+ * @property {string | null} agentSessionId  OpenWork session id this PTY runs
+ *   the agent conversation for. null when no specific session was requested
+ *   (legacy / "main" behavior). Used to key the registry so switching
+ *   sessions in one sandbox tears down the previous PTY (one agent at a time).
  * @property {IPtyLike} pty
  * @property {DataHandler | null} onData
  * @property {ExitHandler | null} onExit
@@ -188,6 +192,12 @@ function clampDimension(value, fallback) {
  *   into WSL via WSLENV (e.g. ANTHROPIC_API_KEY, STRINGCOST_API_KEY). These
  *   are needed so Claude Code can auto-configure its provider on first run
  *   inside the sandbox without prompting the user interactively.
+ * @param {string | null} [opts.agentSessionId]  OpenWork session id whose
+ *   agent conversation this PTY runs. Only ONE agent runs per sandbox at a
+ *   time: opening a session that differs from the one currently live in this
+ *   sandbox tears the old PTY down first (the agent persists its transcript,
+ *   so returning to it later resumes losslessly). Passing the SAME id adopts
+ *   the live PTY (lossless re-attach after navigation).
  * @param {DataHandler} [opts.onData]   Receives PTY stdout/stderr bytes
  * @param {ExitHandler} [opts.onExit]   Called when the wsl child exits
  * @returns {Promise<{ id: string, sandboxName: string, reused: boolean }>}
@@ -199,33 +209,47 @@ export async function openSession(opts) {
   const cols = clampDimension(opts.cols, DEFAULT_COLS);
   const rows = clampDimension(opts.rows, DEFAULT_ROWS);
   const extraEnv = opts.extraEnv ?? null;
+  const agentSessionId = opts.agentSessionId ?? null;
 
   // Adoption / idempotency: if a still-live session already owns this
-  // sandbox, re-attach to it instead of spawning a second wsl child. This
-  // makes openSession safe to call from any path (legacy openeralPtyOpen,
-  // a racy double-mount) without ever leaking a duplicate PTY against the
-  // same sandbox.
+  // sandbox, re-attach to it instead of spawning a second wsl child — BUT
+  // only when it runs the SAME agent session. This makes openSession safe to
+  // call from any path (legacy openeralPtyOpen, a racy double-mount) without
+  // ever leaking a duplicate PTY against the same sandbox.
   const existing = findSessionBySandbox(opts.sandboxName);
   if (existing) {
-    if (!existing.exitInfo) {
-      // Still live → adopt it; never spawn a second wsl child for one sandbox.
+    const sameAgentSession =
+      (existing.agentSessionId ?? null) === agentSessionId;
+    if (!existing.exitInfo && sameAgentSession) {
+      // Still live + same session → adopt it; never spawn a second wsl child.
       attachHandlers(existing.id, { onData: opts.onData, onExit: opts.onExit });
       resizeSession(existing.id, cols, rows);
-      return { id: existing.id, sandboxName: existing.sandboxName, reused: true };
+      return {
+        id: existing.id,
+        sandboxName: existing.sandboxName,
+        reused: true,
+      };
     }
-    // Dead (exited) session for this sandbox is lingering for replay — a fresh
-    // openSession means the user is reconnecting, so forget it and spawn anew.
-    // This guarantees at most one session per sandbox after openSession.
+    // Either the prior session exited (lingering for replay) OR the user
+    // switched to a DIFFERENT session in this sandbox. Both mean we spawn a
+    // fresh PTY, so forget the old one first (killing it if still live —
+    // one-agent-at-a-time). This guarantees at most one session per sandbox.
     closeSession(existing.id);
   }
 
-  const pty = await spawnImpl({ sandboxName: opts.sandboxName, cols, rows, extraEnv });
+  const pty = await spawnImpl({
+    sandboxName: opts.sandboxName,
+    cols,
+    rows,
+    extraEnv,
+  });
   const id = randomUUID();
 
   /** @type {Session} */
   const session = {
     id,
     sandboxName: opts.sandboxName,
+    agentSessionId,
     pty,
     onData: opts.onData ?? null,
     onExit: opts.onExit ?? null,
@@ -249,7 +273,9 @@ export async function openSession(opts) {
   pty.onExit((event) => {
     const code = typeof event?.exitCode === "number" ? event.exitCode : null;
     const signal =
-      typeof event?.signal === "number" ? String(event.signal) : event?.signal ?? null;
+      typeof event?.signal === "number"
+        ? String(event.signal)
+        : (event?.signal ?? null);
     // Retain the session (do NOT delete from the map) so a renderer that
     // re-attaches AFTER the wsl child died can still replay the final
     // output plus this notice and offer "Reconnect". The map entry is
@@ -391,6 +417,7 @@ export function listSessions() {
   return Array.from(sessions.values()).map((s) => ({
     id: s.id,
     sandboxName: s.sandboxName,
+    agentSessionId: s.agentSessionId ?? null,
     cols: s.size.cols,
     rows: s.size.rows,
     openedAt: s.openedAt,

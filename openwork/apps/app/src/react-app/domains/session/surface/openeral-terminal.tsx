@@ -46,8 +46,16 @@ async function invoke<T>(command: string, ...args: unknown[]): Promise<T> {
 }
 
 export type OpenEralTerminalProps = {
-  workspaceId: string;
+   workspaceId: string;
   profile: SandboxProfile;
+  /** OpenWork session this terminal runs the agent conversation for. Each
+   *  session maps to a distinct agent conversation inside the workspace's
+   *  single persistent sandbox (Claude Code `--session-id`/`--resume`,
+   *  OpenClaw `--session`). Only one conversation runs per sandbox at a
+   *  time — switching sessions tears the previous PTY down and the agent
+   *  resumes it losslessly on return. Null/undefined ⇒ the agent's default
+   *  conversation (e.g. no session selected). */
+  sessionId?: string | null;
   /** Optional callback when the renderer decides to fully tear down the
    *  workspace (clicked "Delete sandbox" + confirmed). Caller is
    *  responsible for navigating away. */
@@ -559,23 +567,31 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
           });
         };
 
-        // 3. Probe for an already-running PTY for this sandbox. If one exists
-        // the renderer simply navigated away earlier (we detached, keeping the
-        // wsl child + scrollback alive), so we re-attach losslessly — no
-        // re-bootstrap, no Claude Code relaunch.
-        let liveSandbox = false;
+        // 3. Probe for an already-running PTY for THIS sandbox AND this
+        // session. If one exists the renderer simply navigated away earlier
+        // (we detached, keeping the wsl child + scrollback alive), so we
+        // re-attach losslessly — no re-bootstrap, no agent relaunch. A live
+        // PTY for a DIFFERENT session in this sandbox is NOT a match: it means
+        // the user switched tasks, so we fall through to a fresh open (which
+        // tears the old PTY down — one agent per sandbox at a time).
+        const agentSessionId = props.sessionId ?? null;
+        let liveSession = false;
         try {
           const sessionsList =
-            await invoke<Array<{ sandboxName: string }>>("openeralPtyList");
-          liveSandbox = sessionsList.some(
-            (s) => s.sandboxName === expectedSandboxName,
+            await invoke<
+              Array<{ sandboxName: string; agentSessionId: string | null }>
+            >("openeralPtyList");
+          liveSession = sessionsList.some(
+            (s) =>
+              s.sandboxName === expectedSandboxName &&
+              (s.agentSessionId ?? null) === agentSessionId,
           );
         } catch {
-          liveSandbox = false;
+          liveSession = false;
         }
         if (cancelled) return;
 
-        if (liveSandbox) {
+        if (liveSession) {
           // ── Lossless re-attach (two-phase) ───────────────────────────
           // Phase 1: get session id + buffered scrollback. The main process
           // does NOT call attachHandlers here, so no pty-data events fly yet.
@@ -587,6 +603,8 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
             sandboxName: expectedSandboxName,
             cols: term.cols,
             rows: term.rows,
+            sessionId: agentSessionId,
+            profile: props.profile,
           });
           if (cancelled) return;
           setSandboxName(expectedSandboxName);
@@ -632,6 +650,8 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
           sandboxName: sandbox.sandboxName,
           cols: term.cols,
           rows: term.rows,
+          sessionId: agentSessionId,
+          profile: props.profile,
         });
         if (cancelled) {
           await invoke("openeralPtyClose", pty.id).catch(() => {});
@@ -657,7 +677,13 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
     return () => {
       void cleanup();
     };
-  }, [props.workspaceId, props.profile, reconnectKey, userAborted]);
+  }, [
+    props.workspaceId,
+    props.profile,
+    props.sessionId,
+    reconnectKey,
+    userAborted,
+  ]);
 
   const popOut = useCallback(async () => {
     const name = sandboxName ?? lastKnownSandboxNameRef.current;
@@ -948,10 +974,15 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
             interacting with toolbar buttons — moving the mouse back over
             the terminal instantly restores keystroke capture so Claude
             Code's TUI (theme selectors, menus, etc.) responds correctly.
-            onClick is a fallback for touch/keyboard navigation. */}
+            onClick is a fallback for touch/keyboard navigation.
+
+            The padded wrapper (matching the xterm theme background) keeps
+            the TUI's bottom-anchored input row from sitting flush against
+            the app chrome below the pane. FitAddon measures containerRef
+            (the inner h-full div), so the proposed rows already account
+            for the padding — the last row is never clipped. */}
         <div
-          ref={containerRef}
-          className="absolute inset-0 bg-black"
+          className="absolute inset-0 bg-[#0a0a0a] px-2 pb-2 pt-1"
           onMouseEnter={() => {
             try {
               termRef.current?.focus();
@@ -966,7 +997,9 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
               /* ignore */
             }
           }}
-        />
+        >
+          <div ref={containerRef} className="h-full w-full" />
+        </div>
         {errorMessage && phase === "error" ? (
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-dls-surface p-6">
             <BootstrapErrorCard
