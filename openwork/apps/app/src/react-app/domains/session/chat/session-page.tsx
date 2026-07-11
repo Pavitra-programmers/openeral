@@ -96,6 +96,10 @@ export type SessionPageProps = {
    *  Used by the OpenEral terminal flow to inject xterm.js without
    *  touching the chat-based surface code path. */
   sessionSurfaceOverride?: ReactNode;
+  /** Optional extra sidebar section rendered below the workspace/session
+   *  list — the OpenEral sandbox list. Kept as an opaque node so the chat
+   *  page stays decoupled from the sandbox domain. */
+  sandboxSidebar?: ReactNode;
   selectedWorkspaceRoot: string;
   runtimeWorkspaceId: string | null;
   workspaces: WorkspaceInfo[];
@@ -314,6 +318,7 @@ export function SessionPage(props: SessionPageProps) {
               onEditWorkspaceConnection={props.sidebar.onEditWorkspaceConnection}
               onForgetWorkspace={props.sidebar.onForgetWorkspace}
               onOpenCreateWorkspace={props.sidebar.onOpenCreateWorkspace}
+              beforeFooter={props.sandboxSidebar}
             />
           </div>
           <div
@@ -325,6 +330,11 @@ export function SessionPage(props: SessionPageProps) {
         </aside>
 
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[24px] border border-dls-border bg-dls-surface shadow-[var(--dls-shell-shadow)]">
+          {/* The chat header is hidden while a surface override (the OpenEral
+              sandbox terminal) is showing — the override brings its own
+              identically-styled header, and stacking both reads as two
+              headers for one view. */}
+          {props.sessionSurfaceOverride ? null : (
           <header className="z-10 flex h-12 shrink-0 items-center justify-between border-b border-dls-border bg-dls-surface px-4 md:px-6">
             <div className="flex min-w-0 items-center gap-3">
               <h1 className="truncate text-[15px] font-semibold text-dls-text">
@@ -385,6 +395,7 @@ export function SessionPage(props: SessionPageProps) {
               ) : null}
             </div>
           </header>
+          )}
 
           <div className="flex min-h-0 flex-1 overflow-hidden">
             <div className="relative min-w-0 flex-1 overflow-hidden bg-dls-surface">

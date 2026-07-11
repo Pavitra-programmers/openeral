@@ -90,7 +90,10 @@ test("openSession: defaults to 120x32 when cols/rows omitted", async () => {
 });
 
 test("openSession: rejects empty sandbox name", async () => {
-  await assert.rejects(() => pty.openSession({ sandboxName: "" }), /sandboxName is required/);
+  await assert.rejects(
+    () => pty.openSession({ sandboxName: "" }),
+    /sandboxName is required/,
+  );
 });
 
 test("openSession: forwards PTY data to onData callback", async () => {
@@ -141,20 +144,32 @@ test("writeSession: coerces non-string input to string", async () => {
 // ── resizeSession ──────────────────────────────────────────────────────
 
 test("resizeSession: forwards new size to the PTY", async () => {
-  const { id } = await pty.openSession({ sandboxName: "x", cols: 80, rows: 24 });
+  const { id } = await pty.openSession({
+    sandboxName: "x",
+    cols: 80,
+    rows: 24,
+  });
   const ok = pty.resizeSession(id, 100, 40);
   assert.equal(ok, true);
   assert.deepEqual(activeFake.events.resizes, [{ cols: 100, rows: 40 }]);
 });
 
 test("resizeSession: no-op when size hasn't changed (skips SIGWINCH)", async () => {
-  const { id } = await pty.openSession({ sandboxName: "x", cols: 80, rows: 24 });
+  const { id } = await pty.openSession({
+    sandboxName: "x",
+    cols: 80,
+    rows: 24,
+  });
   pty.resizeSession(id, 80, 24);
   assert.equal(activeFake.events.resizes.length, 0);
 });
 
 test("resizeSession: floors fractional sizes", async () => {
-  const { id } = await pty.openSession({ sandboxName: "x", cols: 80, rows: 24 });
+  const { id } = await pty.openSession({
+    sandboxName: "x",
+    cols: 80,
+    rows: 24,
+  });
   pty.resizeSession(id, 100.7, 40.3);
   assert.deepEqual(activeFake.events.resizes, [{ cols: 100, rows: 40 }]);
 });
@@ -164,7 +179,11 @@ test("resizeSession: returns false for unknown session", () => {
 });
 
 test("resizeSession: keeps previous size when called with NaN", async () => {
-  const { id } = await pty.openSession({ sandboxName: "x", cols: 80, rows: 24 });
+  const { id } = await pty.openSession({
+    sandboxName: "x",
+    cols: 80,
+    rows: 24,
+  });
   pty.resizeSession(id, NaN, NaN);
   assert.equal(activeFake.events.resizes.length, 0);
   const sessions = pty.listSessions();
@@ -226,7 +245,11 @@ test("onExit RETAINS the session (marks exitInfo) so it can be replayed on re-at
 });
 
 test("post-exit: writeSession and resizeSession return false (no writes to a dead pty)", async () => {
-  const { id } = await pty.openSession({ sandboxName: "x", cols: 80, rows: 24 });
+  const { id } = await pty.openSession({
+    sandboxName: "x",
+    cols: 80,
+    rows: 24,
+  });
   activeFake.exit(0);
   assert.equal(pty.writeSession(id, "ls\n"), false);
   assert.equal(pty.resizeSession(id, 100, 40), false);
@@ -263,7 +286,10 @@ test("buffer cap: evicts oldest output, retains the tail, stays within the byte 
   activeFake.emit("b".repeat(400_000)); // total > cap → first chunk evicted
   activeFake.emit("ENDMARKER");
   const buffered = pty.getBuffer(id);
-  assert.ok(new TextEncoder().encode(buffered).length <= CAP, "within byte cap");
+  assert.ok(
+    new TextEncoder().encode(buffered).length <= CAP,
+    "within byte cap",
+  );
   assert.ok(buffered.includes("ENDMARKER"), "retains the newest output");
   assert.ok(!buffered.includes("START"), "evicts the oldest output");
 });
@@ -288,7 +314,10 @@ test("findSessionBySandbox: returns null for an unknown sandbox", async () => {
 
 test("detachSession: keeps the PTY alive, stops routing to the old handler, keeps buffering", async () => {
   const initial = [];
-  const { id } = await pty.openSession({ sandboxName: "x", onData: (d) => initial.push(d) });
+  const { id } = await pty.openSession({
+    sandboxName: "x",
+    onData: (d) => initial.push(d),
+  });
   activeFake.emit("before");
   const ok = pty.detachSession(id);
   assert.equal(ok, true);
@@ -308,7 +337,10 @@ test("detachSession: returns false for an unknown session", () => {
 test("detach then re-attach replays history and routes new output to the new handler", async () => {
   const first = [];
   const second = [];
-  const { id } = await pty.openSession({ sandboxName: "x", onData: (d) => first.push(d) });
+  const { id } = await pty.openSession({
+    sandboxName: "x",
+    onData: (d) => first.push(d),
+  });
   activeFake.emit("history");
   pty.detachSession(id);
   pty.attachHandlers(id, { onData: (d) => second.push(d) });
@@ -321,9 +353,13 @@ test("detach then re-attach replays history and routes new output to the new han
 // ── openSession adoption / idempotency ──────────────────────────────────
 
 test("openSession: reuses a live session for the same sandbox instead of spawning twice", async () => {
-  const { id: id1, reused: reused1 } = await pty.openSession({ sandboxName: "x" });
+  const { id: id1, reused: reused1 } = await pty.openSession({
+    sandboxName: "x",
+  });
   assert.equal(reused1, false);
-  const { id: id2, reused: reused2 } = await pty.openSession({ sandboxName: "x" });
+  const { id: id2, reused: reused2 } = await pty.openSession({
+    sandboxName: "x",
+  });
   assert.equal(reused2, true);
   assert.equal(id2, id1);
   assert.equal(pty.__testing.getSessionCount(), 1);
@@ -336,6 +372,110 @@ test("openSession: discards a dead (exited) session and spawns a fresh one", asy
   assert.equal(reused, false); // not adopted — a fresh PTY was spawned
   assert.notEqual(id2, id1);
   assert.equal(pty.__testing.getSessionCount(), 1);
+});
+
+test("openSession: adopts a live PTY only for the SAME agent session", async () => {
+  const { id: id1, reused: r1 } = await pty.openSession({
+    sandboxName: "x",
+    agentSessionId: "ses_a",
+  });
+  assert.equal(r1, false);
+  const { id: id2, reused: r2 } = await pty.openSession({
+    sandboxName: "x",
+    agentSessionId: "ses_a",
+  });
+  assert.equal(r2, true, "same session must re-attach losslessly");
+  assert.equal(id2, id1);
+  assert.equal(pty.__testing.getSessionCount(), 1);
+});
+
+test("openSession: agent sessions are CONCURRENT — a different session gets its own PTY and never disturbs the first", async () => {
+  const { id: id1 } = await pty.openSession({
+    sandboxName: "x",
+    agentSessionId: "ses_a",
+  });
+  const fakeA = activeFake;
+  const { id: id2, reused } = await pty.openSession({
+    sandboxName: "x",
+    agentSessionId: "ses_b",
+  });
+  assert.equal(reused, false, "different session must NOT be adopted");
+  assert.notEqual(id2, id1);
+  // The first session's agent keeps working — no kill, both PTYs live.
+  assert.equal(fakeA.events.kills.length, 0, "ses_a must keep running");
+  assert.equal(pty.__testing.getSessionCount(), 2);
+  const byAgent = Object.fromEntries(
+    pty.listSessions().map((s) => [s.agentSessionId, s.id]),
+  );
+  assert.equal(byAgent.ses_a, id1);
+  assert.equal(byAgent.ses_b, id2);
+  // ses_a's PTY still streams to its own handler after ses_b opened.
+  const late = [];
+  pty.attachHandlers(id1, { onData: (d) => late.push(d) });
+  fakeA.emit("still-alive");
+  assert.deepEqual(late, ["still-alive"]);
+});
+
+test("findSessionBySandboxAndAgent: scopes lookups to the (sandbox, session) pair", async () => {
+  const { id: idA } = await pty.openSession({
+    sandboxName: "x",
+    agentSessionId: "ses_a",
+  });
+  const { id: idB } = await pty.openSession({
+    sandboxName: "x",
+    agentSessionId: "ses_b",
+  });
+  const { id: idNull } = await pty.openSession({ sandboxName: "x" });
+  assert.equal(pty.findSessionBySandboxAndAgent("x", "ses_a")?.id, idA);
+  assert.equal(pty.findSessionBySandboxAndAgent("x", "ses_b")?.id, idB);
+  assert.equal(pty.findSessionBySandboxAndAgent("x", null)?.id, idNull);
+  assert.equal(pty.findSessionBySandboxAndAgent("x", "ses_missing"), null);
+  assert.equal(pty.findSessionBySandboxAndAgent("other", "ses_a"), null);
+});
+
+test("openSession: reconnecting a session whose PTY died replaces only that PTY", async () => {
+  const { id: idA } = await pty.openSession({
+    sandboxName: "x",
+    agentSessionId: "ses_a",
+  });
+  const fakeA = activeFake;
+  await pty.openSession({ sandboxName: "x", agentSessionId: "ses_b" });
+  const fakeB = activeFake;
+  fakeA.exit(0); // ses_a dies; ses_b keeps working
+  const { id: idA2, reused } = await pty.openSession({
+    sandboxName: "x",
+    agentSessionId: "ses_a",
+  });
+  assert.equal(reused, false);
+  assert.notEqual(idA2, idA);
+  assert.equal(fakeB.events.kills.length, 0, "ses_b must keep running");
+  assert.equal(pty.__testing.getSessionCount(), 2);
+});
+
+test("closeSessionsForSandbox: kills every PTY of one sandbox, leaves others", async () => {
+  await pty.openSession({ sandboxName: "x", agentSessionId: "ses_a" });
+  const fakeA = activeFake;
+  await pty.openSession({ sandboxName: "x", agentSessionId: "ses_b" });
+  const fakeB = activeFake;
+  await pty.openSession({ sandboxName: "y", agentSessionId: "ses_c" });
+  const fakeC = activeFake;
+  const closed = pty.closeSessionsForSandbox("x");
+  assert.equal(closed, 2);
+  assert.deepEqual(fakeA.events.kills, ["SIGTERM"]);
+  assert.deepEqual(fakeB.events.kills, ["SIGTERM"]);
+  assert.equal(fakeC.events.kills.length, 0);
+  assert.equal(pty.listSessions().length, 1);
+  assert.equal(pty.listSessions()[0].sandboxName, "y");
+});
+
+test("listSessions: reports agentSessionId (null when unspecified)", async () => {
+  await pty.openSession({ sandboxName: "x", agentSessionId: "ses_z" });
+  await pty.openSession({ sandboxName: "y" });
+  const byName = Object.fromEntries(
+    pty.listSessions().map((s) => [s.sandboxName, s.agentSessionId]),
+  );
+  assert.equal(byName.x, "ses_z");
+  assert.equal(byName.y, null);
 });
 
 // ── attachHandlers ─────────────────────────────────────────────────────
@@ -366,7 +506,10 @@ test("attachHandlers: leaves the existing handler in place when not specified", 
 });
 
 test("attachHandlers: returns false for unknown session", () => {
-  assert.equal(pty.attachHandlers("not-a-real-id", { onData: () => {} }), false);
+  assert.equal(
+    pty.attachHandlers("not-a-real-id", { onData: () => {} }),
+    false,
+  );
 });
 
 // ── closeAllSessions ───────────────────────────────────────────────────

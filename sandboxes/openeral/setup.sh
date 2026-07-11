@@ -1301,6 +1301,20 @@ console.log('setup.sh: openclaw auth config applied');
   # to run its own plugin staging loop on startup, which saturates the Node.js
   # event loop and makes the terminal completely unresponsive to keyboard input.
   #
+  # OpenWork per-session binding: `openclaw tui --session <key>` selects the
+  # conversation thread (create-or-resume). The desktop app's .bashrc launch
+  # block exports OPENWORK_OPENCLAW_SESSION before delegating here; when reached
+  # via a different path, fall back to the marker file the app writes before
+  # each connect. Sanitized to a shell/glob-safe key so it can ride unquoted.
+  _ow_sk="${OPENWORK_OPENCLAW_SESSION:-}"
+  if [ -z "$_ow_sk" ] && [ -f /sandbox/openwork-current-session ]; then
+    _ow_sk="$(cat /sandbox/openwork-current-session 2>/dev/null | tr -d '\r\n ')"
+    # Consume-on-read: each marker binds exactly one launch. Sessions run
+    # concurrently, so a stale marker must never leak into a later connect.
+    rm -f /sandbox/openwork-current-session 2>/dev/null || true
+  fi
+  case "$_ow_sk" in *[!a-zA-Z0-9._-]*) _ow_sk="" ;; esac
+
   # When StringCost is active, pass ANTHROPIC_BASE_URL explicitly into the exec
   # env (mirroring the Claude Code launch below). The export earlier in setup.sh
   # already covers the gateway-inherit case; this line guarantees the TUI also
@@ -1316,7 +1330,7 @@ console.log('setup.sh: openclaw auth config applied');
       GIT_SSL_NO_VERIFY=true \
       npm_config_strict_ssl=false \
       ANTHROPIC_BASE_URL="$STRINGCOST_PROXY_URL" \
-      openclaw tui "$@"
+      openclaw tui ${_ow_sk:+--session $_ow_sk} "$@"
   else
     exec env -u STRINGCOST_API_KEY -u OPENCLAW_PLUGIN_STAGE_DIR \
       HOME=/home/agent \
@@ -1327,7 +1341,7 @@ console.log('setup.sh: openclaw auth config applied');
       NODE_COMPILE_CACHE=/tmp/openclaw-compile-cache \
       GIT_SSL_NO_VERIFY=true \
       npm_config_strict_ssl=false \
-      openclaw tui "$@"
+      openclaw tui ${_ow_sk:+--session $_ow_sk} "$@"
   fi
 fi
 

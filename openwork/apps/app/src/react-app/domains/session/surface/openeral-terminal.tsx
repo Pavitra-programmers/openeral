@@ -8,7 +8,6 @@ import {
   Mic,
   MoreHorizontal,
   Pencil,
-  Power,
   RotateCcw,
   Settings,
   Square,
@@ -46,16 +45,24 @@ async function invoke<T>(command: string, ...args: unknown[]): Promise<T> {
 }
 
 export type OpenEralTerminalProps = {
-  workspaceId: string;
+   workspaceId: string;
   profile: SandboxProfile;
+  /** Optional agent conversation binding. When set, the launched agent is
+   *  bound to this id (Claude Code `--session-id`/`--resume`, OpenClaw
+   *  `--session`) and the PTY registry keys on (sandbox, sessionId) —
+   *  sessions are CONCURRENT, so other conversations' PTYs keep working
+   *  while this one is shown. Null/undefined ⇒ the sandbox's default
+   *  conversation (the sidebar Sandboxes entries use this). */
+  sessionId?: string | null;
   /** Optional callback when the renderer decides to fully tear down the
    *  workspace (clicked "Delete sandbox" + confirmed). Caller is
    *  responsible for navigating away. */
   onSandboxDeleted?: () => void;
-  /** Optional callback to route the user to Settings → Sandbox when the
-   *  bootstrap fails because DATABASE_URL or ANTHROPIC_API_KEY isn't
-   *  configured. Falls back to a window.alert if not provided. */
-  onOpenSettings?: () => void;
+  /** Optional callback to route the user to Settings when the bootstrap
+   *  fails. Credential errors (DATABASE_URL / ANTHROPIC_API_KEY) target the
+   *  Environment page where the sandbox keys are managed; infrastructure
+   *  errors (gateway / installer) target the Sandbox page. */
+  onOpenSettings?: (target: "environment" | "sandbox") => void;
   /** When provided, a "Chat" button appears in the toolbar letting the
    *  user switch back to the regular OpenWork chat UI. The PTY session
    *  ends but the sandbox persists — switching back to Terminal reconnects. */
@@ -195,31 +202,7 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
     })();
   }, []);
 
-  // Explicitly end the running session: kill the PTY (Claude Code relaunches
-  // on the next Reconnect) WITHOUT deleting the sandbox. Distinct from
-  // navigating away, which detaches and keeps the session alive.
-  const endSession = useCallback(async () => {
-    const id = sessionIdRef.current;
-    if (!id) {
-      setPhase("exited");
-      return;
-    }
-    explicitEndRef.current = true;
-    sessionIdRef.current = null;
-    try {
-      await invoke("openeralPtyClose", id);
-    } catch {
-      // Best-effort.
-    }
-    try {
-      termRef.current?.write(
-        "\r\n\x1b[33m[Session ended. Click Reconnect to start a new session.]\x1b[0m\r\n",
-      );
-    } catch {
-      // ignore
-    }
-    setPhase("exited");
-  }, []);
+
 
   // Track whether this component has ever reached "connected" phase so we
   // can show "Launch session" on first open vs "Reconnect" after a drop.
@@ -559,34 +542,46 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
           });
         };
 
-        // 3. Probe for an already-running PTY for this sandbox. If one exists
-        // the renderer simply navigated away earlier (we detached, keeping the
-        // wsl child + scrollback alive), so we re-attach losslessly — no
-        // re-bootstrap, no Claude Code relaunch.
-        let liveSandbox = false;
+        // 3. Probe for an already-running PTY for THIS sandbox AND this
+        // session. If one exists the renderer simply navigated away earlier
+        // (we detached, keeping the wsl child + scrollback alive), so we
+        // re-attach losslessly — no re-bootstrap, no agent relaunch. A live
+        // PTY for a DIFFERENT session in this sandbox is NOT a match: it means
+        // the user switched tasks, so we fall through to a fresh open (which
+        // tears the old PTY down — one agent per sandbox at a time).
+        const agentSessionId = props.sessionId ?? null;
+        let liveSession = false;
         try {
           const sessionsList =
-            await invoke<Array<{ sandboxName: string }>>("openeralPtyList");
-          liveSandbox = sessionsList.some(
-            (s) => s.sandboxName === expectedSandboxName,
+            await invoke<
+              Array<{ sandboxName: string; agentSessionId: string | null }>
+            >("openeralPtyList");
+          liveSession = sessionsList.some(
+            (s) =>
+              s.sandboxName === expectedSandboxName &&
+              (s.agentSessionId ?? null) === agentSessionId,
           );
         } catch {
-          liveSandbox = false;
+          liveSession = false;
         }
         if (cancelled) return;
 
-        if (liveSandbox) {
-          // ── Lossless re-attach (two-phase) ───────────────────────────
+        if (liveSession) {
+          // ── Lossless re-attach (two-phase) ─────────────────────────────
           // Phase 1: get session id + buffered scrollback. The main process
           // does NOT call attachHandlers here, so no pty-data events fly yet.
           const attached = await invoke<{
             id: string;
             buffered: string;
+            cols?: number;
+            rows?: number;
             exited: boolean;
           }>("openeralPtyAttachOrOpen", {
             sandboxName: expectedSandboxName,
             cols: term.cols,
             rows: term.rows,
+            sessionId: agentSessionId,
+            profile: props.profile,
           });
           if (cancelled) return;
           setSandboxName(expectedSandboxName);
@@ -594,8 +589,33 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
           // Set sessionIdRef BEFORE phase 2 so the onPtyData handler accepts
           // events the moment the main process starts streaming.
           sessionIdRef.current = attached.id;
-          // Replay buffered scrollback (historical output).
-          if (attached.buffered) term.write(attached.buffered);
+          // Replay the buffered bytes at the geometry they were RECORDED at.
+          // The buffer is a ConPTY frame: absolute cursor moves plus hard
+          // wraps at the pty's width. Replaying a 120-col frame into a
+          // differently-sized xterm mis-wraps every full-width row and
+          // strands garbled fragments above the agent's next repaint — the
+          // gibberish line pinned over the banner (reproduced byte-for-byte
+          // with a headless-xterm replay harness). So: temporarily match the
+          // recorded size, replay, and only then fit to the real pane — the
+          // resulting resize makes ConPTY re-emit a clean full frame.
+          const recordedCols = attached.cols ?? term.cols;
+          const recordedRows = attached.rows ?? term.rows;
+          if (attached.buffered) {
+            if (term.cols !== recordedCols || term.rows !== recordedRows) {
+              try {
+                term.resize(recordedCols, recordedRows);
+              } catch {
+                // ignore — worst case the replay wraps like before
+              }
+            }
+            // Wait for the replay to PARSE before any further resize: xterm
+            // parses writes asynchronously, and resizing with the replay
+            // still queued would re-wrap it at the new size again.
+            await new Promise<void>((resolve) =>
+              term.write(attached.buffered, resolve),
+            );
+          }
+          if (cancelled) return;
           if (earlyBufferRef.current.length > 0) {
             for (const chunk of earlyBufferRef.current) term.write(chunk);
             earlyBufferRef.current = [];
@@ -606,6 +626,17 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
           }
           if (cancelled) return;
           wireTerminalIO();
+          // Now fit to the actual container. For a live session the resize
+          // reaches the PTY (wireTerminalIO is up) and ConPTY repaints the
+          // whole frame at the new size. A dead session stays at its
+          // recorded geometry so the corpse replay stays legible.
+          if (!attached.exited) {
+            try {
+              fitRef.current?.fit();
+            } catch {
+              // ignore
+            }
+          }
           setHasEverConnected(true);
           setPhase(attached.exited ? "exited" : "connected");
           return;
@@ -632,6 +663,8 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
           sandboxName: sandbox.sandboxName,
           cols: term.cols,
           rows: term.rows,
+          sessionId: agentSessionId,
+          profile: props.profile,
         });
         if (cancelled) {
           await invoke("openeralPtyClose", pty.id).catch(() => {});
@@ -657,7 +690,13 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
     return () => {
       void cleanup();
     };
-  }, [props.workspaceId, props.profile, reconnectKey, userAborted]);
+  }, [
+    props.workspaceId,
+    props.profile,
+    props.sessionId,
+    reconnectKey,
+    userAborted,
+  ]);
 
   const popOut = useCallback(async () => {
     const name = sandboxName ?? lastKnownSandboxNameRef.current;
@@ -718,7 +757,10 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-dls-border bg-dls-surface px-4">
+      {/* Header — styled to match the SessionPage chat header (which is
+          hidden while a sandbox terminal is showing) so the surface reads
+          as ONE consistent header instead of two stacked ones. */}
+      <div className="z-10 flex h-12 shrink-0 items-center justify-between gap-3 border-b border-dls-border bg-dls-surface px-4 md:px-6">
         <div className="flex min-w-0 items-center gap-2.5">
           <span
             className={`inline-block h-2 w-2 shrink-0 rounded-full ${
@@ -755,7 +797,7 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
                 setIsRenaming(true);
               }}
             >
-              <span className="truncate font-mono text-[13px] font-medium text-dls-text">
+              <span className="truncate text-[15px] font-semibold text-dls-text">
                 {displayName || sandboxName || expectedSandboxName}
               </span>
               <Pencil
@@ -764,7 +806,7 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
               />
             </button>
           )}
-          <span className="hidden shrink-0 text-[12px] text-dls-secondary sm:inline">
+          <span className="hidden shrink-0 text-[13px] text-dls-secondary sm:inline">
             {phaseLabel(phase)}
           </span>
         </div>
@@ -854,18 +896,7 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
             </button>
           ) : null}
 
-          {phase === "connected" ? (
-            <button
-              type="button"
-              className={TOOLBAR_BTN}
-              onClick={() => void endSession()}
-              onMouseDown={(e) => e.preventDefault()}
-              title="End this session (stops the agent process). The sandbox and Postgres-backed files persist; Reconnect starts a fresh session. Just navigating away keeps the session running."
-            >
-              <Power size={16} />
-              <span className="hidden lg:inline">End</span>
-            </button>
-          ) : null}
+
 
           {/* Overflow menu for secondary / management actions. onMouseDown
               preventDefault keeps keyboard focus on xterm.js. */}
@@ -908,7 +939,7 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
                     className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-sm text-gray-11 transition-colors hover:bg-gray-2"
                     onClick={() => {
                       setMenuOpen(false);
-                      props.onOpenSettings?.();
+                      props.onOpenSettings?.("sandbox");
                     }}
                   >
                     <Settings size={15} />
@@ -948,10 +979,15 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
             interacting with toolbar buttons — moving the mouse back over
             the terminal instantly restores keystroke capture so Claude
             Code's TUI (theme selectors, menus, etc.) responds correctly.
-            onClick is a fallback for touch/keyboard navigation. */}
+            onClick is a fallback for touch/keyboard navigation.
+
+            The padded wrapper (matching the xterm theme background) keeps
+            the TUI's bottom-anchored input row from sitting flush against
+            the app chrome below the pane. FitAddon measures containerRef
+            (the inner h-full div), so the proposed rows already account
+            for the padding — the last row is never clipped. */}
         <div
-          ref={containerRef}
-          className="absolute inset-0 bg-black"
+          className="absolute inset-0 bg-[#0a0a0a] px-2 pb-2 pt-1"
           onMouseEnter={() => {
             try {
               termRef.current?.focus();
@@ -966,7 +1002,9 @@ export function OpenEralTerminal(props: OpenEralTerminalProps) {
               /* ignore */
             }
           }}
-        />
+        >
+          <div ref={containerRef} className="h-full w-full" />
+        </div>
         {errorMessage && phase === "error" ? (
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-dls-surface p-6">
             <BootstrapErrorCard
@@ -1158,7 +1196,7 @@ type BootstrapErrorCardProps = {
   profile: SandboxProfile;
   onRetry: () => void;
   onDeleteAndReconnect?: () => void;
-  onOpenSettings?: () => void;
+  onOpenSettings?: (target: "environment" | "sandbox") => void;
 };
 
 function BootstrapErrorCard(props: BootstrapErrorCardProps) {
@@ -1201,13 +1239,13 @@ function BootstrapErrorCard(props: BootstrapErrorCardProps) {
   } else if (missingDatabase) {
     title = "DATABASE_URL is not configured.";
     detail =
-      "OpenEral stores workspace state in PostgreSQL. Open Settings → Sandbox → " +
-      "OpenEral configuration and paste your connection string.";
+      "OpenEral stores workspace state in PostgreSQL. Open Settings → Environment → " +
+      "Sandbox credentials and paste your connection string.";
   } else if (missingApiKey) {
     title = "ANTHROPIC_API_KEY is not configured.";
     detail =
       "OpenEral needs an Anthropic API key to auto-provision the Claude provider. " +
-      "Open Settings → Sandbox → OpenEral configuration and paste your Anthropic API key.";
+      "Open Settings → Environment → Sandbox credentials and paste your Anthropic API key.";
   } else if (gatewayUnresponsive) {
     title = "OpenShell gateway is not responding.";
     detail =
@@ -1239,14 +1277,20 @@ function BootstrapErrorCard(props: BootstrapErrorCardProps) {
             Delete &amp; start fresh
           </Button>
         ) : null}
-        {(credentialIssue || openshellUnready) && props.onOpenSettings ? (
-          <Button variant="primary" onClick={props.onOpenSettings}>
+        {credentialIssue && props.onOpenSettings ? (
+          <Button
+            variant="primary"
+            onClick={() => props.onOpenSettings?.("environment")}
+          >
             <Settings size={14} className="mr-1.5" />
-            Open Settings → Sandbox
+            Open Settings → Environment
           </Button>
         ) : null}
-        {gatewayUnresponsive && props.onOpenSettings ? (
-          <Button variant="primary" onClick={props.onOpenSettings}>
+        {(openshellUnready || gatewayUnresponsive) && props.onOpenSettings ? (
+          <Button
+            variant="primary"
+            onClick={() => props.onOpenSettings?.("sandbox")}
+          >
             <Settings size={14} className="mr-1.5" />
             Open Settings → Sandbox
           </Button>

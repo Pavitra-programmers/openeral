@@ -426,7 +426,15 @@ export function CreateWorkspaceModal(props: CreateWorkspaceModalProps) {
   };
 
   const handleLocalSubmit = async () => {
-    props.onConfirm(preset, selectedFolder, sandboxBackend, sandboxProfile);
+    // Workspaces are always the regular chat experience. OpenEral terminals
+    // are created from the sandbox manager instead — sanitize any lingering
+    // OpenEral default (persisted preference from an older build) so a
+    // workspace can never be created with a terminal profile again.
+    const effectiveProfile =
+      sandboxProfile === "openeral-claude" || sandboxProfile === "openeral-openclaw"
+        ? "openwork"
+        : sandboxProfile;
+    props.onConfirm(preset, selectedFolder, sandboxBackend, effectiveProfile);
   };
 
   if (!props.open && !isInline) {
@@ -541,23 +549,9 @@ export function CreateWorkspaceModal(props: CreateWorkspaceModalProps) {
             Defaults to your Settings → Sandbox preference. The backend is fixed for the lifetime of
             this workspace.
           </div>
-          {(sandboxBackend ?? props.defaultSandboxBackend) === "openshell" ? (
-            <div className="mt-3 space-y-1.5">
-              <div className="text-xs font-medium text-gray-11">OpenShell launch profile</div>
-              <select
-                className="w-full rounded-lg border border-dls-border bg-dls-surface px-2 py-1.5 text-sm"
-                value={sandboxProfile ?? props.defaultSandboxProfile ?? "openwork"}
-                onChange={(e) => setSandboxProfile(e.target.value as SandboxProfile)}
-              >
-                <option value="openwork">OpenWork — OpenCode agent (rich chat UI)</option>
-                <option value="openeral-claude">OpenEral — Claude Code (terminal, Postgres)</option>
-                <option value="openeral-openclaw">OpenEral — OpenClaw (terminal, Postgres)</option>
-              </select>
-              <div className="text-[11px] text-gray-9">
-                OpenEral profiles require DATABASE_URL configured in Settings → Sandbox.
-              </div>
-            </div>
-          ) : null}
+          {/* The OpenShell launch-profile picker was removed: workspaces are
+              always the chat experience (profile "openwork"). OpenEral
+              terminal sandboxes are created from the Sandboxes manager. */}
         </div>
       ) : null}
 

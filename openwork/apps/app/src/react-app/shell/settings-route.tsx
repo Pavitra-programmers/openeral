@@ -28,6 +28,7 @@ import { AppearanceView } from "../domains/settings/pages/appearance-view";
 import { DebugView } from "../domains/settings/pages/debug-view";
 import { DenView } from "../domains/settings/pages/den-view";
 import { EnvironmentView } from "../domains/settings/pages/environment-view";
+import { OpenEralCredentialsPanel } from "../domains/settings/pages/openeral-credentials-panel";
 import { ExtensionsView } from "../domains/settings/pages/extensions-view";
 import { McpView } from "../domains/settings/pages/mcp-view";
 import { RecoveryView } from "../domains/settings/pages/recovery-view";
@@ -1282,14 +1283,6 @@ export function SettingsRoute() {
             onResetDistro={() => void openshellState.resetDistro()}
             onRefreshDoctor={() => void openshellState.refreshDoctor()}
             onOpenPolicyFolder={() => void openshellState.openPoliciesFolder()}
-            credentialStatus={openshellState.credentialStatus}
-            onSetCredential={(key, value) => openshellState.setCredential(key, value)}
-            onClearCredential={(key) => openshellState.clearCredential(key)}
-            onTestDatabaseUrl={() => openshellState.testDatabaseUrl()}
-            sessionProgress={openshellState.sessionProgress}
-            onStartOpenEralSession={(workspaceId, profile) =>
-              openshellState.startOpenEralSession(workspaceId, profile)
-            }
             os={platform.os}
           />
         );
@@ -1345,20 +1338,35 @@ export function SettingsRoute() {
           />
         );
       case "environment":
+        // One page for every key the app uses. The two panels are separate
+        // stores on purpose: workspace env vars live in the OpenWork server
+        // and are injected into chat engine runs, while the sandbox
+        // credentials below stay OS-keyring-encrypted and are decrypted only
+        // in the main process when a sandbox is provisioned.
         return (
-          <EnvironmentView
-            client={openworkServerSnapshot.openworkServerClient}
-            isRemoteWorkspace={isRemoteWorkspace}
-            onStatusMessage={setConfigActionStatus}
-            onApplyChanges={isDesktopRuntime() && !isRemoteWorkspace ? handleApplyEnvironmentChanges : undefined}
-            applyBlocked={activeReloadBlockingSessions.length > 0}
-            applyBlockedReason={
-              activeReloadBlockingSessions.length > 0
-                ? t("settings.environment.apply_blocked_active_tasks")
-                : null
-            }
-            runtimeKey={environmentRuntimeKey}
-          />
+          <div className="space-y-6">
+            <EnvironmentView
+              client={openworkServerSnapshot.openworkServerClient}
+              isRemoteWorkspace={isRemoteWorkspace}
+              onStatusMessage={setConfigActionStatus}
+              onApplyChanges={isDesktopRuntime() && !isRemoteWorkspace ? handleApplyEnvironmentChanges : undefined}
+              applyBlocked={activeReloadBlockingSessions.length > 0}
+              applyBlockedReason={
+                activeReloadBlockingSessions.length > 0
+                  ? t("settings.environment.apply_blocked_active_tasks")
+                  : null
+              }
+              runtimeKey={environmentRuntimeKey}
+            />
+            {isDesktopRuntime() ? (
+              <OpenEralCredentialsPanel
+                credentialStatus={openshellState.credentialStatus}
+                actionBusy={openshellState.actionBusy}
+                onSetCredential={(key, value) => openshellState.setCredential(key, value)}
+                onClearCredential={(key) => openshellState.clearCredential(key)}
+              />
+            ) : null}
+          </div>
         );
       case "debug":
         return <DebugView {...debugViewProps} />;
