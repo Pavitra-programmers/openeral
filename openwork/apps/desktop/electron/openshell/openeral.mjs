@@ -712,6 +712,52 @@ export async function writeCurrentSessionMarker(name, value, env) {
 }
 
 /**
+ * Wait (bounded) for the session marker to be consumed by a connecting
+ * shell. The .bashrc launch block deletes the marker right after reading it,
+ * so "file gone" means the previous fresh connect has bound its session and
+ * it is safe to write the next marker. Agent sessions are concurrent —
+ * back-to-back fresh opens against one sandbox would otherwise race on the
+ * single marker file and could bind a PTY to the wrong conversation.
+ * Best-effort: on timeout (e.g. the previous connect died before its shell
+ * ran) the caller proceeds anyway.
+ *
+ * @param {string} name  Sandbox name
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {number} [timeoutMs]
+ * @returns {Promise<boolean>} true when the marker is confirmed consumed
+ */
+export async function waitCurrentSessionMarkerConsumed(
+  name,
+  env,
+  timeoutMs = 6_000,
+) {
+  const script = `if [ -f ${SESSION_MARKER_PATH} ]; then echo present; else echo absent; fi`;
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const r = await wslRun(
+        [
+          "-d",
+          DISTRO_NAME,
+          "--",
+          "bash",
+          "-c",
+          sandboxRunScriptCmd(name, script),
+        ],
+        { timeout: 15_000, env },
+      );
+      if (!/present/.test(r.stdout ?? "")) return true;
+    } catch {
+      // Probe failed (sandbox briefly unreachable) — treat as consumed so a
+      // transient exec error never blocks opening a session.
+      return true;
+    }
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+}
+
+/**
  * Ensure the distro has `scp`/`ssh` (openssh-client) before any sandbox op.
  *
  * `openshell sandbox create --upload`, `exec`, `connect`, and `download` all
@@ -893,13 +939,30 @@ function buildLaunchBlock(profile, proxyBase, apiKey = null) {
   );
   if (isClaude) {
     block.push(
+      // Native-install check hygiene: configureAgentLaunch symlinks the real
+      // binary into ~/.local/bin; this export puts that dir on PATH so the
+      // check is fully satisfied. Without BOTH, Claude Code prints a warning
+      // or an `echo 'export PATH=...' >> ~/.bashrc` hint before the banner,
+      // and ConPTY's resize reflow smears that stray line into gibberish
+      // pinned above the welcome box (Ink never repaints rows it doesn't
+      // own). With trust pre-seeded and this satisfied, the banner is the
+      // FIRST thing painted — nothing above it to garble.
+      '  export PATH="$HOME/.local/bin:$PATH"',
       // Bind Claude Code to the OpenWork session the desktop app selected.
       // writeCurrentSessionMarker drops a derived UUID here before each fresh
       // connect; an empty/absent marker (CLI flow, or no session selected)
       // falls through to a plain `claude`. The UUID charset is validated
       // defensively before it is interpolated into the exec.
       `  _ow_sid=""`,
-      `  [ -f ${SESSION_MARKER_PATH} ] && _ow_sid="$(cat ${SESSION_MARKER_PATH} 2>/dev/null | tr -d '\\r\\n ')"`,
+      // Consume-on-read: sessions are concurrent, so several connects can be
+      // in flight against this sandbox. Each marker is meant for exactly ONE
+      // launch — delete it the moment it is read so a later connect can
+      // never re-bind to a stale value (the app writes a fresh marker before
+      // every fresh connect and waits for the previous one to be consumed).
+      `  if [ -f ${SESSION_MARKER_PATH} ]; then`,
+      `    _ow_sid="$(cat ${SESSION_MARKER_PATH} 2>/dev/null | tr -d '\\r\\n ')"`,
+      `    rm -f ${SESSION_MARKER_PATH} 2>/dev/null || true`,
+      `  fi`,
       `  case "$_ow_sid" in *[!0-9a-fA-F-]*) _ow_sid="" ;; esac`,
       `  if [ -n "$_ow_sid" ]; then`,
       // --session-id refuses an id whose transcript already exists ("already
@@ -952,7 +1015,12 @@ function buildLaunchBlock(profile, proxyBase, apiKey = null) {
       // OPENWORK_OPENCLAW_SESSION var) honor it. Empty marker keeps OpenClaw's
       // default "main" session.
       `  _ow_sk=""`,
-      `  [ -f ${SESSION_MARKER_PATH} ] && _ow_sk="$(cat ${SESSION_MARKER_PATH} 2>/dev/null | tr -d '\\r\\n ')"`,
+      // Consume-on-read — same one-marker-per-launch contract as the claude
+      // branch (sessions are concurrent; see that comment).
+      `  if [ -f ${SESSION_MARKER_PATH} ]; then`,
+      `    _ow_sk="$(cat ${SESSION_MARKER_PATH} 2>/dev/null | tr -d '\\r\\n ')"`,
+      `    rm -f ${SESSION_MARKER_PATH} 2>/dev/null || true`,
+      `  fi`,
       `  case "$_ow_sk" in *[!a-zA-Z0-9._-]*) _ow_sk="" ;; esac`,
       "  if curl -fsS http://127.0.0.1:18789/readyz >/dev/null 2>&1; then",
       '    _saved_key="${ANTHROPIC_API_KEY:-}"',

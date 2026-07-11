@@ -183,8 +183,11 @@ export function AppRoot() {
                 </DevProfiler>
               }
             />
-            {/* Default + fallback: land on the session view. Users open
-                settings deliberately via the sidebar or command palette. */}
+            {/* Default + fallback: land on the chat session view, exactly
+                like upstream OpenWork. OpenEral terminals no longer mount
+                from workspaces (they are sidebar sandbox entries selected
+                explicitly), so restoring the last chat session can never
+                auto-connect a sandbox at startup. */}
             <Route path="/" element={<Navigate to="/session" replace />} />
             <Route path="*" element={<Navigate to="/session" replace />} />
           </Routes>

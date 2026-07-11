@@ -193,11 +193,13 @@ function clampDimension(value, fallback) {
  *   are needed so Claude Code can auto-configure its provider on first run
  *   inside the sandbox without prompting the user interactively.
  * @param {string | null} [opts.agentSessionId]  OpenWork session id whose
- *   agent conversation this PTY runs. Only ONE agent runs per sandbox at a
- *   time: opening a session that differs from the one currently live in this
- *   sandbox tears the old PTY down first (the agent persists its transcript,
- *   so returning to it later resumes losslessly). Passing the SAME id adopts
- *   the live PTY (lossless re-attach after navigation).
+ *   agent conversation this PTY runs. Agent sessions are CONCURRENT by
+ *   design: each (sandbox, agentSessionId) pair owns at most one PTY, and a
+ *   sandbox may host several live PTYs at once — one per session — so
+ *   switching tasks in the sidebar never interrupts another session's
+ *   in-flight work. Passing an id whose PTY is still live adopts it
+ *   (lossless re-attach after navigation); other sessions' PTYs are never
+ *   touched.
  * @param {DataHandler} [opts.onData]   Receives PTY stdout/stderr bytes
  * @param {ExitHandler} [opts.onExit]   Called when the wsl child exits
  * @returns {Promise<{ id: string, sandboxName: string, reused: boolean }>}
@@ -211,17 +213,19 @@ export async function openSession(opts) {
   const extraEnv = opts.extraEnv ?? null;
   const agentSessionId = opts.agentSessionId ?? null;
 
-  // Adoption / idempotency: if a still-live session already owns this
-  // sandbox, re-attach to it instead of spawning a second wsl child — BUT
-  // only when it runs the SAME agent session. This makes openSession safe to
-  // call from any path (legacy openeralPtyOpen, a racy double-mount) without
-  // ever leaking a duplicate PTY against the same sandbox.
-  const existing = findSessionBySandbox(opts.sandboxName);
+  // Adoption / idempotency: if a still-live PTY already runs THIS agent
+  // session, re-attach to it instead of spawning a second wsl child. This
+  // makes openSession safe to call from any path (legacy openeralPtyOpen, a
+  // racy double-mount) without ever leaking a duplicate PTY for one session.
+  // PTYs owned by OTHER sessions in the same sandbox are left untouched —
+  // their agents keep working in the background.
+  const existing = findSessionBySandboxAndAgent(
+    opts.sandboxName,
+    agentSessionId,
+  );
   if (existing) {
-    const sameAgentSession =
-      (existing.agentSessionId ?? null) === agentSessionId;
-    if (!existing.exitInfo && sameAgentSession) {
-      // Still live + same session → adopt it; never spawn a second wsl child.
+    if (!existing.exitInfo) {
+      // Still live → adopt it; never spawn a second wsl child for one session.
       attachHandlers(existing.id, { onData: opts.onData, onExit: opts.onExit });
       resizeSession(existing.id, cols, rows);
       return {
@@ -230,10 +234,9 @@ export async function openSession(opts) {
         reused: true,
       };
     }
-    // Either the prior session exited (lingering for replay) OR the user
-    // switched to a DIFFERENT session in this sandbox. Both mean we spawn a
-    // fresh PTY, so forget the old one first (killing it if still live —
-    // one-agent-at-a-time). This guarantees at most one session per sandbox.
+    // This session's prior PTY exited (lingering for replay) — a fresh
+    // openSession means the user is reconnecting it, so forget the corpse
+    // and spawn anew. Guarantees at most one PTY per (sandbox, session).
     closeSession(existing.id);
   }
 
@@ -368,6 +371,50 @@ export function findSessionBySandbox(sandboxName) {
     if (session.sandboxName === sandboxName) return session;
   }
   return null;
+}
+
+/**
+ * Find the PTY owned by a specific (sandbox, agentSessionId) pair. Agent
+ * sessions run concurrently — one live PTY per pair — so lookups must always
+ * match on BOTH keys; matching on the sandbox alone would grab some other
+ * session's PTY. `agentSessionId` null matches the legacy default-
+ * conversation PTY (no specific session requested).
+ *
+ * @param {string} sandboxName
+ * @param {string | null} agentSessionId
+ * @returns {Session | null}
+ */
+export function findSessionBySandboxAndAgent(sandboxName, agentSessionId) {
+  if (!sandboxName) return null;
+  const wanted = agentSessionId ?? null;
+  for (const session of sessions.values()) {
+    if (
+      session.sandboxName === sandboxName &&
+      (session.agentSessionId ?? null) === wanted
+    ) {
+      return session;
+    }
+  }
+  return null;
+}
+
+/**
+ * Close every PTY (live or lingering-dead) that targets a sandbox. Used when
+ * the sandbox itself is deleted — with concurrent per-session PTYs there can
+ * be several, and each would otherwise die slowly on a broken tunnel.
+ *
+ * @param {string} sandboxName
+ * @returns {number} how many sessions were closed
+ */
+export function closeSessionsForSandbox(sandboxName) {
+  if (!sandboxName) return 0;
+  let closed = 0;
+  for (const session of Array.from(sessions.values())) {
+    if (session.sandboxName === sandboxName) {
+      if (closeSession(session.id)) closed++;
+    }
+  }
+  return closed;
 }
 
 /**

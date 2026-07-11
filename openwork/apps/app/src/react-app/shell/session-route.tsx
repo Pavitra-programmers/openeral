@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import type {
   AgentPartInput,
   ConfigProvidersResponse,
@@ -96,6 +96,7 @@ import { useReloadCoordinator } from "./reload-coordinator";
 import { getReactQueryClient } from "../infra/query-client";
 import { useStatusToasts } from "../domains/shell-feedback/status-toasts";
 import { OpenEralTerminal } from "../domains/session/surface/openeral-terminal";
+import { SandboxSessionList } from "../domains/session/sidebar/sandbox-session-list";
 
 type RouteWorkspace = OpenworkWorkspaceInfo & {
   displayNameResolved: string;
@@ -333,6 +334,19 @@ async function draftToParts(draft: ComposerDraft, workspaceRoot: string) {
   return parts;
 }
 
+// Workspaces are always the regular chat experience. Legacy workspaces that
+// were created with an OpenEral profile are hidden from this route entirely:
+// mounting them auto-connected (and re-created) their derived sandbox, which
+// is exactly the surprise this decoupling removes. Their terminals live in
+// the sidebar Sandboxes section / the /sandboxes manager instead, and the
+// Settings workspace list still shows them for cleanup or removal.
+function isChatWorkspace(workspace: RouteWorkspace): boolean {
+  return (
+    workspace.sandboxProfile !== "openeral-claude" &&
+    workspace.sandboxProfile !== "openeral-openclaw"
+  );
+}
+
 export function SessionRoute() {
   const navigate = useNavigate();
   const platform = usePlatform();
@@ -506,7 +520,9 @@ export function SessionRoute() {
       if (isDesktopRuntime()) {
         try {
           desktopList = await workspaceBootstrap();
-          desktopWorkspaces = (desktopList.workspaces ?? []).map(mapDesktopWorkspace);
+          desktopWorkspaces = (desktopList.workspaces ?? [])
+            .map(mapDesktopWorkspace)
+            .filter(isChatWorkspace);
         } catch (error) {
           const message = describeRouteError(error);
           console.error("[session-route] workspaceBootstrap failed", error);
@@ -528,7 +544,19 @@ export function SessionRoute() {
         setWorkspaces(desktopWorkspaces);
         setSessionsByWorkspaceId({});
         setErrorsByWorkspaceId({});
-        setSelectedWorkspaceId(resolveWorkspaceListSelectedId(desktopList) || desktopWorkspaces[0]?.id || "");
+        {
+          // The desktop-selected id may point at a hidden OpenEral-profile
+          // workspace - only honor it when it survived the chat filter.
+          const desktopSelectedId = resolveWorkspaceListSelectedId(desktopList);
+          setSelectedWorkspaceId(
+            (desktopSelectedId &&
+            desktopWorkspaces.some((w) => w.id === desktopSelectedId)
+              ? desktopSelectedId
+              : "") ||
+              desktopWorkspaces[0]?.id ||
+              "",
+          );
+        }
         return;
       }
 
@@ -538,7 +566,7 @@ export function SessionRoute() {
         hostToken: resolvedHostToken || undefined,
       });
       const list = await openworkClient.listWorkspaces();
-      const nextWorkspaces = mergeRouteWorkspaces(list.items, desktopWorkspaces);
+      const nextWorkspaces = mergeRouteWorkspaces(list.items, desktopWorkspaces).filter(isChatWorkspace);
 
       // Preserve any sessions we already have cached so switching routes
       // doesn't erase the sidebar while we refetch.
@@ -550,12 +578,18 @@ export function SessionRoute() {
       // the user's last-active workspace from localStorage, the desktop's
       // activeId, the server's activeId, then the first known workspace.
       const persistedActiveId = readActiveWorkspaceId();
+      // Every candidate must exist in the FILTERED workspace list - the
+      // persisted/desktop/server active id can point at a hidden
+      // OpenEral-profile workspace, which must never become the selection.
+      const selectionCandidates = [
+        persistedActiveId,
+        resolveWorkspaceListSelectedId(desktopList),
+        list.activeId?.trim(),
+      ];
       let nextWorkspaceId =
-        (persistedActiveId && nextWorkspaces.some((w) => w.id === persistedActiveId)
-          ? persistedActiveId
-          : "") ||
-        resolveWorkspaceListSelectedId(desktopList) ||
-        list.activeId?.trim() ||
+        selectionCandidates.find(
+          (id) => id && nextWorkspaces.some((w) => w.id === id),
+        ) ||
         nextWorkspaces[0]?.id ||
         "";
       if (selectedSessionId) {
@@ -609,9 +643,18 @@ export function SessionRoute() {
       setRouteError(message);
       if (desktopWorkspaces.length > 0) {
         setWorkspaces(desktopWorkspaces);
-        setSelectedWorkspaceId((current) =>
-          current || resolveWorkspaceListSelectedId(desktopList) || desktopWorkspaces[0]?.id || "",
-        );
+        setSelectedWorkspaceId((current) => {
+          const desktopSelectedId = resolveWorkspaceListSelectedId(desktopList);
+          return (
+            current ||
+            (desktopSelectedId &&
+            desktopWorkspaces.some((w) => w.id === desktopSelectedId)
+              ? desktopSelectedId
+              : "") ||
+            desktopWorkspaces[0]?.id ||
+            ""
+          );
+        });
       }
     } finally {
       setLoading(false);
@@ -844,10 +887,42 @@ export function SessionRoute() {
     workspaces,
   ]);
 
+  // OpenEral sandbox sessions are first-class sidebar entries, fully
+  // decoupled from workspaces (workspaces are always the regular chat UI).
+  // Selecting one swaps the session surface for that sandbox's terminal.
+  // The /sandboxes manager hands off a freshly created/opened sandbox via
+  // location.state so it lands here already selected. Selection is NOT
+  // persisted: opening the app always starts on the chat interface.
+  const [selectedSandbox, setSelectedSandbox] = React.useState<{
+    name: string;
+    profile: SandboxProfile;
+  } | null>(null);
+  const location = useLocation();
+  useEffect(() => {
+    const handoff = (
+      location.state as {
+        openeralSandbox?: { name?: string; profile?: string };
+      } | null
+    )?.openeralSandbox;
+    if (!handoff?.name) return;
+    setSelectedSandbox({
+      name: handoff.name,
+      profile:
+        handoff.profile === "openeral-openclaw"
+          ? "openeral-openclaw"
+          : "openeral-claude",
+    });
+    // Consume the handoff so refresh / back never re-selects the sandbox.
+    navigate(location.pathname, { replace: true, state: null });
+  }, [location.pathname, location.state, navigate]);
+
   // Once workspaces + sessions are loaded and the URL has no sessionId, try to
   // restore the last session the user opened in the active workspace.
   useEffect(() => {
     if (loading) return;
+    // A sandbox terminal is showing (e.g. right after the manager handoff)
+    // - restoring a chat session would remount the route and drop it.
+    if (selectedSandbox) return;
     if (selectedSessionId) return;
     if (!selectedWorkspaceId) return;
     const remembered = readLastSessionFor(selectedWorkspaceId);
@@ -855,7 +930,7 @@ export function SessionRoute() {
     const sessions = sessionsByWorkspaceId[selectedWorkspaceId] ?? [];
     if (!sessions.some((session: any) => session?.id === remembered)) return;
     navigate(`/session/${remembered}`, { replace: true });
-  }, [loading, navigate, selectedSessionId, selectedWorkspaceId, sessionsByWorkspaceId]);
+  }, [loading, navigate, selectedSandbox, selectedSessionId, selectedWorkspaceId, sessionsByWorkspaceId]);
 
   // Redirect to /welcome when no workspaces exist and the user hasn't
   // completed onboarding. This fires after the initial route refresh so
@@ -885,24 +960,6 @@ export function SessionRoute() {
     [selectedWorkspaceId, workspaces],
   );
 
-  // When the selected workspace's sandboxProfile is an OpenEral variant,
-  // the chat-UI session surface is replaced wholesale with an xterm.js
-  // pane connected to the agent's TTY. Phase O5 wires this; previous
-  // phases keep the chat UI for every other backend/profile combo.
-  const openeralProfile: "openeral-claude" | "openeral-openclaw" | null =
-    selectedWorkspace?.sandboxProfile === "openeral-claude" ||
-    selectedWorkspace?.sandboxProfile === "openeral-openclaw"
-      ? selectedWorkspace.sandboxProfile
-      : null;
-
-  // Allows switching between the OpenEral terminal and the regular chat UI.
-  // Resets to "terminal" whenever the selected workspace changes.
-  const [openeralView, setOpeneralView] = React.useState<"terminal" | "chat">("terminal");
-  const prevWorkspaceIdRef = React.useRef(selectedWorkspaceId);
-  if (prevWorkspaceIdRef.current !== selectedWorkspaceId) {
-    prevWorkspaceIdRef.current = selectedWorkspaceId;
-    if (openeralView !== "terminal") setOpeneralView("terminal");
-  }
 
   useEffect(() => {
     if (!isDesktopRuntime()) return;
@@ -1709,22 +1766,34 @@ export function SessionRoute() {
       selectedSessionId={selectedSessionId}
       selectedWorkspaceId={selectedWorkspaceId}
       sessionSurfaceOverride={
-        openeralProfile && selectedWorkspaceId && openeralView === "terminal" ? (
-          // key on the session id so switching tasks in the sidebar fully
-          // remounts the terminal: the previous PTY is torn down (one agent
-          // conversation per sandbox at a time) and the selected session
-          // conversation is attached or launched fresh. Without this the
-          // surface stayed keyed to the workspace and every session showed
-          // the same PTY.
+        selectedSandbox ? (
+          // Keyed on the sandbox name so switching sidebar entries swaps
+          // terminals cleanly. Every sandbox owns its own PTY in the main
+          // process (sessions are concurrent): switching away detaches and
+          // the agent keeps working; returning re-attaches losslessly.
           <OpenEralTerminal
-            key={`${selectedWorkspaceId}:${selectedSessionId ?? "__no_session__"}`}
-            workspaceId={selectedWorkspaceId}
-            profile={openeralProfile}
-            sessionId={selectedSessionId}
-            onOpenSettings={() => navigate("/settings/sandbox")}
-            onSwitchToChat={() => setOpeneralView("chat")}
+            key={selectedSandbox.name}
+            workspaceId={selectedSandbox.name.replace(/^openeral-/, "")}
+            profile={selectedSandbox.profile}
+            onOpenSettings={(target) => navigate(`/settings/${target}`)}
+            onSandboxDeleted={() => setSelectedSandbox(null)}
           />
         ) : undefined
+      }
+      sandboxSidebar={
+        <SandboxSessionList
+          selectedSandboxName={selectedSandbox?.name ?? null}
+          onSelectSandbox={(name, profile) =>
+            setSelectedSandbox({ name, profile })
+          }
+          onOpenManager={() => navigate("/sandboxes")}
+          onOpenSettings={() => navigate("/settings/sandbox")}
+          onSandboxDeleted={(name) => {
+            setSelectedSandbox((current) =>
+              current?.name === name ? null : current,
+            );
+          }}
+        />
       }
       selectedWorkspaceDisplay={selectedWorkspace ? {
         id: selectedWorkspace.id,
@@ -1754,34 +1823,12 @@ export function SessionRoute() {
         );
       }}
       onOpenSettings={() => navigate("/settings/general")}
-      headerActions={
-        <div className="flex items-center gap-1.5">
-          <button
-            type="button"
-            className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[13px] font-medium text-gray-10 transition-colors hover:bg-gray-2/70 hover:text-dls-text"
-            onClick={() => navigate("/sandboxes")}
-            title="Manage OpenEral sandboxes"
-          >
-            <span className="inline-block h-2 w-2 rounded-sm bg-dls-accent" />
-            Sandboxes
-          </button>
-          {openeralProfile && openeralView === "chat" ? (
-            <button
-              type="button"
-              className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[13px] font-medium text-gray-10 transition-colors hover:bg-gray-2/70 hover:text-dls-text"
-              onClick={() => setOpeneralView("terminal")}
-              title="Switch back to the Claude Code terminal"
-            >
-              <span className="inline-block h-2 w-2 rounded-full bg-green-9" />
-              Terminal
-            </button>
-          ) : null}
-        </div>
-      }
       sidebar={{
         workspaceSessionGroups,
         selectedWorkspaceId,
-        selectedSessionId,
+        // While a sandbox terminal is showing, no chat session is "active"
+        // even though the URL still carries the last session id.
+        selectedSessionId: selectedSandbox ? null : selectedSessionId,
         developerMode: false,
         sessionStatusById: {},
         connectingWorkspaceId: null,
@@ -1790,6 +1837,8 @@ export function SessionRoute() {
         sidebarHydratedFromCache: Object.values(sessionsByWorkspaceId).some((list) => list.length > 0),
         startupPhase: effectiveLoading ? "nativeInit" : "ready",
         onSelectWorkspace: async (workspaceId) => {
+          // Picking a workspace always returns to the chat experience.
+          setSelectedSandbox(null);
           if (workspaceId === selectedWorkspaceId) return true;
           setSelectedWorkspaceId(workspaceId);
           writeActiveWorkspaceId(workspaceId || null);
@@ -1817,6 +1866,7 @@ export function SessionRoute() {
           return true;
         },
         onOpenSession: (workspaceId, sessionId) => {
+          setSelectedSandbox(null);
           setSelectedWorkspaceId(workspaceId);
           writeActiveWorkspaceId(workspaceId || null);
           writeLastSessionFor(workspaceId, sessionId);
@@ -1824,6 +1874,7 @@ export function SessionRoute() {
         },
         onPrefetchSession: () => {},
         onCreateTaskInWorkspace: async (workspaceId) => {
+          setSelectedSandbox(null);
           void handleCreateTaskInWorkspace(workspaceId);
           return;
           const workspace = workspaces.find((item) => item.id === workspaceId)!;

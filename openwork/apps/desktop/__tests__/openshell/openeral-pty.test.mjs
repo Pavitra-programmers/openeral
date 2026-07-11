@@ -389,7 +389,7 @@ test("openSession: adopts a live PTY only for the SAME agent session", async () 
   assert.equal(pty.__testing.getSessionCount(), 1);
 });
 
-test("openSession: switching to a different session kills the old PTY (one at a time)", async () => {
+test("openSession: agent sessions are CONCURRENT — a different session gets its own PTY and never disturbs the first", async () => {
   const { id: id1 } = await pty.openSession({
     sandboxName: "x",
     agentSessionId: "ses_a",
@@ -401,12 +401,71 @@ test("openSession: switching to a different session kills the old PTY (one at a 
   });
   assert.equal(reused, false, "different session must NOT be adopted");
   assert.notEqual(id2, id1);
-  // The previous session's wsl child is killed, leaving exactly one PTY.
+  // The first session's agent keeps working — no kill, both PTYs live.
+  assert.equal(fakeA.events.kills.length, 0, "ses_a must keep running");
+  assert.equal(pty.__testing.getSessionCount(), 2);
+  const byAgent = Object.fromEntries(
+    pty.listSessions().map((s) => [s.agentSessionId, s.id]),
+  );
+  assert.equal(byAgent.ses_a, id1);
+  assert.equal(byAgent.ses_b, id2);
+  // ses_a's PTY still streams to its own handler after ses_b opened.
+  const late = [];
+  pty.attachHandlers(id1, { onData: (d) => late.push(d) });
+  fakeA.emit("still-alive");
+  assert.deepEqual(late, ["still-alive"]);
+});
+
+test("findSessionBySandboxAndAgent: scopes lookups to the (sandbox, session) pair", async () => {
+  const { id: idA } = await pty.openSession({
+    sandboxName: "x",
+    agentSessionId: "ses_a",
+  });
+  const { id: idB } = await pty.openSession({
+    sandboxName: "x",
+    agentSessionId: "ses_b",
+  });
+  const { id: idNull } = await pty.openSession({ sandboxName: "x" });
+  assert.equal(pty.findSessionBySandboxAndAgent("x", "ses_a")?.id, idA);
+  assert.equal(pty.findSessionBySandboxAndAgent("x", "ses_b")?.id, idB);
+  assert.equal(pty.findSessionBySandboxAndAgent("x", null)?.id, idNull);
+  assert.equal(pty.findSessionBySandboxAndAgent("x", "ses_missing"), null);
+  assert.equal(pty.findSessionBySandboxAndAgent("other", "ses_a"), null);
+});
+
+test("openSession: reconnecting a session whose PTY died replaces only that PTY", async () => {
+  const { id: idA } = await pty.openSession({
+    sandboxName: "x",
+    agentSessionId: "ses_a",
+  });
+  const fakeA = activeFake;
+  await pty.openSession({ sandboxName: "x", agentSessionId: "ses_b" });
+  const fakeB = activeFake;
+  fakeA.exit(0); // ses_a dies; ses_b keeps working
+  const { id: idA2, reused } = await pty.openSession({
+    sandboxName: "x",
+    agentSessionId: "ses_a",
+  });
+  assert.equal(reused, false);
+  assert.notEqual(idA2, idA);
+  assert.equal(fakeB.events.kills.length, 0, "ses_b must keep running");
+  assert.equal(pty.__testing.getSessionCount(), 2);
+});
+
+test("closeSessionsForSandbox: kills every PTY of one sandbox, leaves others", async () => {
+  await pty.openSession({ sandboxName: "x", agentSessionId: "ses_a" });
+  const fakeA = activeFake;
+  await pty.openSession({ sandboxName: "x", agentSessionId: "ses_b" });
+  const fakeB = activeFake;
+  await pty.openSession({ sandboxName: "y", agentSessionId: "ses_c" });
+  const fakeC = activeFake;
+  const closed = pty.closeSessionsForSandbox("x");
+  assert.equal(closed, 2);
   assert.deepEqual(fakeA.events.kills, ["SIGTERM"]);
-  assert.equal(pty.__testing.getSessionCount(), 1);
-  const listed = pty.listSessions();
-  assert.equal(listed.length, 1);
-  assert.equal(listed[0].agentSessionId, "ses_b");
+  assert.deepEqual(fakeB.events.kills, ["SIGTERM"]);
+  assert.equal(fakeC.events.kills.length, 0);
+  assert.equal(pty.listSessions().length, 1);
+  assert.equal(pty.listSessions()[0].sandboxName, "y");
 });
 
 test("listSessions: reports agentSessionId (null when unspecified)", async () => {

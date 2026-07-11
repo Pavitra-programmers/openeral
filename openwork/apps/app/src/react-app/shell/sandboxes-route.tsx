@@ -6,7 +6,11 @@ import { Boxes, ExternalLink, Loader2, Plus, RefreshCcw, Settings, Trash2, X } f
 import type { SandboxProfile } from "../../app/lib/desktop";
 import { Button } from "../design-system/button";
 import { ConfirmModal } from "../design-system/modals/confirm-modal";
-import { OpenEralTerminal } from "../domains/session/surface/openeral-terminal";
+import {
+  readSandboxProfile,
+  writeSandboxProfile,
+} from "../domains/session/sidebar/sandbox-prefs";
+import { useBootState } from "./boot-state";
 
 type ElectronBridge = NonNullable<Window["__OPENWORK_ELECTRON__"]>;
 
@@ -62,6 +66,10 @@ function phaseBadge(phase?: string): { cls: string; dot: string; label: string }
 
 export function SandboxesRoute() {
   const navigate = useNavigate();
+  // This route is the app's default landing view, so it must dismiss the
+  // boot overlay itself — the overlay only fades once BOTH the desktop boot
+  // and the first route's data load are ready (see useBootOverlayVisible).
+  const { markRouteReady: markBootRouteReady } = useBootState();
 
   const [rows, setRows] = useState<SandboxRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -70,7 +78,6 @@ export function SandboxesRoute() {
 
   const [profile, setProfile] = useState<SandboxProfile>("openeral-claude");
   const [newName, setNewName] = useState("");
-  const [active, setActive] = useState<{ workspaceId: string; profile: SandboxProfile } | null>(null);
 
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [busyName, setBusyName] = useState<string | null>(null);
@@ -89,8 +96,11 @@ export function SandboxesRoute() {
       setListError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
+      // First data load complete (success or error) — let the boot overlay
+      // dismiss. Idempotent, so repeated refreshes are harmless.
+      markBootRouteReady();
     }
-  }, []);
+  }, [markBootRouteReady]);
 
   useEffect(() => {
     void refresh();
@@ -102,15 +112,32 @@ export function SandboxesRoute() {
     () => Boolean(previewName) && rows.some((r) => r.name === previewName),
     [previewName, rows],
   );
-  const canCreate = Boolean(previewName) && !nameTaken && dbReady;
+  // Fail-open on the credential gate: while the probe is still running (or
+  // failed — cold gateway), `creds` is null and blocking Create here made the
+  // form feel dead with zero feedback. Only block when we POSITIVELY know
+  // DATABASE_URL is unset; a truly missing credential is surfaced with a
+  // proper error card + "Open settings" by the terminal bootstrap itself.
+  const dbBlocked = creds !== null && !dbReady;
+  const canCreate = Boolean(previewName) && !nameTaken && !dbBlocked;
 
+  // Open/create hand off to the session route: the sandbox becomes the
+  // selected entry in the sidebar Sandboxes section and its terminal mounts
+  // as the session surface (creating the sandbox on first connect). The
+  // profile is persisted so reopening an existing sandbox launches the same
+  // agent it was created with.
   const openSandbox = (name: string, p: SandboxProfile) => {
-    setActive({ workspaceId: name.replace(/^openeral-/, ""), profile: p });
+    writeSandboxProfile(name, p);
+    navigate("/session", {
+      state: { openeralSandbox: { name, profile: p } },
+    });
   };
 
   const handleCreate = () => {
     if (!canCreate) return;
-    setActive({ workspaceId: newName.trim(), profile });
+    writeSandboxProfile(previewName, profile);
+    navigate("/session", {
+      state: { openeralSandbox: { name: previewName, profile } },
+    });
   };
 
   const confirmDelete = async () => {
@@ -128,29 +155,7 @@ export function SandboxesRoute() {
     }
   };
 
-  // ── Active terminal view (framed like the rest of the app) ───────────────
-  if (active) {
-    const back = () => {
-      setActive(null);
-      void refresh();
-    };
-    return (
-      <div className="h-[100dvh] min-h-screen w-full overflow-hidden bg-[var(--dls-app-bg)] p-3 text-gray-12 md:p-4">
-        <main className="flex h-full w-full flex-col overflow-hidden rounded-[24px] border border-dls-border bg-dls-surface shadow-[var(--dls-shell-shadow)]">
-          <OpenEralTerminal
-            key={`${active.workspaceId}:${active.profile}`}
-            workspaceId={active.workspaceId}
-            profile={active.profile}
-            onSwitchToChat={back}
-            onSandboxDeleted={back}
-            onOpenSettings={() => navigate("/settings/sandbox")}
-          />
-        </main>
-      </div>
-    );
-  }
-
-  // ── Manager view ────────────────────────────────────────────────────────
+  // ── Manager view ────────────────────────────────────────────────────────────
   return (
     <div className="h-[100dvh] min-h-screen w-full overflow-hidden bg-[var(--dls-app-bg)] p-3 text-gray-12 md:p-4">
       <main className="flex h-full w-full flex-col overflow-hidden rounded-[24px] border border-dls-border bg-dls-surface shadow-[var(--dls-shell-shadow)]">
@@ -202,7 +207,7 @@ export function SandboxesRoute() {
                 <Button
                   variant="outline"
                   className={`${pillButtonClass} border-amber-7/50 text-amber-12 hover:bg-amber-2/40`}
-                  onClick={() => navigate("/settings/sandbox")}
+                  onClick={() => navigate("/settings/environment")}
                 >
                   Configure
                 </Button>
@@ -226,6 +231,7 @@ export function SandboxesRoute() {
                   <input
                     className="h-9 w-full rounded-lg border border-dls-border bg-dls-surface px-3 text-sm text-dls-text placeholder:text-dls-secondary shadow-sm focus:outline-none focus:ring-2 focus:ring-[rgba(var(--dls-accent-rgb),0.2)]"
                     placeholder="my-project"
+                    autoFocus
                     value={newName}
                     onChange={(e) => setNewName(e.target.value)}
                     onKeyDown={(e) => {
@@ -315,7 +321,9 @@ export function SandboxesRoute() {
                         <Button
                           variant="ghost"
                           className="h-8 w-8 !rounded-full !p-0"
-                          onClick={() => openSandbox(row.name, profile)}
+                          onClick={() =>
+                            openSandbox(row.name, readSandboxProfile(row.name))
+                          }
                           disabled={busy}
                           title={`Open ${row.name}`}
                           aria-label={`Open ${row.name}`}

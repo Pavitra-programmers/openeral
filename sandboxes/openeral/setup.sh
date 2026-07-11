@@ -1309,6 +1309,9 @@ console.log('setup.sh: openclaw auth config applied');
   _ow_sk="${OPENWORK_OPENCLAW_SESSION:-}"
   if [ -z "$_ow_sk" ] && [ -f /sandbox/openwork-current-session ]; then
     _ow_sk="$(cat /sandbox/openwork-current-session 2>/dev/null | tr -d '\r\n ')"
+    # Consume-on-read: each marker binds exactly one launch. Sessions run
+    # concurrently, so a stale marker must never leak into a later connect.
+    rm -f /sandbox/openwork-current-session 2>/dev/null || true
   fi
   case "$_ow_sk" in *[!a-zA-Z0-9._-]*) _ow_sk="" ;; esac
 

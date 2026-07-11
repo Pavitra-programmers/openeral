@@ -570,6 +570,15 @@ test("buildLaunchBlock (claude + proxy): exports proxy vars and unsets the real 
     "claude must not start openclaw gateway",
   );
   assert.match(block, /exec claude/, "claude must exec claude");
+  // ~/.local/bin must be on PATH (with the binary symlinked there by
+  // configureAgentLaunch) or Claude Code prints a native-install warning /
+  // PATH hint before the banner — the stray line ConPTY reflow smears into
+  // gibberish pinned above the welcome box.
+  assert.match(
+    block,
+    /export PATH="\$HOME\/\.local\/bin:\$PATH"/,
+    "claude must put ~/.local/bin on PATH before exec",
+  );
   // Per-session binding: read the marker written before each connect and pick
   // --resume (transcript exists) vs --session-id (new) so the flag is always
   // valid, with a bare `exec claude` fallback when no session is selected.
@@ -577,6 +586,14 @@ test("buildLaunchBlock (claude + proxy): exports proxy vars and unsets the real 
     block,
     /\/sandbox\/openwork-current-session/,
     "claude must read the per-connect session marker",
+  );
+  // Sessions are concurrent: each marker binds exactly one launch, so the
+  // block must consume (delete) it on read — a stale marker leaking into a
+  // later connect would bind that PTY to the wrong conversation.
+  assert.match(
+    block,
+    /rm -f \/sandbox\/openwork-current-session/,
+    "claude must consume the marker on read",
   );
   assert.match(
     block,
@@ -745,6 +762,11 @@ test("buildLaunchBlock (openclaw + proxy): delegates to setup.sh with StringCost
     block,
     /\/sandbox\/openwork-current-session/,
     "openclaw must read the per-connect session marker",
+  );
+  assert.match(
+    block,
+    /rm -f \/sandbox\/openwork-current-session/,
+    "openclaw must consume the marker on read (concurrent sessions)",
   );
   // Cold path must forward the key to setup.sh's own final exec.
   assert.match(

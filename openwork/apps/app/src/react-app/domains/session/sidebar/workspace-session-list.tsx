@@ -1,5 +1,5 @@
 /** @jsxImportSource react */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight, Loader2, MoreHorizontal, Plus } from "lucide-react";
 
 import { getDisplaySessionTitle } from "../../../../app/lib/session-title";
@@ -40,6 +40,9 @@ type Props = {
   onEditWorkspaceConnection: (workspaceId: string) => void;
   onForgetWorkspace: (workspaceId: string) => void;
   onOpenCreateWorkspace: () => void;
+  /** Optional section rendered between the scrollable workspace list and
+   *  the pinned "Add workspace" footer — the OpenEral sandbox list. */
+  beforeFooter?: ReactNode;
 };
 
 const MAX_SESSIONS_PREVIEW = 6;
@@ -759,7 +762,13 @@ export function WorkspaceSessionList(props: Props) {
         </div>
       </div>
 
-      <div className="relative mt-auto border-t border-dls-border/80 bg-dls-sidebar px-3 pt-3 pb-4">
+      {/* Rendered without a wrapper so the section can size itself like a
+          VS Code panel: collapsed → a header pinned above the footer
+          (mt-auto), expanded → flex-1, splitting the sidebar height with
+          the workspace list above (each scrolls internally). */}
+      {props.beforeFooter}
+
+      <div className={`relative border-t border-dls-border/80 bg-dls-sidebar px-3 pt-3 pb-4 ${props.beforeFooter ? "" : "mt-auto"}`}>
         <button
           type="button"
           className="w-full flex items-center justify-center gap-2 rounded-[18px] border border-dls-border bg-dls-surface px-3.5 py-2.5 text-[12px] font-medium text-gray-11 shadow-[var(--dls-card-shadow)] transition-colors hover:bg-gray-2"

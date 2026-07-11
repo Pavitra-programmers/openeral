@@ -583,11 +583,7 @@ async function buildOpenEralPtyEnv(cols, rows) {
  * @param {string} profile  "openeral-claude" | "openeral-openclaw" | ""
  * @param {string | null} agentSessionId  OpenWork session id, or null
  */
-async function writeOpenEralSessionMarker(
-  sandboxName,
-  profile,
-  agentSessionId,
-) {
+async function writeOpenEralSessionMarker(sandboxName, profile, agentSessionId) {
   try {
     const value = openeral.resolveAgentSessionValue(profile, agentSessionId);
     await openeral.writeCurrentSessionMarker(sandboxName, value);
@@ -597,6 +593,74 @@ async function writeOpenEralSessionMarker(
       error?.message || String(error),
     );
   }
+}
+
+// Agent sessions are CONCURRENT: a sandbox hosts one live PTY per OpenWork
+// session, and switching tasks detaches (agent keeps working) rather than
+// killing. The launch handshake, however, shares one marker file per sandbox
+// (`openshell sandbox connect` cannot carry env/args into the container), so
+// FRESH connects against the same sandbox must be serialized: write marker →
+// spawn → (the connecting shell consumes the marker) → only then write the
+// next marker. openeralMarkerPending remembers that a spawned connect has
+// not been confirmed to consume its marker yet.
+const openeralFreshOpenChains = new Map();
+const openeralMarkerPending = new Set();
+
+/**
+ * Adopt-or-open an OpenEral PTY for a (sandbox, session) pair.
+ * Live same-session PTY → adopt immediately (no marker write, no queueing).
+ * Otherwise queue a fresh open on the sandbox's serial chain.
+ *
+ * @param {{ sandboxName: string, cols?: number, rows?: number,
+ *           extraEnv?: Record<string, string>, agentSessionId: string | null,
+ *           profile: string }} opts
+ */
+function openOpenEralPtySession(opts) {
+  const { sandboxName, cols, rows, extraEnv, agentSessionId, profile } = opts;
+  const live = openeralPty.findSessionBySandboxAndAgent(
+    sandboxName,
+    agentSessionId,
+  );
+  if (live && !live.exitInfo) {
+    // openSession adopts the live PTY — nothing launches, so the shared
+    // marker must not be touched (it may belong to another in-flight open).
+    return openeralPty.openSession({
+      sandboxName,
+      cols,
+      rows,
+      extraEnv,
+      agentSessionId,
+    });
+  }
+  const prev = openeralFreshOpenChains.get(sandboxName) ?? Promise.resolve();
+  const next = prev
+    .catch(() => {})
+    .then(async () => {
+      if (openeralMarkerPending.has(sandboxName)) {
+        // Bounded wait — the previous connect's shell deletes the marker on
+        // read. On timeout (connect died pre-shell) we proceed and overwrite.
+        await openeral.waitCurrentSessionMarkerConsumed(sandboxName);
+        openeralMarkerPending.delete(sandboxName);
+      }
+      await writeOpenEralSessionMarker(sandboxName, profile, agentSessionId);
+      if (agentSessionId) openeralMarkerPending.add(sandboxName);
+      return openeralPty.openSession({
+        sandboxName,
+        cols,
+        rows,
+        extraEnv,
+        agentSessionId,
+      });
+    });
+  openeralFreshOpenChains.set(sandboxName, next);
+  void next
+    .catch(() => {})
+    .finally(() => {
+      if (openeralFreshOpenChains.get(sandboxName) === next) {
+        openeralFreshOpenChains.delete(sandboxName);
+      }
+    });
+  return next;
 }
 
 function normalizePlatform(value) {
@@ -2273,6 +2337,13 @@ async function handleDesktopInvoke(event, command, ...args) {
       // confirmation in Phase O8 docs; here we just execute.
       const name = String(args[0] ?? "").trim();
       if (!name) throw new Error("sandboxName is required");
+      // Sessions are concurrent — several PTYs may target this sandbox
+      // (the renderer only closes its own). Kill them all up front so no
+      // orphaned wsl child lingers on a tunnel to a deleted container, and
+      // drop any queued fresh-open bookkeeping for the name.
+      openeralPty.closeSessionsForSandbox(name);
+      openeralFreshOpenChains.delete(name);
+      openeralMarkerPending.delete(name);
       const r = await openeral.deleteOpenEralSandbox(name);
       if (r.exitCode !== 0) {
         throw new Error(
@@ -2321,17 +2392,16 @@ async function handleDesktopInvoke(event, command, ...args) {
       // see or respond to (especially when the terminal is still sizing up).
       const extraEnv = await buildOpenEralPtyEnv(cols, rows);
 
-      // Bind the auto-launched agent to the selected session by dropping the
-      // per-connect marker the .bashrc launch block reads. Best-effort — a
-      // write failure just means the agent launches its default conversation.
-      await writeOpenEralSessionMarker(sandboxName, profile, agentSessionId);
-
-      const result = await openeralPty.openSession({
+      // Adopt-or-open via the per-sandbox serial chain: fresh connects bind
+      // the agent to the selected session through the shared marker file,
+      // and concurrent sessions in one sandbox must consume it one at a time.
+      const result = await openOpenEralPtySession({
         sandboxName,
         cols,
         rows,
         extraEnv,
         agentSessionId,
+        profile,
       });
       openeralPty.attachHandlers(result.id, {
         onData: (data) => emitOpenEralPtyData(result.id, data),
@@ -2355,34 +2425,47 @@ async function handleDesktopInvoke(event, command, ...args) {
       const agentSessionId = String(input.sessionId ?? "").trim() || null;
       const profile = String(input.profile ?? "").trim();
 
-      const existing = openeralPty.findSessionBySandbox(sandboxName);
-      // Only re-attach losslessly when the live PTY runs the SAME session. A
-      // different session means the user switched tasks — fall through to a
-      // fresh open, which tears the old PTY down (one agent per sandbox).
-      if (existing && (existing.agentSessionId ?? null) === agentSessionId) {
+      // Sessions are concurrent — look up by (sandbox, session) so another
+      // session's live PTY is never grabbed (or disturbed). A different
+      // session's work keeps running in the background; this session gets
+      // its own PTY via the fresh-open path below when it has none.
+      const existing = openeralPty.findSessionBySandboxAndAgent(
+        sandboxName,
+        agentSessionId,
+      );
+      if (existing) {
         // Do NOT call attachHandlers here — the renderer hasn't set
         // sessionIdRef yet, so any pty-data events emitted now would be
         // dropped. The renderer will call openeralPtyAttach (phase 2) after
         // setting sessionIdRef and replaying buffered scrollback.
-        if (Number.isFinite(cols) && Number.isFinite(rows)) {
-          openeralPty.resizeSession(existing.id, cols, rows);
-        }
+        //
+        // Do NOT resize here either: the buffered bytes are a ConPTY frame
+        // recorded at the CURRENT pty size, positioned via absolute moves +
+        // hard wraps at that width. The renderer must replay them into an
+        // xterm of exactly this geometry (cols/rows below) — replaying a
+        // 120-col frame into, say, 118 cols mis-wraps every full-width row
+        // and strands mangled fragments that the agent never repaints
+        // (verified with a headless-xterm replay harness). After phase 2 the
+        // renderer fits to the real pane size; that resize is what makes
+        // ConPTY re-emit a full clean frame at the new geometry.
         return {
           id: existing.id,
           buffered: openeralPty.getBuffer(existing.id),
+          cols: existing.size.cols,
+          rows: existing.size.rows,
           reused: true,
           exited: Boolean(existing.exitInfo),
         };
       }
 
       const extraEnv = await buildOpenEralPtyEnv(cols, rows);
-      await writeOpenEralSessionMarker(sandboxName, profile, agentSessionId);
-      const result = await openeralPty.openSession({
+      const result = await openOpenEralPtySession({
         sandboxName,
         cols,
         rows,
         extraEnv,
         agentSessionId,
+        profile,
       });
       openeralPty.attachHandlers(result.id, {
         onData: (data) => emitOpenEralPtyData(result.id, data),
