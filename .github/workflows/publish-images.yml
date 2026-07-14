@@ -4,10 +4,10 @@ on:
   push:
     branches: [just-bash]
     paths:
-      - 'openeral-js/**'
+      - 'openrind-shell-js/**'
       - '.claude/skills/**'
       - '.dockerignore'
-      - 'sandboxes/openeral/**'
+      - 'sandboxes/openrind-shell/**'
       - '.github/workflows/publish-images.yml'
   workflow_dispatch:
 
@@ -17,7 +17,9 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_REPO_BASE: ghcr.io/${{ github.repository_owner }}/openeral
+  # Canonical image base — hardcoded so the published name never changes
+  # when the workflow runs in a fork or after a repo transfer/rename.
+  IMAGE_BASE: ghcr.io/openrind/openrind-shell
 
 jobs:
   test:
@@ -27,13 +29,13 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_USER: openeral
-          POSTGRES_PASSWORD: openeral
+          POSTGRES_USER: openrind-shell
+          POSTGRES_PASSWORD: openrind-shell
           POSTGRES_DB: testdb
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U openeral"
+          --health-cmd "pg_isready -U openrind-shell"
           --health-interval 2s
           --health-timeout 5s
           --health-retries 10
@@ -50,36 +52,36 @@ jobs:
         run: npm install -g pnpm
 
       - name: Install dependencies
-        working-directory: openeral-js
+        working-directory: openrind-shell-js
         run: pnpm install
 
       - name: Typecheck
-        working-directory: openeral-js
+        working-directory: openrind-shell-js
         run: pnpm typecheck
 
       - name: Lint
-        working-directory: openeral-js
+        working-directory: openrind-shell-js
         run: pnpm lint
 
       - name: Unit tests
-        working-directory: openeral-js
+        working-directory: openrind-shell-js
         run: pnpm test
 
       - name: Build
-        working-directory: openeral-js
+        working-directory: openrind-shell-js
         run: pnpm build
 
       - name: Integration tests
-        working-directory: openeral-js
+        working-directory: openrind-shell-js
         env:
-          DATABASE_URL: postgresql://openeral:openeral@localhost:5432/testdb
+          DATABASE_URL: postgresql://openrind-shell:openrind-shell@localhost:5432/testdb
         run: node test-integration.mjs
 
       - name: Validate setup.sh syntax (claude and openclaw paths)
         run: |
-          bash -n sandboxes/openeral/setup.sh
-          grep -q 'OPENERAL_AGENT' sandboxes/openeral/setup.sh
-          grep -q 'openclaw' sandboxes/openeral/setup.sh
+          bash -n sandboxes/openrind-shell/setup.sh
+          grep -q 'OPENRIND_SHELL_AGENT' sandboxes/openrind-shell/setup.sh
+          grep -q 'openclaw' sandboxes/openrind-shell/setup.sh
 
   build-and-push:
     needs: [test]
@@ -90,10 +92,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set lowercase image base
-        id: img
-        run: echo "base=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/openeral" >> $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -109,10 +107,10 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: sandboxes/openeral/Dockerfile
+          file: sandboxes/openrind-shell/Dockerfile
           push: true
           tags: |
-            ${{ steps.img.outputs.base }}/sandbox:just-bash
-            ${{ steps.img.outputs.base }}/sandbox:just-bash-sha-${{ github.sha }}
+            ${{ env.IMAGE_BASE }}/sandbox:just-bash
+            ${{ env.IMAGE_BASE }}/sandbox:just-bash-sha-${{ github.sha }}
           cache-from: type=gha,scope=sandbox-just-bash
           cache-to: type=gha,mode=max,scope=sandbox-just-bash
