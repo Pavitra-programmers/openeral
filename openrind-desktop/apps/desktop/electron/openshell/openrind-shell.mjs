@@ -165,6 +165,37 @@ export async function pullImage(imageRef, options = {}) {
 }
 
 /**
+ * True when the image is already present in the distro's local Docker image
+ * store. `docker image inspect` is a purely local metadata lookup — no
+ * registry round-trip — so it returns in ~100 ms and lets
+ * createOpenrindShellSandbox skip the `docker pull` on every create after the
+ * first. Skipping matters because `docker pull` on an already-cached tag still
+ * contacts the registry (DNS + TLS + manifest fetch): a few seconds on a good
+ * network, and up to the multi-minute pull timeout on locked-down corporate
+ * networks where ghcr.io is slow or blocked. Best-effort: any failure returns
+ * false so we fall back to pulling.
+ *
+ * @param {string} imageRef
+ * @param {{ timeoutMs?: number }} [options]
+ * @returns {Promise<boolean>}
+ */
+export async function imageExistsLocally(imageRef, options = {}) {
+  const { timeoutMs = 15_000 } = options;
+  const r = await wslRun(
+    [
+      "-d",
+      DISTRO_NAME,
+      "--",
+      "bash",
+      "-c",
+      `docker --config ${DOCKER_CONFIG_DIR} image inspect ${shellQuote(imageRef)} >/dev/null 2>&1`,
+    ],
+    { timeout: timeoutMs },
+  ).catch(() => ({ exitCode: 1 }));
+  return r.exitCode === 0;
+}
+
+/**
  * Parse the raw openshell sandbox list output into a normalised array.
  * Returns null only when the raw text cannot yield any sandbox list at all.
  *
@@ -380,6 +411,8 @@ export async function listSandboxes() {
  *
  * @param {string} name
  * @param {{ timeoutMs?: number, pollMs?: number, onProgress?: Function }} [opts]
+ *   pollMs is the MAX (steady-state) interval between polls; the loop starts
+ *   polling faster and backs off toward pollMs.
  */
 async function waitForSandboxReady(name, opts = {}) {
   const { timeoutMs = 120_000, pollMs = 4_000, onProgress } = opts;
@@ -392,6 +425,18 @@ async function waitForSandboxReady(name, opts = {}) {
   // Track whether we've seen the sandbox in a "Deleting" phase so we can
   // detect when it disappears and signal the caller to create a fresh one.
   let sawDeleting = false;
+
+  // Poll fast at first, then back off. A freshly-created sandbox usually
+  // reports Ready within a second or two of `create` returning, so starting at
+  // a short interval (instead of a flat 4 s) shaves several seconds off the
+  // common path; the ×1.5 growth up to pollMs keeps a long provisioning wait
+  // from hammering the gateway.
+  const maxPollMs = pollMs;
+  let currentPollMs = Math.min(600, maxPollMs);
+  const waitNextPoll = async () => {
+    await new Promise((resolve) => setTimeout(resolve, currentPollMs));
+    currentPollMs = Math.min(Math.round(currentPollMs * 1.5), maxPollMs);
+  };
 
   while (Date.now() < deadline) {
     attempt += 1;
@@ -421,7 +466,7 @@ async function waitForSandboxReady(name, opts = {}) {
         phase: "waiting",
         message: `Gateway unresponsive (attempt ${attempt}), retrying…`,
       });
-      await new Promise((resolve) => setTimeout(resolve, pollMs));
+      await waitNextPoll();
       continue;
     }
     if (r.exitCode === 0) {
@@ -443,7 +488,7 @@ async function waitForSandboxReady(name, opts = {}) {
             phase: "waiting",
             message: `Sandbox is deleting; waiting for deletion to complete…`,
           });
-          await new Promise((resolve) => setTimeout(resolve, pollMs));
+          await waitNextPoll();
           continue;
         }
         // Detect sandboxes stuck in Provisioning. If the sandbox has been
@@ -482,7 +527,7 @@ async function waitForSandboxReady(name, opts = {}) {
       // the list (still provisioning). Keep polling.
     }
     if (Date.now() >= deadline) break;
-    await new Promise((resolve) => setTimeout(resolve, pollMs));
+    await waitNextPoll();
   }
   // Timed out without confirming Ready — if we last saw a provisioning phase
   // treat it as stuck rather than proceeding optimistically (the exec would
@@ -1007,78 +1052,14 @@ function buildLaunchBlock(profile, proxyBase, apiKey = null) {
       "  exec openrind-shell",
     );
   } else {
-    block.push(
-      // Reconnect fast path: the gateway from a previous session survives PTY
-      // disconnects (setup.sh starts it with setsid). When it is still healthy,
-      // exec the TUI directly instead of re-running setup.sh. This mirrors
-      // setup.sh's own final exec:
-      //   - ~/.openrind-shell/env.sh carries ANTHROPIC_BASE_URL when OpenrindGateway is
-      //     active (written by setup.sh for reconnect sessions). It also
-      //     contains `unset ANTHROPIC_API_KEY` — meant for Claude Code,
-      //     which auths via the proxy URL token. OpenClaw needs the literal
-      //     key (setup.sh: OpenShell placeholders are unusable by openclaw's
-      //     Node gateway) and setup.sh's own final exec keeps it in the env,
-      //     so save the key loaded above and re-export it after sourcing;
-      //   - -u OPENCLAW_PLUGIN_STAGE_DIR: must NOT reach the TUI process —
-      //     forwarding it causes openclaw to run its own concurrent staging
-      //     loop that saturates the event loop and freezes the terminal;
-      //   - -u ANTHROPIC_AUTH_TOKEN: env.sh exports a dummy token for Claude
-      //     Code's benefit; the canonical openclaw env never has it;
-      //   - SHELL=/usr/local/bin/openrind-shell-bash: agent tool shell invocations
-      //     go through openrind-shell's PostgreSQL-backed workspace layer.
-      // `openclaw tui`, NOT bare `openclaw`: as of 2026.4.x the bare command
-      // opens the "crestodian" setup concierge instead of the coding agent
-      // (setup.sh's final exec uses `openclaw tui` for the same reason).
-      // 600 s handshake timeout matches setup.sh — the TUI blocks its own
-      // event loop during plugin loading (a single pass can exceed 2 min in
-      // the sandbox), and a shorter timeout aborts the connect and re-runs
-      // the whole plugin pass in a 100%-CPU retry loop that ends with the
-      // TUI stranded in a permanent "disconnected" state.
-      // NODE_NO_WARNINGS: hide the UNDICI-EHPA experimental warnings that
-      // otherwise print above the TUI banner in the user's terminal.
-      //
-      // OpenClaw session binding: `openclaw tui --session <key>` selects the
-      // conversation thread (create-or-resume). writeCurrentSessionMarker
-      // drops the sanitized key here before each fresh connect; both the fast
-      // path (direct exec) and the cold path (setup.sh, via the exported
-      // OPENRIND_DESKTOP_OPENCLAW_SESSION var) honor it. Empty marker keeps OpenClaw's
-      // default "main" session.
-      `  _ow_sk=""`,
-      // Consume-on-read — same one-marker-per-launch contract as the claude
-      // branch (sessions are concurrent; see that comment).
-      `  if [ -f ${SESSION_MARKER_PATH} ]; then`,
-      `    _ow_sk="$(cat ${SESSION_MARKER_PATH} 2>/dev/null | tr -d '\\r\\n ')"`,
-      `    rm -f ${SESSION_MARKER_PATH} 2>/dev/null || true`,
-      `  fi`,
-      `  case "$_ow_sk" in *[!a-zA-Z0-9._-]*) _ow_sk="" ;; esac`,
-      "  if curl -fsS http://127.0.0.1:18789/readyz >/dev/null 2>&1; then",
-      '    _saved_key="${ANTHROPIC_API_KEY:-}"',
-      "    [ -f /home/agent/.openrind-shell/env.sh ] && . /home/agent/.openrind-shell/env.sh",
-      '    [ -n "$_saved_key" ] && export ANTHROPIC_API_KEY="$_saved_key"',
-      "    exec env -u OPENRIND_GATEWAY_API_KEY -u OPENCLAW_PLUGIN_STAGE_DIR -u ANTHROPIC_AUTH_TOKEN \\",
-      "      HOME=/home/agent \\",
-      "      SHELL=/usr/local/bin/openrind-shell-bash \\",
-      "      OPENCLAW_NO_RESPAWN=1 \\",
-      "      NODE_COMPILE_CACHE=/tmp/openclaw-compile-cache \\",
-      "      GIT_SSL_NO_VERIFY=true npm_config_strict_ssl=false \\",
-      "      OPENCLAW_HANDSHAKE_TIMEOUT_MS=600000 \\",
-      "      NODE_NO_WARNINGS=1 \\",
-      "      openclaw tui ${_ow_sk:+--session $_ow_sk}",
-      "  fi",
-      // Cold start (or crashed gateway): clear any zombie process that may
-      // still hold port 18789 — setup.sh starts its gateway without a pkill,
-      // because in the canonical fresh-container flow none can exist — then
-      // hand over to the image's tested entry point. setup.sh does everything
-      // this block used to hand-roll: DB migrations, workspace seed,
-      // openrind-shell-bash daemon, OpenrindGateway presign resolution, `openclaw
-      // onboard` (schema-correct auth profile + foreground plugin staging),
-      // gateway start + readiness wait, TUI plugin pre-stage, doctor --fix,
-      // and finally execs the OpenClaw TUI.
-      "  pkill -f 'openclaw gateway' 2>/dev/null || true",
-      // Hand the session key to setup.sh's own final `openclaw tui` exec.
-      '  export OPENRIND_DESKTOP_OPENCLAW_SESSION="$_ow_sk"',
-      "  exec openrind-shell",
-    );
+    // OpenClaw is now onboarded and launched INTERACTIVELY by the user (see the
+    // openclaw branch of setup.sh): there is no pre-warmed gateway to fast-path
+    // into and no hardcoded session binding. Always run the image bootstrap so
+    // persistence (DB migrations + workspace restore + the openrind-shell-bash
+    // sync daemon) comes up first; setup.sh then hands the user an interactive
+    // shell to run "openclaw onboard" / "openclaw" themselves, exactly like a
+    // normal local install.
+    block.push("  exec openrind-shell");
   }
   block.push("fi", "# <<< openrind-desktop launch <<<");
   return block.join("\n");
@@ -1301,6 +1282,32 @@ async function prewarmAgentRuntime({ name, profile, env, onProgress }) {
 }
 
 /**
+ * Prewarm the agent runtime only when it actually saves the user time.
+ *
+ * OpenClaw NEEDS it: its embedded gateway must be warm before connect so the
+ * .bashrc fast-path can exec the TUI directly instead of doing a ~3-minute cold
+ * plugin-staging pass in the terminal. Claude does NOT: it has no long-lived
+ * gateway, and its connect-time .bashrc runs the full setup.sh (DB migrations +
+ * workspace restore + sync daemon) exactly once regardless. Prewarming Claude
+ * would run that same slow bootstrap a SECOND time on the loading screen —
+ * paying the remote-PostgreSQL connect (HTTP-CONNECT tunnel + TLS + auth) twice
+ * per session. A bad DATABASE_URL still surfaces at connect (setup.sh keeps
+ * stderr on the terminal), so nothing is hidden by skipping it.
+ *
+ * @param {{ name: string, profile: string, env: NodeJS.ProcessEnv,
+ *           onProgress?: Function }} args
+ */
+async function prewarmIfNeeded({ name, profile, env, onProgress }) {
+  // Agent-specific behavior in Node.js is selected via the OPENRIND_SHELL_AGENT
+  // gate (the same canonical value setup.sh reads), never via `profile`.
+  // Callers normalize profile -> OPENRIND_SHELL_AGENT on the env they pass
+  // (see createOpenrindShellSandbox); here we only read that gate.
+  const agent = (env ?? process.env).OPENRIND_SHELL_AGENT;
+  if (agent !== "openclaw") return;
+  await prewarmAgentRuntime({ name, profile, env, onProgress });
+}
+
+/**
  * Read an already-uploaded OpenrindGateway presign URL back out of a sandbox, so a
  * reconnect reuses it instead of minting a fresh presign every launch. Returns
  * null when none is present.
@@ -1516,11 +1523,16 @@ export async function createOpenrindShellSandbox(opts) {
   // leaving sandboxes flapping (see ensureWslKeepalive in wsl.mjs).
   ensureWslKeepalive();
 
-  // openshell shells out to scp/ssh for create --upload AND for exec/connect.
-  // Make sure they exist before any sandbox op so we never dead-end at the
-  // opaque "No such file or directory (os error 2)" — this also covers the
-  // reconnect path below, which connects/execs into the existing sandbox.
-  await ensureOpensshClient(onProgress);
+  // openshell shells out to scp/ssh for create --upload AND for exec/connect,
+  // so they must exist before any sandbox op or we dead-end at the opaque
+  // "No such file or directory (os error 2)". The ssh check and the existence
+  // probe are independent, so run them concurrently to save a wsl.exe
+  // round-trip — Promise.all still awaits BOTH before we branch, so ssh is
+  // guaranteed present before the create-upload / connect / exec below.
+  const [, sandboxAlreadyExists] = await Promise.all([
+    ensureOpensshClient(onProgress),
+    sandboxExists(name),
+  ]);
 
   // Short-circuit if the sandbox already exists (workspace reopen).
   // Wait for it to reach Ready state before returning so the subsequent
@@ -1531,7 +1543,7 @@ export async function createOpenrindShellSandbox(opts) {
   // the user never has to manually click "Delete & start fresh" just to
   // recover from a broken container.  /home/agent data is in PostgreSQL
   // and survives the container deletion.
-  if (await sandboxExists(name)) {
+  if (sandboxAlreadyExists) {
     onProgress?.({
       phase: "exists",
       message: `Sandbox ${name} already exists; checking state…`,
@@ -1581,10 +1593,21 @@ export async function createOpenrindShellSandbox(opts) {
         env: process.env,
         onProgress,
       });
-      await prewarmAgentRuntime({
+      // Only OpenClaw needs prewarming here (see prewarmIfNeeded). For Claude
+      // this is a no-op, so reopening a Claude workspace no longer re-runs the
+      // full setup.sh / remote-DB bootstrap on the loading screen.
+      // prewarmIfNeeded selects the agent from OPENRIND_SHELL_AGENT (not
+      // `profile`); the full WSLENV-forwarding env isn't built on this reopen
+      // path, so surface the canonical gate on the env we hand it (same
+      // profile -> agent normalization as the fresh-create path below).
+      const reopenEnv =
+        profile === "openrind-shell-openclaw"
+          ? { ...process.env, OPENRIND_SHELL_AGENT: "openclaw" }
+          : process.env;
+      await prewarmIfNeeded({
         name,
         profile,
-        env: process.env,
+        env: reopenEnv,
         onProgress,
       });
       return { name, profile, imageRef, existed: true };
@@ -1609,12 +1632,29 @@ export async function createOpenrindShellSandbox(opts) {
   // Image pull (~1.5 GB on first run for :just-bash). Skipped for local
   // images (OPENRIND_DESKTOP_SANDBOX_SKIP_PULL=1) so a `docker build`-produced tag
   // isn't clobbered by a registry fetch that would fail or overwrite it.
+  //
+  // When the image is ALREADY cached in the distro's Docker store we skip the
+  // pull entirely: `docker pull` on a cached tag still does a registry
+  // round-trip (DNS + TLS + manifest fetch) that costs seconds on a good
+  // network and can stall for minutes on locked-down corporate networks — and
+  // it is paid on EVERY new workspace, not just the first. A local
+  // `docker image inspect` (no network) makes the common repeat-create case
+  // effectively free. Set OPENRIND_DESKTOP_SANDBOX_FORCE_PULL=1 to always pull
+  // (e.g. to refresh a moved :just-bash tag).
   if (!skipImagePull) {
-    onProgress?.({ phase: "pull", message: `Pulling ${imageRef}...` });
-    await pullImage(imageRef, {
-      onProgress: (text) =>
-        onProgress?.({ phase: "pull", message: text.trimEnd() }),
-    });
+    const forcePull = process.env.OPENRIND_DESKTOP_SANDBOX_FORCE_PULL === "1";
+    if (!forcePull && (await imageExistsLocally(imageRef))) {
+      onProgress?.({
+        phase: "pull",
+        message: `Image ${imageRef} already present; skipping pull.`,
+      });
+    } else {
+      onProgress?.({ phase: "pull", message: `Pulling ${imageRef}...` });
+      await pullImage(imageRef, {
+        onProgress: (text) =>
+          onProgress?.({ phase: "pull", message: text.trimEnd() }),
+      });
+    }
   }
 
   // Forward credentials into the Linux side of WSL via WSLENV.
@@ -1743,7 +1783,7 @@ export async function createOpenrindShellSandbox(opts) {
               onProgress?.({ phase: evt.phase, message: evt.message }),
           });
           await finalizeSandboxLaunch({ name, profile, env, onProgress });
-          await prewarmAgentRuntime({ name, profile, env, onProgress });
+          await prewarmIfNeeded({ name, profile, env, onProgress });
           return { name, profile, imageRef, existed: false };
         } catch (waitErr) {
           const waitMsg = waitErr?.message ?? "";
@@ -1820,7 +1860,7 @@ export async function createOpenrindShellSandbox(opts) {
   // essential — `openshell sandbox exec` refuses while the sandbox is still
   // Provisioning, which silently skipped these steps when they ran pre-Ready.
   await finalizeSandboxLaunch({ name, profile, env, onProgress });
-  await prewarmAgentRuntime({ name, profile, env, onProgress });
+  await prewarmIfNeeded({ name, profile, env, onProgress });
   onProgress?.({ phase: "ready", message: `Sandbox ${name} ready.` });
   return { name, profile, imageRef, existed: false };
 }
@@ -1919,5 +1959,6 @@ export const __testing = {
   buildLaunchBlock,
   configureAgentLaunch,
   prewarmAgentRuntime,
+  prewarmIfNeeded,
   isGatewayWarmingError,
 };

@@ -110,6 +110,34 @@ test("imageForProfile: throws on unknown profile", () => {
   );
 });
 
+// ── imageExistsLocally ─────────────────────────────────────────────────
+// Guards the create-path optimization that skips `docker pull` when the image
+// is already cached in the distro (a `docker image inspect`, no registry
+// round-trip). See createOpenrindShellSandbox.
+
+test("imageExistsLocally: true when `docker image inspect` exits 0", async () => {
+  process.env.MOCK_WSL_EXIT = "0";
+  const present = await openrindShell.imageExistsLocally(
+    "ghcr.io/openrind/openrind-shell/sandbox:just-bash",
+  );
+  assert.equal(present, true);
+  const lines = readArgsLog();
+  assert.equal(lines.length, 1, "exactly one wsl call (a local inspect)");
+  // Local metadata lookup only — must not shell out to `docker pull`.
+  assert.match(lines[0], /docker --config .* image inspect/);
+  assert.doesNotMatch(lines[0], /docker .*pull/);
+  assert.match(
+    lines[0],
+    /ghcr\.io\/openrind\/openrind-shell\/sandbox:just-bash/,
+  );
+});
+
+test("imageExistsLocally: false when `docker image inspect` exits non-zero", async () => {
+  process.env.MOCK_WSL_EXIT = "1";
+  const present = await openrindShell.imageExistsLocally("nope/missing:tag");
+  assert.equal(present, false);
+});
+
 // ── buildWslEnvForwarding ──────────────────────────────────────────────
 
 test("buildWslEnvForwarding: extends WSLENV with forwarded names", () => {
@@ -732,101 +760,42 @@ test("buildLaunchBlock (openclaw + proxy): delegates to setup.sh with OpenrindGa
     /status --deep|doctor --fix/,
     "plugin pre-stage belongs to setup.sh",
   );
-  // Reconnect fast path: when the gateway from a previous session is healthy,
-  // exec the TUI directly (mirrors setup.sh's final exec).
-  assert.match(
+  // No reconnect fast path anymore: OpenClaw is launched by the USER after they
+  // onboard interactively (see setup.sh). The block must NOT probe a gateway,
+  // exec a TUI, or bind a session — it only delegates to setup.sh.
+  assert.doesNotMatch(
     block,
     /18789\/readyz/,
-    "must probe gateway /readyz for the fast path",
+    "must NOT probe a pre-warmed gateway — the user starts OpenClaw themselves",
   );
-  assert.match(
+  assert.doesNotMatch(
     block,
-    /\. \/home\/agent\/\.openrind-shell\/env\.sh/,
-    "fast path must source env.sh for the OpenrindGateway proxy env",
+    /openclaw tui/,
+    "must NOT auto-launch the TUI — the user runs openclaw after onboarding",
   );
-  assert.match(
+  assert.doesNotMatch(
     block,
-    /exec env -u OPENRIND_GATEWAY_API_KEY -u OPENCLAW_PLUGIN_STAGE_DIR -u ANTHROPIC_AUTH_TOKEN/,
-    "fast-path exec must scrub setup-only env (mirrors setup.sh's exec)",
-  );
-  assert.match(block, /HOME=\/home\/agent/, "exec must set HOME=/home/agent");
-  // `openclaw tui`, not bare `openclaw` — the bare command opens the
-  // crestodian setup concierge instead of the coding agent (mirrors
-  // setup.sh's final exec). The trailing `${_ow_sk:+--session $_ow_sk}`
-  // binds the TUI to the Openrind Desktop session when a marker is present and is a
-  // no-op (default "main" session) when it is empty.
-  assert.match(
-    block,
-    /^\s+openclaw tui \$\{_ow_sk:\+--session \$_ow_sk\}\s*$/m,
-    "fast-path exec must launch `openclaw tui` with the optional session flag",
-  );
-  // Per-session binding: read the marker the app writes before each connect.
-  assert.match(
-    block,
-    /\/sandbox\/openrind-desktop-current-session/,
-    "openclaw must read the per-connect session marker",
-  );
-  assert.match(
-    block,
-    /rm -f \/sandbox\/openrind-desktop-current-session/,
-    "openclaw must consume the marker on read (concurrent sessions)",
-  );
-  // Cold path must forward the key to setup.sh's own final exec.
-  assert.match(
-    block,
-    /export OPENRIND_DESKTOP_OPENCLAW_SESSION=/,
-    "cold path must export the session key for setup.sh",
-  );
-  // SHELL must be set so openclaw agent tool invocations use openrind-shell's workspace
-  // filesystem layer (PostgreSQL-backed) rather than raw /bin/bash.
-  assert.match(
-    block,
-    /SHELL=\/usr\/local\/bin\/openrind-shell-bash/,
-    "exec must set SHELL to openrind-shell-bash",
-  );
-  // OPENCLAW_HANDSHAKE_TIMEOUT_MS must be generous (600 s, matching setup.sh):
-  // the TUI blocks its own event loop during plugin loading (a single pass
-  // can exceed 2 min in the sandbox), and a shorter timeout aborts the
-  // connect and re-runs the plugin pass in a retry loop that strands the TUI
-  // in a permanent disconnected state.
-  assert.match(
-    block,
-    /OPENCLAW_HANDSHAKE_TIMEOUT_MS=600000/,
-    "exec must set a 600s OPENCLAW_HANDSHAKE_TIMEOUT_MS for the TUI client",
-  );
-  // The UNDICI-EHPA experimental warnings must not print above the TUI banner.
-  assert.match(
-    block,
-    /NODE_NO_WARNINGS=1/,
-    "exec must suppress node warnings in the user-facing terminal",
+    /openrind-desktop-current-session/,
+    "must NOT hardcode a session binding — the user manages OpenClaw sessions",
   );
 });
 
-test("buildLaunchBlock (openclaw): fast path precedes the setup.sh handoff", () => {
+test("buildLaunchBlock (openclaw): delegates straight to setup.sh (no fast path)", () => {
   const block = openrindShell.__testing.buildLaunchBlock("openrind-shell-openclaw", null);
 
-  // The readyz fast path must come first — reconnects with a live gateway
-  // exec the TUI immediately instead of re-running setup.sh.
-  const readyzIdx = block.indexOf("18789/readyz");
-  const execOpenrindIdx = block.indexOf("exec openrind-shell");
-  assert.ok(readyzIdx > -1, "readyz fast-path probe must be present");
-  assert.ok(execOpenrindIdx > -1, "exec openrind-shell handoff must be present");
-  assert.ok(
-    readyzIdx < execOpenrindIdx,
-    `readyz fast path (pos ${readyzIdx}) must appear BEFORE exec openrind-shell (pos ${execOpenrindIdx})`,
+  // The openclaw path is now a plain handoff to the image bootstrap: setup.sh
+  // brings up persistence and then hands the user an interactive shell to run
+  // `openclaw onboard` / `openclaw`. No gateway probe, no TUI exec, no pkill.
+  assert.match(block, /exec openrind-shell/, "must delegate to setup.sh");
+  assert.doesNotMatch(block, /18789\/readyz/, "no gateway fast path");
+  assert.doesNotMatch(block, /openclaw tui/, "must not auto-launch the TUI");
+  assert.doesNotMatch(
+    block,
+    /pkill -f 'openclaw gateway'/,
+    "no gateway lifecycle here",
   );
 
-  // A zombie gateway process holding port 18789 would make setup.sh's own
-  // gateway fail to bind (setup.sh assumes a fresh container and does not
-  // pkill). The block must clear it before handing off.
-  const pkillIdx = block.indexOf("pkill -f 'openclaw gateway'");
-  assert.ok(pkillIdx > -1, "must pkill zombie gateways before exec openrind-shell");
-  assert.ok(
-    pkillIdx < execOpenrindIdx,
-    `pkill (pos ${pkillIdx}) must appear BEFORE exec openrind-shell (pos ${execOpenrindIdx})`,
-  );
-
-  // Both the env prep and the launch must stay inside the managed markers.
+  // Both the env prep and the launch stay inside the managed markers.
   assert.match(block, /^# >>> openrind-desktop launch >>>/m);
   assert.match(block, /^# <<< openrind-desktop launch <<<$/m);
 });
@@ -923,6 +892,63 @@ test("prewarmAgentRuntime (openclaw): failure is non-fatal", async () => {
   });
 });
 
+// ── prewarmIfNeeded ────────────────────────────────────────────────────
+// Only OpenClaw needs prewarming (embedded-gateway warmup so connect can exec
+// the TUI directly). Claude must NOT prewarm on the loading screen: its
+// connect-time setup.sh runs the full DB bootstrap (migrations + restore) once,
+// so prewarming would pay the remote-PostgreSQL connect a second time per
+// session — the "database connecting is slow" doubling this fixes.
+//
+// The agent is selected from the OPENRIND_SHELL_AGENT env gate (the canonical
+// value setup.sh reads), NOT from `profile` — callers normalize profile onto
+// the env they pass.
+
+test("prewarmIfNeeded: skips prewarm when the agent gate isn't openclaw", async () => {
+  process.env.MOCK_WSL_STDOUT = "prewarm: ok";
+  const env = { ...process.env };
+  delete env.OPENRIND_SHELL_AGENT;
+  await openrindShell.__testing.prewarmIfNeeded({
+    name: "openrind-shell-x",
+    profile: "openrind-shell-claude",
+    env,
+  });
+  assert.equal(
+    readArgsLog().length,
+    0,
+    "claude must not run setup.sh / connect to the DB on the loading screen",
+  );
+});
+
+test("prewarmIfNeeded: runs the prewarm when OPENRIND_SHELL_AGENT=openclaw", async () => {
+  process.env.MOCK_WSL_STDOUT = "prewarm: ok";
+  await openrindShell.__testing.prewarmIfNeeded({
+    name: "openrind-shell-x",
+    profile: "openrind-shell-openclaw",
+    env: { ...process.env, OPENRIND_SHELL_AGENT: "openclaw" },
+  });
+  const lines = readArgsLog();
+  assert.equal(lines.length, 1, "openclaw prewarm runs exactly one sandbox exec");
+  assert.match(lines[0], /openshell sandbox exec --name 'openrind-shell-x'/);
+});
+
+test("prewarmIfNeeded: profile alone never triggers prewarm without the env gate", async () => {
+  // Guards the compliance rule: agent selection is the OPENRIND_SHELL_AGENT
+  // gate, not `profile`. An openclaw profile with no agent gate must NOT run.
+  process.env.MOCK_WSL_STDOUT = "prewarm: ok";
+  const env = { ...process.env };
+  delete env.OPENRIND_SHELL_AGENT;
+  await openrindShell.__testing.prewarmIfNeeded({
+    name: "openrind-shell-x",
+    profile: "openrind-shell-openclaw",
+    env,
+  });
+  assert.equal(
+    readArgsLog().length,
+    0,
+    "profile must not select the agent — only OPENRIND_SHELL_AGENT does",
+  );
+});
+
 test("buildLaunchBlock: proxyBase is shell-quoted (no command substitution)", () => {
   // proxyBase is sandbox-controlled (parsed from an uploaded presign.json)
   // or an HTTP response body. Inside double quotes bash still expands
@@ -937,26 +963,6 @@ test("buildLaunchBlock: proxyBase is shell-quoted (no command substitution)", ()
   assert.ok(
     claw.includes(`export OPENRIND_GATEWAY_PROXY_URL='${evil}'`),
     "openclaw proxy export must be single-quoted",
-  );
-});
-
-test("buildLaunchBlock (openclaw): fast path preserves ANTHROPIC_API_KEY across env.sh", () => {
-  // env.sh (written by setup.sh) contains `unset ANTHROPIC_API_KEY` for
-  // Claude Code's benefit. The fast path must save the key it just loaded
-  // and re-export it after sourcing, or the TUI is exec'd without the
-  // literal key that setup.sh documents OpenClaw requires.
-  const block = openrindShell.__testing.buildLaunchBlock("openrind-shell-openclaw", null);
-  const saveIdx = block.indexOf('_saved_key="${ANTHROPIC_API_KEY:-}"');
-  const sourceIdx = block.indexOf(". /home/agent/.openrind-shell/env.sh");
-  const restoreIdx = block.indexOf(
-    '[ -n "$_saved_key" ] && export ANTHROPIC_API_KEY="$_saved_key"',
-  );
-  assert.ok(saveIdx > -1, "must capture the key before sourcing env.sh");
-  assert.ok(sourceIdx > -1, "must still source env.sh for ANTHROPIC_BASE_URL");
-  assert.ok(restoreIdx > -1, "must re-export the key after sourcing env.sh");
-  assert.ok(
-    saveIdx < sourceIdx && sourceIdx < restoreIdx,
-    `order must be save (${saveIdx}) -> source (${sourceIdx}) -> restore (${restoreIdx})`,
   );
 });
 
@@ -1015,18 +1021,10 @@ test("buildLaunchBlock (openclaw + no proxy): no OpenrindGateway env, still dele
     /auth-profiles\.json/,
     "must NOT hand-write auth-profiles.json",
   );
-  // Fast path still present without a proxy.
-  assert.match(
-    block,
-    /exec env -u OPENRIND_GATEWAY_API_KEY -u OPENCLAW_PLUGIN_STAGE_DIR -u ANTHROPIC_AUTH_TOKEN/,
-    "fast-path exec must scrub setup-only env",
-  );
-  assert.match(
-    block,
-    /SHELL=\/usr\/local\/bin\/openrind-shell-bash/,
-    "exec must set SHELL to openrind-shell-bash",
-  );
-  assert.match(block, /HOME=\/home\/agent/, "exec must set HOME");
+  // No fast path: the block just delegates to setup.sh, which then hands the
+  // user an interactive shell to onboard and launch OpenClaw themselves.
+  assert.doesNotMatch(block, /18789\/readyz/, "no gateway fast path");
+  assert.doesNotMatch(block, /openclaw tui/, "must not auto-launch the TUI");
 });
 
 test("buildLaunchBlock (claude + no proxy): no proxy vars, delegates to setup.sh", () => {
@@ -1088,3 +1086,4 @@ test("probeDatabaseUrl: surfaces psql error stderr", async () => {
     /Could not reach PostgreSQL.*connection refused/s,
   );
 });
+
