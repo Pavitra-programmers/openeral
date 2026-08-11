@@ -29,6 +29,7 @@ import { DebugView } from "../domains/settings/pages/debug-view";
 import { DenView } from "../domains/settings/pages/den-view";
 import { EnvironmentView } from "../domains/settings/pages/environment-view";
 import { OpenrindShellCredentialsPanel } from "../domains/settings/pages/openrind-shell-credentials-panel";
+import { GatewayBillingPanel } from "../domains/settings/pages/gateway-billing-panel";
 import { SandboxSessionList } from "../domains/session/sidebar/sandbox-session-list";
 import { ExtensionsView } from "../domains/settings/pages/extensions-view";
 import { McpView } from "../domains/settings/pages/mcp-view";
@@ -254,6 +255,7 @@ function parseSettingsPath(pathname: string): {
     case "sandbox":
     case "updates":
     case "recovery":
+    case "billing":
     case "debug":
       return { tab: head, redirectPath: null };
     case "extensions":
@@ -1359,6 +1361,12 @@ export function SettingsRoute() {
                 onClearCredential={(key) => openshellState.clearCredential(key)}
               />
             ) : null}
+          </div>
+        );
+      case "billing":
+        return (
+          <div className="space-y-6">
+            <GatewayBillingPanel />
           </div>
         );
       case "debug":
