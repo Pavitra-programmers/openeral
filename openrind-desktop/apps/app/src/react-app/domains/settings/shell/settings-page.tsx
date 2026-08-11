@@ -29,6 +29,8 @@ export function getSettingsTabLabel(tab: SettingsTab) {
       return t("settings.tab_updates");
     case "recovery":
       return t("settings.tab_recovery");
+    case "billing":
+      return "Billing & Usage";
     case "debug":
       return t("settings.tab_debug");
     default:
@@ -56,6 +58,8 @@ export function getSettingsTabDescription(tab: SettingsTab) {
       return t("settings.tab_description_updates");
     case "recovery":
       return t("settings.tab_description_recovery");
+    case "billing":
+      return "Manage subscription, payments, and view detailed AI usage statistics.";
     case "debug":
       return t("settings.tab_description_debug");
     default:
@@ -69,6 +73,7 @@ export function getWorkspaceSettingsTabs(): SettingsTab[] {
 
 export function getGlobalSettingsTabs(developerMode: boolean): SettingsTab[] {
   const tabs: SettingsTab[] = [
+    "billing", // Show Billing & Usage tab first!
     "den",
     "sandbox",
     "appearance",
