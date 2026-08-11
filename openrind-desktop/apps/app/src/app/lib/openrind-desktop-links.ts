@@ -142,7 +142,8 @@ export function parseGatewayAuthDeepLink(rawUrl: string): GatewayAuthDeepLink | 
   }
 
   const protocol = url.protocol.toLowerCase();
-  if (!isSupportedDeepLinkProtocol(protocol)) {
+  // Restrict to secure registered desktop schemes only (prevent http/https browser injection attacks)
+  if (protocol !== "openrind-desktop:" && protocol !== "openrind-desktop-dev:") {
     return null;
   }
 
@@ -160,7 +161,8 @@ export function parseGatewayAuthDeepLink(rawUrl: string): GatewayAuthDeepLink | 
   }
 
   const apiKey = url.searchParams.get("api_key")?.trim() ?? "";
-  const status = url.searchParams.get("status")?.trim() ?? "trialing";
+  const rawStatus = url.searchParams.get("status")?.trim();
+  const status = rawStatus === "paid" ? "paid" : "unpaid"; // Validate exact allowed statuses, default to "unpaid"
   const email = url.searchParams.get("email")?.trim() ?? "";
   const name = url.searchParams.get("name")?.trim() ?? "";
 

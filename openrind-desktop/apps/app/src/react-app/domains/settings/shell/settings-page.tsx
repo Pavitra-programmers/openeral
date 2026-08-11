@@ -30,7 +30,7 @@ export function getSettingsTabLabel(tab: SettingsTab) {
     case "recovery":
       return t("settings.tab_recovery");
     case "billing":
-      return "Billing & Usage";
+      return t("settings.tab_billing");
     case "debug":
       return t("settings.tab_debug");
     default:
@@ -59,7 +59,7 @@ export function getSettingsTabDescription(tab: SettingsTab) {
     case "recovery":
       return t("settings.tab_description_recovery");
     case "billing":
-      return "Manage subscription, payments, and view detailed AI usage statistics.";
+      return t("settings.tab_description_billing");
     case "debug":
       return t("settings.tab_description_debug");
     default:

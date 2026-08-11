@@ -14,6 +14,16 @@ import {
   drainPendingDeepLinks,
   type DeepLinkBridgeDetail,
 } from "../../../app/lib/deep-link-bridge";
+import {
+  clearDenSession,
+  createDenClient,
+  DenApiError,
+  ensureDenActiveOrganization,
+  readDenSettings,
+  readDenBootstrapConfig,
+  writeDenSettings,
+  type DenUser,
+} from "../../../app/lib/den";
 import { parseGatewayAuthDeepLink } from "../../../app/lib/openrind-desktop-links";
 import { isDesktopRuntime } from "../../../app/utils";
 import { Button } from "../../design-system/button";
@@ -36,8 +46,6 @@ export type GatewayBillingStore = {
   setShowOnboardingModal: (show: boolean) => void;
   userEmail: string;
   userName: string;
-  setupBilling: () => Promise<{ clientSecret: string }>;
-  subscribeBilling: (paymentMethodId: string) => Promise<any>;
   refreshStats: () => Promise<void>;
   refreshStatus: () => Promise<void>;
   logout: () => Promise<void>;
@@ -114,37 +122,6 @@ export function GatewayBillingProvider({ children }: GatewayBillingProviderProps
     }
   }, [apiKeySet]);
 
-  const setupBilling = useCallback(async () => {
-    setLoading(true);
-    try {
-      const result = await invoke<{ clientSecret: string }>("openrindGatewaySetupBilling");
-      return result;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setError(msg);
-      throw err;
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  const subscribeBilling = useCallback(async (paymentMethodId: string) => {
-    setLoading(true);
-    try {
-      const result = await invoke<any>("openrindGatewaySubscribeBilling", { paymentMethodId });
-      setBillingStatus("paid");
-      localStorage.setItem("openrind_gateway_billing_status", "paid");
-      await refreshStats();
-      return result;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setError(msg);
-      throw err;
-    } finally {
-      setLoading(false);
-    }
-  }, [refreshStats]);
-
   const logout = useCallback(async () => {
     setLoading(true);
     try {
@@ -172,7 +149,13 @@ export function GatewayBillingProvider({ children }: GatewayBillingProviderProps
   useEffect(() => {
     if (!isDesktopRuntime()) return;
     const dismissed = localStorage.getItem("openrind_gateway_onboarding_dismissed") === "true";
-    if (apiKeySet === false && !dismissed) {
+    
+    // Only show Gateway onboarding if the user has completed their mandatory Den auth (if required)
+    const requireSignin = readDenBootstrapConfig().requireSignin;
+    const denSettings = readDenSettings();
+    const isDenSignedIn = !requireSignin || !!denSettings.authToken?.trim();
+
+    if (apiKeySet === false && !dismissed && isDenSignedIn) {
       setShowOnboardingModal(true);
     } else {
       setShowOnboardingModal(false);
@@ -226,26 +209,47 @@ export function GatewayBillingProvider({ children }: GatewayBillingProviderProps
     if (typeof window === "undefined") return;
 
     const handleUrls = async (urls: readonly string[]) => {
+      const remaining: string[] = [];
+      const matched: string[] = [];
+
       for (const rawUrl of urls) {
         const parsed = parseGatewayAuthDeepLink(rawUrl);
-        if (!parsed) continue;
+        if (parsed) {
+          matched.push(rawUrl);
 
-        try {
-          await invoke("openrindSetCredential", {
-            key: "openrindGatewayApiKey",
-            value: parsed.apiKey,
-          });
-          const effectiveStatus = parsed.status === "trialing" || parsed.status === "expired" ? "unpaid" : parsed.status;
-          localStorage.setItem("openrind_gateway_billing_status", effectiveStatus);
-          if (parsed.email) localStorage.setItem("openrind_gateway_email", parsed.email);
-          if (parsed.name) localStorage.setItem("openrind_gateway_name", parsed.name);
-          setBillingStatus(effectiveStatus as BillingStatus);
-          setApiKeySet(true);
-          await refreshStatus();
-          await refreshStats();
-        } catch (err) {
-          console.error("Failed to save deep linked API key:", err);
+          // P1 Protection: Ask for explicit user confirmation before silently replacing their credentials
+          const confirmReplace = window.confirm(
+            `An API Key from Openrind Gateway was received (${parsed.email || "No email"}). Would you like to connect this key to your local shell application?`
+          );
+          if (!confirmReplace) {
+            continue;
+          }
+
+          try {
+            await invoke("openrindSetCredential", {
+              key: "openrindGatewayApiKey",
+              value: parsed.apiKey,
+            });
+            const effectiveStatus = parsed.status === "trialing" || parsed.status === "expired" ? "unpaid" : parsed.status;
+            localStorage.setItem("openrind_gateway_billing_status", effectiveStatus);
+            if (parsed.email) localStorage.setItem("openrind_gateway_email", parsed.email);
+            if (parsed.name) localStorage.setItem("openrind_gateway_name", parsed.name);
+            setBillingStatus(effectiveStatus as MockBillingStatus);
+            setApiKeySet(true);
+            await refreshStatus();
+            await refreshStats();
+          } catch (err) {
+            console.error("Failed to save deep linked API key:", err);
+          }
+        } else {
+          remaining.push(rawUrl);
         }
+      }
+
+      // G1 Protection: Preserve non-matching deep links back to global state so other providers (like Den) can consume them
+      if (window.__OPENRIND_DESKTOP__ && remaining.length > 0) {
+        const existingPending = window.__OPENRIND_DESKTOP__.deepLinks ?? [];
+        window.__OPENRIND_DESKTOP__.deepLinks = [...existingPending, ...remaining];
       }
     };
 
@@ -269,13 +273,11 @@ export function GatewayBillingProvider({ children }: GatewayBillingProviderProps
       setShowOnboardingModal,
       userEmail,
       userName,
-      setupBilling,
-      subscribeBilling,
       refreshStats,
       refreshStatus,
       logout,
     }),
-    [billingStatus, stats, apiKeySet, loading, error, showOnboardingModal, userEmail, userName, setupBilling, subscribeBilling, refreshStats, refreshStatus, logout]
+    [billingStatus, stats, apiKeySet, loading, error, showOnboardingModal, userEmail, userName, refreshStats, refreshStatus, logout]
   );
 
   const connectGateway = () => {

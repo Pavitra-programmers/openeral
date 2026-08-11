@@ -2278,8 +2278,7 @@ async function handleDesktopInvoke(event, command, ...args) {
       }
       const data = await response.json();
       if (data.url) {
-        const { shell } = await import("electron");
-        await shell.openExternal(data.url);
+        await openExternalSafe(data.url);
       }
       return data;
     }
@@ -2294,40 +2293,6 @@ async function handleDesktopInvoke(event, command, ...args) {
       });
       if (!response.ok) {
         throw new Error(`Failed to fetch stats: ${response.status} ${response.statusText}`);
-      }
-      return await response.json();
-    }
-    case "openrindGatewaySetupBilling": {
-      const apiKey = await openrindCredentials.getCredential("openrindGatewayApiKey");
-      if (!apiKey) throw new Error("Gateway API Key not set.");
-      const gatewayUrl = process.env.OPENRIND_GATEWAY_URL || "https://app.openrind.com";
-      const response = await fetch(`${gatewayUrl}/control/v1/billing/individual/setup`, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-      });
-      if (!response.ok) {
-        throw new Error(`Failed to setup billing: ${response.status} ${response.statusText}`);
-      }
-      return await response.json();
-    }
-    case "openrindGatewaySubscribeBilling": {
-      const apiKey = await openrindCredentials.getCredential("openrindGatewayApiKey");
-      if (!apiKey) throw new Error("Gateway API Key not set.");
-      const gatewayUrl = process.env.OPENRIND_GATEWAY_URL || "https://app.openrind.com";
-      const input = args[0] ?? {};
-      const response = await fetch(`${gatewayUrl}/control/v1/billing/individual/subscribe`, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(input),
-      });
-      if (!response.ok) {
-        throw new Error(`Failed to subscribe: ${response.status} ${response.statusText}`);
       }
       return await response.json();
     }
