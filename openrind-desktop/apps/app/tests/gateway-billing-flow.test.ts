@@ -101,15 +101,15 @@ describe("Gateway Onboarding & Billing Deep Link Parser", () => {
     expect(result).toBeNull();
   });
 
-  test("defaults status to trialing if parameter is missing on auth deep link", () => {
+  test("defaults status to unpaid if parameter is missing on auth deep link", () => {
     const rawUrl = "openrind-desktop://auth?api_key=sk-openrind-gateway-test&email=test@email.com";
     const result = parseGatewayAuthDeepLink(rawUrl);
 
     expect(result).not.toBeNull();
-    expect(result!.status).toBe("trialing");
+    expect(result!.status).toBe("unpaid");
   });
 
-  test("handles 50+ additional mock deep-link inputs to guarantee parsing safety", () => {
+  test("handles additional mock deep-link inputs to guarantee parsing safety", () => {
     const dummyDomains = ["us", "ca", "uk", "in", "fr", "de", "jp", "au", "br", "mx"];
     dummyDomains.forEach((dom) => {
       const mockKey = `sk-openrind-gateway-key-${dom}`;

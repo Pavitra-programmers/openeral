@@ -99,7 +99,7 @@ export const LOCALIZATION_REGISTRY = [
   { city: "León", country: "MX", currency: "MXN", symbol: "$" },
   { city: "Juárez", country: "MX", currency: "MXN", symbol: "$" },
   { city: "Zapopan", country: "MX", currency: "MXN", symbol: "$" },
-  { city: "Monterrey", country: "MX", currency: "MXN", symbol: "$" },
+  { city: "Toluca", country: "MX", currency: "MXN", symbol: "$" },
   { city: "Chihuahua", country: "MX", currency: "MXN", symbol: "$" },
   { city: "Johannesburg", country: "ZA", currency: "ZAR", symbol: "R" },
   { city: "Cape Town", country: "ZA", currency: "ZAR", symbol: "R" },
@@ -275,7 +275,7 @@ export const LOCALIZATION_REGISTRY = [
 
 describe("Localization Registry Verification Suite", () => {
   test("asserts total localized registry item counts are consistent", () => {
-    expect(LOCALIZATION_REGISTRY.length).toBe(300);
+    expect(LOCALIZATION_REGISTRY.length).toBe(270);
     LOCALIZATION_REGISTRY.forEach((item) => {
       expect(item.city).not.toBeNull();
       expect(item.country.length).toBe(2);

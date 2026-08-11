@@ -211,6 +211,7 @@ export function OpenrindShellCredentialsPanel(props: OpenrindShellCredentialsPan
               variant="outline"
               className="h-7 rounded-full px-3 text-xs border-blue-7/50 bg-blue-3/10 text-blue-12 hover:bg-blue-3/30"
               onClick={() => window.open("https://app.openrind.com/sign-in?intent=shell", "_blank")}
+              disabled={props.actionBusy}
             >
               Sign Up
             </Button>

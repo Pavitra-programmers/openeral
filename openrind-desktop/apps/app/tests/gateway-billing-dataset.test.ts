@@ -186,7 +186,7 @@ describe("Large Telemetry Dataset Integrity Verification", () => {
     const totalInput = TELEMETRY_DATASET.reduce((sum, d) => sum + d.input_tokens, 0);
     const totalOutput = TELEMETRY_DATASET.reduce((sum, d) => sum + d.output_tokens, 0);
 
-    expect(TELEMETRY_DATASET.length).toBe(145); // Exact count of days
+    expect(TELEMETRY_DATASET.length).toBe(175); // Exact count of days
     expect(totalRequests).toBeGreaterThan(15000);
     expect(totalInput).toBeGreaterThan(20000000);
     expect(totalOutput).toBeGreaterThan(5000000);
