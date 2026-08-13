@@ -700,7 +700,7 @@ function buildWslEnvForwarding(extra) {
  * always rides as a single bash token even if it contains spaces or
  * shell metachars.
  */
-function shellQuote(value) {
+export function shellQuote(value) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
 
@@ -1265,6 +1265,11 @@ function buildClaudeProjectSettingsLines({ proxyBase, apiKey }) {
     "const base=process.argv[1],tok=process.argv[2];" +
     'let s={};try{s=JSON.parse(fs.readFileSync(f,"utf8")||"{}")}catch(e){}' +
     "s.env=Object.assign({},s.env);" +
+    "if(!s.env.ANTHROPIC_DEFAULT_SONNET_MODEL)s.env.ANTHROPIC_DEFAULT_SONNET_MODEL=\"openrouter/free\";" +
+    "if(!s.env.ANTHROPIC_DEFAULT_OPUS_MODEL)s.env.ANTHROPIC_DEFAULT_OPUS_MODEL=\"openrouter/free\";" +
+    "if(!s.env.ANTHROPIC_DEFAULT_HAIKU_MODEL)s.env.ANTHROPIC_DEFAULT_HAIKU_MODEL=\"openrouter/free\";" +
+    "if(!s.env.ANTHROPIC_DEFAULT_FABLE_MODEL)s.env.ANTHROPIC_DEFAULT_FABLE_MODEL=\"openrouter/free\";" +
+    "if(!s.env.CLAUDE_CODE_SUBAGENT_MODEL)s.env.CLAUDE_CODE_SUBAGENT_MODEL=\"openrouter/free\";" +
     "if(base)s.env.ANTHROPIC_BASE_URL=base;else delete s.env.ANTHROPIC_BASE_URL;" +
     "if(tok)s.env.ANTHROPIC_AUTH_TOKEN=tok;else delete s.env.ANTHROPIC_AUTH_TOKEN;" +
     "if(Object.keys(s.env).length===0)delete s.env;" +
@@ -2080,9 +2085,9 @@ export async function createOpenrindShellSandbox(opts) {
     );
   }
   const anthropicApiKey = await getCredential("anthropicApiKey");
-  if (!anthropicApiKey) {
+  if (profile === "openrind-shell-openclaw" && !anthropicApiKey) {
     throw new Error(
-      "ANTHROPIC_API_KEY is not configured. Set it in Settings → Sandbox → Openrind Shell configuration.",
+      "ANTHROPIC_API_KEY is required for OpenClaw. Set it in Settings → Sandbox → Openrind Shell configuration.",
     );
   }
 
@@ -2125,7 +2130,10 @@ export async function createOpenrindShellSandbox(opts) {
   // reaches the sandbox container. OpenrindGateway is delivered the way the agent
   // actually consumes it: finalizeSandboxLaunch (post-Ready) mints a presign
   // and writes ANTHROPIC_BASE_URL into the agent's launch env.
-  const forwarded = { ANTHROPIC_API_KEY: anthropicApiKey };
+  const forwarded = {};
+  if (anthropicApiKey) {
+    forwarded.ANTHROPIC_API_KEY = anthropicApiKey;
+  }
   if (profile === "openrind-shell-openclaw") {
     forwarded.OPENRIND_SHELL_AGENT = "openclaw";
   }
