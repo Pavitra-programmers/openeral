@@ -162,7 +162,7 @@ export function GatewayBillingPanel() {
                 onClick={payNow}
                 disabled={busy}
               >
-                Subscribe ($10/mo)
+                Subscribe ($1/mo)
               </Button>
             </div>
           )}
