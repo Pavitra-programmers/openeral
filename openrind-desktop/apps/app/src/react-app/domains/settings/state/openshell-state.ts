@@ -164,10 +164,9 @@ export function useOpenShellState(options: { active: boolean } = { active: false
     if (!isElectronRuntime()) return;
     try {
       const status = await invoke<OpenrindShellCredentialStatus>("openrindCredentialStatus");
-      console.log("[openshell-state] REFRESH CREDENTIAL STATUS RECEIVED:", status);
       if (isMountedRef.current) setCredentialStatus(status);
     } catch (err) {
-      console.error("[openshell-state] Failed to refresh credential status:", err);
+      // Failed to refresh credential status, ignored silently in UI
     }
   }, []);
 

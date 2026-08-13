@@ -2295,7 +2295,8 @@ async function handleDesktopInvoke(event, command, ...args) {
       });
       if (!response.ok) {
         const errBody = await response.json().catch(() => ({}));
-        throw new Error(errBody.error || errBody.message || `Failed to fetch stats: ${response.status} ${response.statusText}`);
+        const errorMessage = errBody?.error || errBody?.message || `Failed to fetch stats: ${response.status} ${response.statusText}`;
+        throw new Error(errorMessage);
       }
       return await response.json();
     }

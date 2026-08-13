@@ -325,7 +325,7 @@ export function SettingsRoute() {
   const desktopConfig = useDesktopConfig();
   const reloadCoordinator = useReloadCoordinator();
   const route = parseSettingsPath(location.pathname);
-  const openshellState = useOpenShellState({ active: route.tab === "sandbox" || route.tab === "environment" });
+  const openshellState = useOpenShellState({ active: route.tab === "sandbox" });
 
   const [loading, setLoading] = useState(true);
   const [workspaces, setWorkspaces] = useState<RouteWorkspace[]>([]);
