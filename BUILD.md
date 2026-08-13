@@ -273,3 +273,457 @@ Then rebuild and push the image (or use `--dev` with a locally-tagged image).
 ### `_openrind` schema on Supabase
 
 Migration V6 grants `USAGE` on the schema to `service_role, dashboard_user, authenticated, anon` and `SELECT` on all tables to `service_role, dashboard_user`. Without these, the Supabase Table Editor shows the schema but none of its rows — the tables are owned by `postgres` and only readable there. The V6 grants wrap each role in a try/catch on `42704` (undefined role) so the migration still succeeds on non-Supabase databases where those roles don't exist.
+
+
+## Extended Build Troubleshooting and Load Testing
+
+### Scenario 0: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 1: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 2: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 3: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 4: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 5: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 6: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 7: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 8: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 9: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 10: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 11: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 12: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 13: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 14: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 15: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 16: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 17: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 18: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 19: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 20: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 21: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 22: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 23: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 24: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 25: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 26: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 27: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 28: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 29: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 30: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 31: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 32: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 33: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 34: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 35: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 36: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 37: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 38: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 39: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 40: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 41: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 42: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 43: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 44: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 45: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 46: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 47: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 48: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 49: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 50: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 51: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 52: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 53: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 54: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 55: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 56: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 57: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 58: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 59: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 60: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 61: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 62: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 63: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 64: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 65: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 66: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 67: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 68: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 69: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 70: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 71: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 72: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 73: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 74: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 75: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 76: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 77: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 78: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 79: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 80: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 81: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 82: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 83: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 84: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 85: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 86: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 87: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 88: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 89: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 90: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 91: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 92: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 93: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 94: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 95: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 96: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 97: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 98: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 99: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 100: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 101: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 102: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 103: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 104: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 105: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 106: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 107: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 108: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 109: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 110: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 111: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 112: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 113: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 114: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 115: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 116: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 117: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 118: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 119: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 120: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 121: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 122: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 123: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 124: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 125: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 126: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 127: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 128: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 129: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 130: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 131: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 132: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 133: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 134: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 135: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 136: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 137: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 138: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 139: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 140: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 141: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 142: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 143: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 144: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 145: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 146: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 147: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 148: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
+### Scenario 149: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.
+
