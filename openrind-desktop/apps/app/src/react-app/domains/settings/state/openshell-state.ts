@@ -165,8 +165,8 @@ export function useOpenShellState(options: { active: boolean } = { active: false
     try {
       const status = await invoke<OpenrindShellCredentialStatus>("openrindCredentialStatus");
       if (isMountedRef.current) setCredentialStatus(status);
-    } catch {
-      // Quiet — surfaces only on explicit set/clear attempts.
+    } catch (err) {
+      // Failed to refresh credential status, ignored silently in UI
     }
   }, []);
 

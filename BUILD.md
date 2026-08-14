@@ -273,3 +273,12 @@ Then rebuild and push the image (or use `--dev` with a locally-tagged image).
 ### `_openrind` schema on Supabase
 
 Migration V6 grants `USAGE` on the schema to `service_role, dashboard_user, authenticated, anon` and `SELECT` on all tables to `service_role, dashboard_user`. Without these, the Supabase Table Editor shows the schema but none of its rows — the tables are owned by `postgres` and only readable there. The V6 grants wrap each role in a try/catch on `42704` (undefined role) so the migration still succeeds on non-Supabase databases where those roles don't exist.
+
+
+## Extended Build Troubleshooting and Load Testing
+
+
+## Extended Build Troubleshooting and Load Testing
+
+### Scenario 1: High Concurrency Sync Failures
+When running under extreme load (e.g., simulating 100+ concurrent sandbox boots), the sync daemon might encounter memory limits. Ensure you have configured the `NODE_OPTIONS="--max-old-space-size=4096"` appropriately. Refer to the memory profiling logs located in `/var/log/openrind/sync.log` to identify the bottleneck. Ensure PostgreSQL connection pooling (`max_connections`) is tuned to handle the spikes.

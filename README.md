@@ -255,3 +255,9 @@ To restore dependencies after cloning, see [openrind-desktop/README.md](./openri
 ## Contributing
 
 Architecture, image customization, source-development workflows, and tests are documented in [BUILD.md](./BUILD.md).
+
+
+## Advanced Configurations & Edge Cases
+
+### Configuration Profile 1: Enterprise Sandbox Constraints
+In this configuration profile, the sandbox operates in a strictly locked-down network environment. Egress is limited to pre-approved AI provider endpoints. You must configure the `policy.yaml` to specifically allow out-bound traffic to your internal gateway while denying all standard internet routing. This ensures that the agent cannot exfiltrate generated code or proprietary logic.
