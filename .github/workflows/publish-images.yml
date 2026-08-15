@@ -2,8 +2,13 @@ name: Publish sandbox image
 
 on:
   push:
-    branches: [just-bash]
+    branches: [nemo]
     paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'crates/openeral-fused/**'
+      - 'Dockerfile.openrind-shell'
+      - 'Dockerfile.openrind-shell-compat'
       - 'openeral-js/**'
       - '.claude/skills/**'
       - '.dockerignore'
@@ -13,11 +18,11 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref_name }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_REPO_BASE: ghcr.io/${{ github.repository_owner }}/openeral
+  IMAGE_REPO_BASE: ghcr.io/openrind/openrind-shell
 
 jobs:
   test:
@@ -27,13 +32,13 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_USER: openeral
-          POSTGRES_PASSWORD: openeral
+          POSTGRES_USER: openrind
+          POSTGRES_PASSWORD: openrind
           POSTGRES_DB: testdb
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U openeral"
+          --health-cmd "pg_isready -U openrind"
           --health-interval 2s
           --health-timeout 5s
           --health-retries 10
@@ -45,6 +50,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install pnpm
         run: npm install -g pnpm
@@ -72,8 +80,11 @@ jobs:
       - name: Integration tests
         working-directory: openeral-js
         env:
-          DATABASE_URL: postgresql://openeral:openeral@localhost:5432/testdb
+          DATABASE_URL: postgresql://openrind:openrind@localhost:5432/testdb
         run: node test-integration.mjs
+
+      - name: Check FUSE daemon
+        run: cargo test -p openeral-fused
 
   build-and-push:
     needs: [test]
@@ -81,6 +92,16 @@ jobs:
     permissions:
       contents: read
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runtime: fuse
+            dockerfile: Dockerfile.openrind-shell
+            tag: fuse
+          - runtime: compatibility
+            dockerfile: Dockerfile.openrind-shell-compat
+            tag: just-bash
 
     steps:
       - uses: actions/checkout@v4
@@ -95,14 +116,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push sandbox image
+      - name: Build and push ${{ matrix.runtime }} sandbox image
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: sandboxes/openeral/Dockerfile
+          file: ${{ matrix.dockerfile }}
           push: true
           tags: |
-            ${{ env.IMAGE_REPO_BASE }}/sandbox:just-bash
-            ${{ env.IMAGE_REPO_BASE }}/sandbox:just-bash-sha-${{ github.sha }}
-          cache-from: type=gha,scope=sandbox-just-bash
-          cache-to: type=gha,mode=max,scope=sandbox-just-bash
+            ${{ env.IMAGE_REPO_BASE }}/sandbox:${{ matrix.tag }}
+            ${{ env.IMAGE_REPO_BASE }}/sandbox:${{ matrix.tag }}-sha-${{ github.sha }}
+          cache-from: type=gha,scope=sandbox-${{ matrix.tag }}
+          cache-to: type=gha,mode=max,scope=sandbox-${{ matrix.tag }}

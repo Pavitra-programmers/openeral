@@ -2,7 +2,9 @@ name: CI
 
 on:
   pull_request:
-    branches: [just-bash]
+    branches: [nemo]
+  push:
+    branches: [nemo]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
@@ -16,13 +18,13 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_USER: openeral
-          POSTGRES_PASSWORD: openeral
+          POSTGRES_USER: openrind
+          POSTGRES_PASSWORD: openrind
           POSTGRES_DB: testdb
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U openeral"
+          --health-cmd "pg_isready -U openrind"
           --health-interval 2s
           --health-timeout 5s
           --health-retries 10
@@ -61,5 +63,33 @@ jobs:
       - name: Integration tests
         working-directory: openeral-js
         env:
-          DATABASE_URL: postgresql://openeral:openeral@localhost:5432/testdb
+          DATABASE_URL: postgresql://openrind:openrind@localhost:5432/testdb
         run: node test-integration.mjs
+
+      - name: Validate sandbox scripts
+        run: |
+          bash -n build-image.sh sandboxes/openeral/*.sh tests/*.sh tests/fuse/*.sh
+          for script in sandboxes/openeral/*.mjs; do node --check "$script"; done
+
+  fuse:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Check Openrind Shell FUSE daemon
+        run: |
+          cargo fmt --all --check
+          cargo test -p openeral-fused
+          cargo clippy -p openeral-fused --all-targets -- -D warnings
+
+      - name: Check vendored OpenShell FUSE patch
+        working-directory: vendor/openshell
+        run: |
+          cargo fmt --all --check
+          cargo check -p openshell-cli -p openshell-driver-docker -p openshell-policy -p openshell-supervisor-process

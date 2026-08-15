@@ -1,7 +1,10 @@
 #!/bin/sh
 set -eu
 
-if [ -f /tmp/openeral-session.env ]; then
+if [ -f /tmp/openrind-shell-session.env ]; then
+  # shellcheck disable=SC1091
+  . /tmp/openrind-shell-session.env
+elif [ -f /tmp/openeral-session.env ]; then
   # shellcheck disable=SC1091
   . /tmp/openeral-session.env
 fi
@@ -13,19 +16,20 @@ export NODE_NO_WARNINGS="${NODE_NO_WARNINGS:-1}"
 # These are setup-only credentials. Claude should see the provider API key
 # placeholder when present, but not the StringCost management key.
 unset STRINGCOST_API_KEY
+unset OPENRIND_GATEWAY_API_KEY
 unset ANTHROPIC_AUTH_TOKEN
 
 if [ ! -x /usr/local/bin/claude-real ]; then
-  echo "openeral: claude-real is missing; the sandbox image did not install Claude Code correctly" >&2
+  echo "openrind-shell: claude-real is missing; the sandbox image did not install Claude Code correctly" >&2
   exit 127
 fi
 
-if command -v openeral >/dev/null 2>&1; then
-  openeral init --ensure
+if command -v openrind-shell >/dev/null 2>&1; then
+  openrind-shell init --ensure
 fi
 
-if command -v openeral-daemon-ensure >/dev/null 2>&1; then
-  openeral-daemon-ensure
+if command -v openrind-shell-daemon-ensure >/dev/null 2>&1; then
+  openrind-shell-daemon-ensure
 fi
 
 /usr/local/bin/claude-real "$@" &
@@ -52,6 +56,6 @@ set -e
 
 trap - INT TERM HUP
 
-/usr/local/bin/openeral-bash --flush >/dev/null 2>&1 || true
+/usr/local/bin/openrind-shell-bash --flush >/dev/null 2>&1 || true
 
 exit "$STATUS"

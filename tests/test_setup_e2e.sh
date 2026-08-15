@@ -13,7 +13,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
 
-IMAGE="${OPENERAL_E2E_IMAGE:-openeral-compat-e2e:local}"
+IMAGE="${OPENRIND_SHELL_E2E_IMAGE:-${OPENERAL_E2E_IMAGE:-openrind-shell-compat-e2e:local}}"
 DB_URL="${DATABASE_URL:?DATABASE_URL required}"
 WORKSPACE="setup-e2e-$$"
 PASSED=0
@@ -24,29 +24,29 @@ fail() { echo "  ✗ $1"; FAILED=$((FAILED + 1)); }
 
 echo ""
 echo "=== Building compatibility image ==="
-docker build -f Dockerfile.openeral-compat -t "$IMAGE" . 2>&1 | tail -2
+docker build -f Dockerfile.openrind-shell-compat -t "$IMAGE" . 2>&1 | tail -2
 
 echo ""
 echo "=== Running setup.sh one-shot init ==="
 out=$(timeout 120 docker run --rm --network host \
   -e DATABASE_URL="$DB_URL" \
-  -e WORKSPACE_ID="$WORKSPACE" \
+  -e OPENRIND_SHELL_WORKSPACE_ID="$WORKSPACE" \
   -e OPENSHELL_SANDBOX_ID="$WORKSPACE" \
   -e SOCKET_TOKEN="test-placeholder-token" \
   --user sandbox \
   --entrypoint /bin/sh \
   "$IMAGE" -c '
-    /opt/openeral/setup.sh
-    . /tmp/openeral-session.env
+    /opt/openrind-shell/setup.sh
+    . /tmp/openrind-shell-session.env
 
     echo "CHECK:init=ok"
-    [ -f /tmp/openeral/init.done ] && echo "CHECK:init-marker=ok" || echo "CHECK:init-marker=FAIL"
-    [ -f /tmp/openeral/database-url ] && echo "CHECK:db-url-store=ok" || echo "CHECK:db-url-store=FAIL"
-    [ ! -S /tmp/openeral-bash.sock ] && echo "CHECK:no-init-daemon=ok" || echo "CHECK:no-init-daemon=FAIL"
-    grep -q "SHELL=.*bin/bash" /tmp/openeral-session.env && echo "CHECK:shell-real-bash=ok" || echo "CHECK:shell-real-bash=FAIL"
-    grep -q "HOME=.*/sandbox" /tmp/openeral-session.env && echo "CHECK:home-sandbox=ok" || echo "CHECK:home-sandbox=FAIL"
-    grep -q "DATABASE_URL" /tmp/openeral-session.env && echo "CHECK:session-db-url=LEAK" || echo "CHECK:session-db-url=absent-ok"
-    grep -q "ANTHROPIC_API_KEY" /tmp/openeral-session.env && echo "CHECK:session-anthropic-key=LEAK" || echo "CHECK:session-anthropic-key=absent-ok"
+    [ -f /tmp/openrind-shell/init.done ] && echo "CHECK:init-marker=ok" || echo "CHECK:init-marker=FAIL"
+    [ -f /tmp/openrind-shell/database-url ] && echo "CHECK:db-url-store=ok" || echo "CHECK:db-url-store=FAIL"
+    [ ! -S /tmp/openrind-shell-bash.sock ] && echo "CHECK:no-init-daemon=ok" || echo "CHECK:no-init-daemon=FAIL"
+    grep -q "SHELL=.*bin/bash" /tmp/openrind-shell-session.env && echo "CHECK:shell-real-bash=ok" || echo "CHECK:shell-real-bash=FAIL"
+    grep -q "HOME=.*/sandbox" /tmp/openrind-shell-session.env && echo "CHECK:home-sandbox=ok" || echo "CHECK:home-sandbox=FAIL"
+    grep -q "DATABASE_URL" /tmp/openrind-shell-session.env && echo "CHECK:session-db-url=LEAK" || echo "CHECK:session-db-url=absent-ok"
+    grep -q "ANTHROPIC_API_KEY" /tmp/openrind-shell-session.env && echo "CHECK:session-anthropic-key=LEAK" || echo "CHECK:session-anthropic-key=absent-ok"
     echo "CHECK:home-writable=$(touch /sandbox/.check && echo ok || echo FAIL)"
     echo "CHECK:npm-userconfig=${NPM_CONFIG_USERCONFIG:-not-set}"
     NPM_REG=$(HOME=/sandbox npm config get registry 2>/dev/null || echo "npm-failed")
@@ -60,7 +60,7 @@ out=$(timeout 120 docker run --rm --network host \
 
     mkdir -p /sandbox/.claude
     printf "local-edit" > /sandbox/.claude/reinit-keep.md
-    REINIT_OUT=$(/opt/openeral/setup.sh 2>&1)
+    REINIT_OUT=$(/opt/openrind-shell/setup.sh 2>&1)
     case "$REINIT_OUT" in
       *"skipping PostgreSQL hydration"*) echo "CHECK:reinit-skip-hydration=ok" ;;
       *) echo "CHECK:reinit-skip-hydration=FAIL" ;;
@@ -71,7 +71,7 @@ out=$(timeout 120 docker run --rm --network host \
       echo "CHECK:reinit-preserves-local-edit=FAIL"
     fi
     printf "ensure-edit" > /sandbox/.claude/ensure-keep.md
-    if /usr/local/bin/openeral init --ensure >/tmp/openeral-ensure.out 2>&1; then
+    if /usr/local/bin/openrind-shell init --ensure >/tmp/openrind-shell-ensure.out 2>&1; then
       echo "CHECK:ensure-short-circuit=ok"
     else
       echo "CHECK:ensure-short-circuit=FAIL"
@@ -82,12 +82,12 @@ out=$(timeout 120 docker run --rm --network host \
       echo "CHECK:ensure-preserves-local-edit=FAIL"
     fi
 
-    /usr/local/bin/openeral-daemon-ensure
-    timeout 5 /usr/local/bin/openeral-daemon-ensure && echo "CHECK:second-ensure=ok" || echo "CHECK:second-ensure=FAIL"
-    HEALTH=$(node /opt/openeral/openeral-bash.mjs --health 2>/dev/null || true)
+    /usr/local/bin/openrind-shell-daemon-ensure
+    timeout 5 /usr/local/bin/openrind-shell-daemon-ensure && echo "CHECK:second-ensure=ok" || echo "CHECK:second-ensure=FAIL"
+    HEALTH=$(/usr/local/bin/openrind-shell-bash --health 2>/dev/null || true)
     echo "CHECK:daemon-health=$HEALTH"
     DAEMON_RESP=$(node -e "
-      const net=require(\"net\"),c=net.createConnection(\"/tmp/openeral-bash.sock\");
+      const net=require(\"net\"),c=net.createConnection(\"/tmp/openrind-shell-bash.sock\");
       let d=\"\";
       c.on(\"connect\",()=>c.write(JSON.stringify({command:\"echo daemon-works\"})+\"\n\"));
       c.on(\"data\",chunk=>d+=chunk);
@@ -96,7 +96,7 @@ out=$(timeout 120 docker run --rm --network host \
     echo "CHECK:daemon-response=$DAEMON_RESP"
 
     echo "CHECK:node-available=$(which node)"
-    /usr/local/bin/openeral-bash --stop >/dev/null 2>&1 || true
+    /usr/local/bin/openrind-shell-bash --stop >/dev/null 2>&1 || true
     exit 0
   ' 2>&1)
 
@@ -122,7 +122,7 @@ check "session uses /sandbox home" "CHECK:home-sandbox=ok"
 check "session env no db url"    "CHECK:session-db-url=absent-ok"
 check "session env no Anthropic key" "CHECK:session-anthropic-key=absent-ok"
 check "home writable"           "CHECK:home-writable=ok"
-check "NPM_CONFIG_USERCONFIG"   "CHECK:npm-userconfig=/tmp/openeral-npmrc"
+check "NPM_CONFIG_USERCONFIG"   "CHECK:npm-userconfig=/tmp/openrind-shell-npmrc"
 check "npm reads socket.dev"    "CHECK:npm-registry=https://registry.socket.dev"
 check "user .npmrc untouched"   "CHECK:user-npmrc=absent-ok"
 check "SOCKET_TOKEN present"    "CHECK:socket-token-present=yes"

@@ -100,6 +100,6 @@ export function resolveProjectContext(opts: {
     memoryKeyRoot: roots.memoryKeyRoot,
     projectSlug,
     memoryDir: join(homeDir, '.claude', 'projects', projectSlug, 'memory'),
-    backupBaseDir: join(homeDir, '.claude', 'projects', projectSlug, '.openeral-memory-backups'),
+    backupBaseDir: join(homeDir, '.claude', 'projects', projectSlug, '.openrind-shell-memory-backups'),
   };
 }

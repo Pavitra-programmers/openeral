@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * openeral-bash — long-lived OpenEral daemon and compatibility bash client.
+ * openrind-shell-bash — long-lived compatibility daemon and bash client.
  *
  * Two modes:
  *
@@ -24,14 +24,37 @@ import { createServer, createConnection } from 'node:net';
 import { existsSync, unlinkSync, chmodSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const SOCKET_PATH = '/tmp/openeral-bash.sock';
+const SOCKET_PATH = process.env.OPENRIND_SHELL_SOCKET
+  || process.env.OPENERAL_SOCKET
+  || '/tmp/openrind-shell-bash.sock';
 const SYNC_PREFIXES = [
   { pathPrefix: '/.claude', pathPrefixKind: 'dir' },
+  { pathPrefix: '/.openrind-shell', pathPrefixKind: 'dir' },
   { pathPrefix: '/.openeral', pathPrefixKind: 'dir' },
   { pathPrefix: '/.claude.json', pathPrefixKind: 'file' },
 ];
-const SYNC_EXCLUDES = new Set(['node_modules', '.git', '.cache', '.openeral-memory-backups']);
-const DB_URL_FILE = process.env.OPENERAL_DB_URL_FILE || '/tmp/openeral/database-url';
+const SYNC_EXCLUDES = new Set([
+  'node_modules',
+  '.git',
+  '.cache',
+  '.openrind-shell-memory-backups',
+  '.openeral-memory-backups',
+]);
+const DB_URL_FILE = process.env.OPENRIND_SHELL_DB_URL_FILE
+  || process.env.OPENERAL_DB_URL_FILE
+  || '/tmp/openrind-shell/database-url';
+let syncMutex = Promise.resolve();
+
+function runWithSyncMutex(fn) {
+  const run = syncMutex.then(fn, fn);
+  syncMutex = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+function formatError(err, label) {
+  const error = err instanceof Error ? err : new Error(String(err));
+  return `${label}: ${error.message}`;
+}
 
 function loadStoredDatabaseUrl() {
   if (process.env.DATABASE_URL) return;
@@ -44,11 +67,15 @@ function loadStoredDatabaseUrl() {
 }
 
 function workspaceIdFromEnv() {
-  return process.env.WORKSPACE_ID || process.env.OPENSHELL_SANDBOX_ID || 'default';
+  return process.env.OPENRIND_SHELL_WORKSPACE_ID
+    || process.env.OPENERAL_WORKSPACE_ID
+    || process.env.WORKSPACE_ID
+    || process.env.OPENSHELL_SANDBOX_ID
+    || 'default';
 }
 
 function syncRootFromEnv() {
-  return process.env.OPENERAL_HOME || '/sandbox';
+  return process.env.OPENRIND_SHELL_HOME || process.env.OPENERAL_HOME || '/sandbox';
 }
 
 async function runPgQuery(pool, sql) {
@@ -77,22 +104,25 @@ async function runPgQuery(pool, sql) {
 
 async function startDaemon() {
   loadStoredDatabaseUrl();
-  const { initMarkerMatches } = await import('/opt/openeral/dist/init-marker.js');
-  const { createOpeneralShell } = await import('/opt/openeral/dist/shell.js');
-  const { getDatabaseConnection } = await import('/opt/openeral/dist/db/embedded.js');
-  const { syncToFs, syncFromFs, watchAndSync } = await import('/opt/openeral/dist/sync.js');
+  const { initMarkerMatches } = await import('/opt/openrind-shell/dist/init-marker.js');
+  const { createOpenrindShell } = await import('/opt/openrind-shell/dist/shell.js');
+  const { getDatabaseConnection } = await import('/opt/openrind-shell/dist/db/embedded.js');
+  const { syncToFs, syncFromFs, watchAndSync } = await import('/opt/openrind-shell/dist/sync.js');
 
   const workspaceId = workspaceIdFromEnv();
   const syncRoot = syncRootFromEnv();
-  const enableSync = process.env.OPENERAL_ENABLE_SYNC === '1' && !!process.env.DATABASE_URL;
+  const enableSync = (
+    process.env.OPENRIND_SHELL_ENABLE_SYNC === '1'
+    || process.env.OPENERAL_ENABLE_SYNC === '1'
+  ) && !!process.env.DATABASE_URL;
   const hydrateOnStart = enableSync && !initMarkerMatches({ workspaceId });
-  const stopWatchers = [];
+  const syncWatchers = [];
   let server;
   let shuttingDown = false;
 
   const { pool, connectionString } = await getDatabaseConnection();
 
-  async function flushSync() {
+  async function syncFromRealFsInner() {
     if (!enableSync) return 0;
     let count = 0;
     for (const prefix of SYNC_PREFIXES) {
@@ -104,14 +134,74 @@ async function startDaemon() {
     return count;
   }
 
+  async function flushSync() {
+    return runWithSyncMutex(syncFromRealFsInner);
+  }
+
+  async function syncToRealFs() {
+    if (!enableSync) return 0;
+    return runWithSyncMutex(async () => {
+      let count = 0;
+      for (let index = 0; index < SYNC_PREFIXES.length; index++) {
+        const hydrate = () => syncToFs(pool, workspaceId, syncRoot, {
+          ...SYNC_PREFIXES[index],
+          excludeDirs: SYNC_EXCLUDES,
+        });
+        const watcher = syncWatchers[index];
+        count += watcher ? await watcher.suspend(hydrate) : await hydrate();
+        watcher?.markClean();
+      }
+      return count;
+    });
+  }
+
+  async function execCommandWithSync(command) {
+    try {
+      await flushSync();
+    } catch (err) {
+      return { stdout: '', stderr: `${formatError(err, 'openrind-shell-bash: pre-sync failed')}\n`, exitCode: 1 };
+    }
+
+    let result;
+    let commandError;
+    try {
+      result = await shell.exec(command);
+    } catch (err) {
+      commandError = err;
+    }
+
+    try {
+      await syncToRealFs();
+    } catch (err) {
+      const detail = `${formatError(err, 'openrind-shell-bash: post-sync failed')}\n`;
+      if (commandError) {
+        return {
+          stdout: '',
+          stderr: `${formatError(commandError, 'openrind-shell-bash: command failed')}\n${detail}`,
+          exitCode: 1,
+        };
+      }
+      return {
+        stdout: result?.stdout ?? '',
+        stderr: `${result?.stderr ?? ''}${detail}`,
+        exitCode: result?.exitCode === 0 ? 1 : result?.exitCode ?? 1,
+      };
+    }
+
+    if (commandError) {
+      return { stdout: '', stderr: `${formatError(commandError, 'openrind-shell-bash: command failed')}\n`, exitCode: 1 };
+    }
+    return result;
+  }
+
   async function shutdown(code = 0) {
     if (shuttingDown) return;
     shuttingDown = true;
-    for (const stop of stopWatchers) {
-      try { stop(); } catch {}
+    for (const watcher of syncWatchers) {
+      try { watcher.stop(); } catch {}
     }
     try { await flushSync(); } catch (err) {
-      process.stderr.write(`openeral-bash: final sync failed: ${err.message}\n`);
+      process.stderr.write(`openrind-shell-bash: final sync failed: ${err.message}\n`);
       code = code || 1;
     }
     try { await pool.end(); } catch {}
@@ -126,11 +216,11 @@ async function startDaemon() {
       if (prefix.pathPrefixKind === 'dir') {
         mkdirSync(join(syncRoot, prefix.pathPrefix), { recursive: true });
       }
-      const count = await syncToFs(pool, workspaceId, syncRoot, {
+      const count = await runWithSyncMutex(() => syncToFs(pool, workspaceId, syncRoot, {
         ...prefix,
         excludeDirs: SYNC_EXCLUDES,
-      });
-      process.stderr.write(`openeral-bash: hydrated ${count} item(s) under ${prefix.pathPrefix}\n`);
+      }));
+      process.stderr.write(`openrind-shell-bash: hydrated ${count} item(s) under ${prefix.pathPrefix}\n`);
     }
   } else if (enableSync) {
     mkdirSync(syncRoot, { recursive: true });
@@ -141,7 +231,7 @@ async function startDaemon() {
     }
   }
 
-  const shell = await createOpeneralShell({
+  const shell = await createOpenrindShell({
     connectionString,
     workspaceId,
     migrate: false, // setup.sh already ran migrations
@@ -155,13 +245,19 @@ async function startDaemon() {
 
   if (enableSync) {
     for (const prefix of SYNC_PREFIXES) {
-      stopWatchers.push(watchAndSync(pool, workspaceId, syncRoot, {
+      syncWatchers.push(watchAndSync(pool, workspaceId, syncRoot, {
         ...prefix,
         excludeDirs: SYNC_EXCLUDES,
         debounceMs: 1000,
+        syncFn: async () => {
+          await runWithSyncMutex(() => syncFromFs(pool, workspaceId, syncRoot, {
+            ...prefix,
+            excludeDirs: SYNC_EXCLUDES,
+          }));
+        },
       }));
     }
-    process.stderr.write(`openeral-bash: scoped sync enabled for ${SYNC_PREFIXES.map(p => p.pathPrefix).join(', ')}\n`);
+    process.stderr.write(`openrind-shell-bash: scoped sync enabled for ${SYNC_PREFIXES.map(p => p.pathPrefix).join(', ')}\n`);
   }
 
   server = createServer((conn) => {
@@ -219,7 +315,7 @@ async function startDaemon() {
           return;
         }
 
-        const result = await shell.exec(command);
+        const result = await execCommandWithSync(command);
         conn.end(JSON.stringify({
           stdout: result.stdout,
           stderr: result.stderr,
@@ -228,7 +324,7 @@ async function startDaemon() {
       } catch (err) {
         conn.end(JSON.stringify({
           stdout: '',
-          stderr: `openeral-bash: ${err.message}\n`,
+          stderr: `openrind-shell-bash: ${err.message}\n`,
           exitCode: 1,
         }) + '\n');
       }
@@ -240,7 +336,7 @@ async function startDaemon() {
   server.listen(SOCKET_PATH, () => {
     // Make socket accessible to sandbox user
     try { chmodSync(SOCKET_PATH, 0o777); } catch {}
-    process.stderr.write(`openeral-bash: daemon listening on ${SOCKET_PATH}\n`);
+    process.stderr.write(`openrind-shell-bash: daemon listening on ${SOCKET_PATH}\n`);
   });
 
   // Graceful shutdown
@@ -296,14 +392,14 @@ function pgViaDaemon(sql) {
 
 async function execStandalone(command) {
   loadStoredDatabaseUrl();
-  const { createOpeneralShell } = await import('/opt/openeral/dist/shell.js');
-  const { getDatabaseConnection } = await import('/opt/openeral/dist/db/embedded.js');
+  const { createOpenrindShell } = await import('/opt/openrind-shell/dist/shell.js');
+  const { getDatabaseConnection } = await import('/opt/openrind-shell/dist/db/embedded.js');
 
   const workspaceId = workspaceIdFromEnv();
 
   const { pool, connectionString } = await getDatabaseConnection();
 
-  const shell = await createOpeneralShell({
+  const shell = await createOpenrindShell({
     connectionString,
     workspaceId,
     migrate: false,
@@ -315,7 +411,7 @@ async function execStandalone(command) {
 
 async function pgStandalone(sql) {
   loadStoredDatabaseUrl();
-  const { getDatabaseConnection } = await import('/opt/openeral/dist/db/embedded.js');
+  const { getDatabaseConnection } = await import('/opt/openrind-shell/dist/db/embedded.js');
   const { pool } = await getDatabaseConnection();
   try {
     return await runPgQuery(pool, sql);
@@ -404,6 +500,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  process.stderr.write(`openeral-bash: ${err.message}\n`);
+  process.stderr.write(`openrind-shell-bash: ${err.message}\n`);
   process.exit(1);
 });

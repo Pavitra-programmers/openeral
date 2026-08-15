@@ -59,6 +59,9 @@ export interface OpeneralShellOptions {
   pool?: pg.Pool;
 }
 
+/** Canonical public name; OpeneralShellOptions remains a source-compatible alias. */
+export type OpenrindShellOptions = OpeneralShellOptions;
+
 function makePgCommand(pool: pg.Pool) {
   return defineCommand('pg', async (args: string[]) => {
     const sql = args.join(' ');
@@ -146,6 +149,9 @@ export async function createOpeneralShell(opts: OpeneralShellOptions): Promise<B
   await bash.exec('shopt -s expand_aliases');
   return bash;
 }
+
+/** Canonical public factory. The implementation is shared with the legacy API. */
+export const createOpenrindShell = createOpeneralShell;
 
 export interface ExecResult {
   stdout: string;

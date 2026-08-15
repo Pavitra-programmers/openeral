@@ -10,10 +10,12 @@ set -euo pipefail
 # Optional:
 #   OPENSHELL_BIN                default: vendor/openshell/target/debug/openshell
 #   OPENSHELL_XDG_CONFIG_HOME    isolated OpenShell client config
-#   OPENERAL_FUSE_E2E_IMAGE      default: openeral-fuse:test
-#   OPENERAL_FUSE_E2E_KEEP=1     retain the final sandbox for inspection
-#   OPENERAL_FUSE_REAL_CLAUDE=1  run a provider-backed Claude write
-#   OPENERAL_FUSE_E2E_PROVIDER   provider name attached for the Claude stage
+#   OPENRIND_SHELL_FUSE_E2E_IMAGE      default: openrind-shell-fuse:test
+#   OPENRIND_SHELL_FUSE_E2E_KEEP=1     retain the final sandbox for inspection
+#   OPENRIND_SHELL_FUSE_REAL_CLAUDE=1  run a provider-backed Claude write
+#   OPENRIND_SHELL_FUSE_E2E_PROVIDER   provider attached for the Claude stage
+#
+# OPENERAL_FUSE_* names remain accepted as legacy aliases.
 #
 # The image policy must permit DATABASE_URL's host. The stock primary policy
 # permits Supabase poolers. tests/fuse/Dockerfile.local-postgres builds an
@@ -27,16 +29,18 @@ OPENSHELL_GATEWAY_ENDPOINT="${OPENSHELL_GATEWAY_ENDPOINT:?OPENSHELL_GATEWAY_ENDP
 OPENSHELL_BIN="${OPENSHELL_BIN:-$repo_root/vendor/openshell/target/debug/openshell}"
 OPENSHELL_XDG_CONFIG_HOME="${OPENSHELL_XDG_CONFIG_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}}"
 OPENSHELL_WORKSPACE="${OPENSHELL_WORKSPACE:-default}"
-IMAGE="${OPENERAL_FUSE_E2E_IMAGE:-openeral-fuse:test}"
-KEEP="${OPENERAL_FUSE_E2E_KEEP:-0}"
-RUN_ID="${OPENERAL_FUSE_E2E_RUN_ID:-$(date +%s)-$$}"
+IMAGE="${OPENRIND_SHELL_FUSE_E2E_IMAGE:-${OPENERAL_FUSE_E2E_IMAGE:-openrind-shell-fuse:test}}"
+KEEP="${OPENRIND_SHELL_FUSE_E2E_KEEP:-${OPENERAL_FUSE_E2E_KEEP:-0}}"
+RUN_REAL_CLAUDE="${OPENRIND_SHELL_FUSE_REAL_CLAUDE:-${OPENERAL_FUSE_REAL_CLAUDE:-0}}"
+CLAUDE_PROVIDER="${OPENRIND_SHELL_FUSE_E2E_PROVIDER:-${OPENERAL_FUSE_E2E_PROVIDER:-}}"
+RUN_ID="${OPENRIND_SHELL_FUSE_E2E_RUN_ID:-${OPENERAL_FUSE_E2E_RUN_ID:-$(date +%s)-$$}}"
 RUN_TAG="$(printf '%s' "$RUN_ID" | cksum | awk '{print $1}')"
-VOLUME_WORKSPACE="openeral-fuse-e2e-$RUN_ID"
-FIRST_SANDBOX="ofe-a-$RUN_TAG"
-SECOND_SANDBOX="ofe-b-$RUN_TAG"
+VOLUME_WORKSPACE="openrind-shell-fuse-e2e-$RUN_ID"
+FIRST_SANDBOX="orse-a-$RUN_TAG"
+SECOND_SANDBOX="orse-b-$RUN_TAG"
 SENTINEL_CONTENT="durable-$RUN_ID"
-SENTINEL_PATH="/sandbox/work/.openeral/e2e-persistence.txt"
-DB_FILE="$(mktemp /tmp/openeral-fuse-e2e-db-XXXXXX)"
+SENTINEL_PATH="/sandbox/work/.openrind-shell/e2e-persistence.txt"
+DB_FILE="$(mktemp /tmp/openrind-shell-fuse-e2e-db-XXXXXX)"
 CURRENT_SANDBOX=""
 
 chmod 600 "$DB_FILE"
@@ -85,14 +89,17 @@ create_sandbox() {
     --name "$name"
     --from "$IMAGE"
     --fuse
-    --env "WORKSPACE_ID=$VOLUME_WORKSPACE"
+    --env "OPENRIND_SHELL_WORKSPACE_ID=$VOLUME_WORKSPACE"
     --upload "$DB_FILE:/sandbox/db-url"
     --no-tty
   )
 
-  if [ "${OPENERAL_FUSE_REAL_CLAUDE:-0}" = 1 ]; then
-    local provider="${OPENERAL_FUSE_E2E_PROVIDER:?OPENERAL_FUSE_E2E_PROVIDER is required for real Claude}"
-    args+=(--provider "$provider" --auto-providers --no-credential-warnings)
+  if [ "$RUN_REAL_CLAUDE" = 1 ]; then
+    [ -n "$CLAUDE_PROVIDER" ] || {
+      echo "FUSE E2E: OPENRIND_SHELL_FUSE_E2E_PROVIDER is required for real Claude" >&2
+      return 1
+    }
+    args+=(--provider "$CLAUDE_PROVIDER" --auto-providers --no-credential-warnings)
     for key in CLAUDE_CODE_USE_BEDROCK AWS_REGION AWS_DEFAULT_REGION ANTHROPIC_MODEL; do
       if [ -n "${!key:-}" ]; then
         args+=(--env "$key=${!key}")
@@ -101,7 +108,7 @@ create_sandbox() {
   fi
 
   CURRENT_SANDBOX="$name"
-  os "${args[@]}" -- openeral-init
+  os "${args[@]}" -- openrind-shell-init
 }
 
 sandbox_exec() {
@@ -111,7 +118,7 @@ sandbox_exec() {
 }
 
 health_json() {
-  sandbox_exec "$1" openeral-fused health
+  sandbox_exec "$1" openrind-shell-fused health
 }
 
 container_name() {
@@ -158,14 +165,14 @@ echo "=== Create and initialize primary FUSE sandbox ==="
 create_sandbox "$FIRST_SANDBOX"
 
 mount_output="$(sandbox_exec "$FIRST_SANDBOX" mount)"
-grep -q 'openeral on /sandbox/work type fuse' <<<"$mount_output"
-pass "OpenShell mounted openeral at /sandbox/work"
+grep -q 'openrind-shell on /sandbox/work type fuse' <<<"$mount_output"
+pass "OpenShell mounted Openrind Shell at /sandbox/work"
 
 echo "=== Filesystem conformance ==="
-os sandbox upload "$FIRST_SANDBOX" tests/fuse/conformance.mjs /tmp/openeral-fuse-conformance
+os sandbox upload "$FIRST_SANDBOX" tests/fuse/conformance.mjs /tmp/openrind-shell-fuse-conformance
 sandbox_exec "$FIRST_SANDBOX" \
   env NODE_NO_WARNINGS=1 HOME=/sandbox/work \
-  node /tmp/openeral-fuse-conformance/conformance.mjs
+  node /tmp/openrind-shell-fuse-conformance/conformance.mjs
 pass "FUSE behavioral conformance"
 
 echo "=== Durable sentinel ==="
@@ -180,13 +187,13 @@ sandbox_exec "$FIRST_SANDBOX" env NODE_NO_WARNINGS=1 node -e '
 ' "$SENTINEL_PATH" "$SENTINEL_CONTENT"
 pass "sentinel acknowledged after fsync"
 
-if [ "${OPENERAL_FUSE_REAL_CLAUDE:-0}" = 1 ]; then
+if [ "$RUN_REAL_CLAUDE" = 1 ]; then
   echo "=== Real Claude Code write ==="
   CLAUDE_SENTINEL="claude-$RUN_ID"
   sandbox_exec "$FIRST_SANDBOX" claude \
     --dangerously-skip-permissions \
-    -p "Use Bash to write exactly ${CLAUDE_SENTINEL} to /sandbox/work/.openeral/e2e-claude.txt, then reply exactly WROTE."
-  actual="$(sandbox_exec "$FIRST_SANDBOX" cat /sandbox/work/.openeral/e2e-claude.txt)"
+    -p "Use Bash to write exactly ${CLAUDE_SENTINEL} to /sandbox/work/.openrind-shell/e2e-claude.txt, then reply exactly WROTE."
+  actual="$(sandbox_exec "$FIRST_SANDBOX" cat /sandbox/work/.openrind-shell/e2e-claude.txt)"
   [ "$actual" = "$CLAUDE_SENTINEL" ]
   pass "real Claude wrote through the FUSE mount"
 fi
@@ -200,7 +207,7 @@ container="$(container_name "$FIRST_SANDBOX")"
   exit 1
 }
 restarts_before="$(docker inspect --format '{{.RestartCount}}' "$container")"
-sandbox_exec "$FIRST_SANDBOX" bash -lc 'kill -TERM "$(pidof openeral-fused)"' >/dev/null 2>&1 || true
+sandbox_exec "$FIRST_SANDBOX" bash -lc 'kill -TERM "$(pidof openrind-shell-fused)"' >/dev/null 2>&1 || true
 wait_for_recovery "$FIRST_SANDBOX" "$container" "$restarts_before"
 health_after="$(health_json "$FIRST_SANDBOX")"
 epoch_after="$(json_field "$health_after" leaseEpoch)"
@@ -217,8 +224,8 @@ actual="$(sandbox_exec "$SECOND_SANDBOX" cat "$SENTINEL_PATH")"
 [ "$actual" = "$SENTINEL_CONTENT" ]
 pass "same workspace restored after delete and recreate"
 
-if [ "${OPENERAL_FUSE_REAL_CLAUDE:-0}" = 1 ]; then
-  actual="$(sandbox_exec "$SECOND_SANDBOX" cat /sandbox/work/.openeral/e2e-claude.txt)"
+if [ "$RUN_REAL_CLAUDE" = 1 ]; then
+  actual="$(sandbox_exec "$SECOND_SANDBOX" cat /sandbox/work/.openrind-shell/e2e-claude.txt)"
   [ "$actual" = "$CLAUDE_SENTINEL" ]
   pass "real Claude write restored in the replacement sandbox"
 fi

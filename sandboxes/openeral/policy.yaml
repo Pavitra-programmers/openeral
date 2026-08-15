@@ -19,6 +19,7 @@ filesystem_policy:
   read_write:
     - /sandbox
     - /tmp
+    - /var/lib/openrind-shell/runtime
     - /var/lib/openeral/runtime
     - /dev/null
 
@@ -33,10 +34,10 @@ process:
 # its TSYNC seccomp prelude, then starts the daemon through the normal sandboxed
 # child path. Claude never receives /dev/fuse or mount capability.
 fuse_mounts:
-  - binary: /usr/local/bin/openeral-fused
+  - binary: /usr/local/bin/openrind-shell-fused
     args: ["serve"]
     mountpoint: /sandbox/work
-    fs_name: openeral
+    fs_name: openrind-shell
     allow_other: false
     startup_timeout_seconds: 30
 
@@ -55,6 +56,11 @@ network_policies:
     name: claude-code
     endpoints:
       - host: api.anthropic.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: full
+      - host: openrouter.ai
         port: 443
         protocol: rest
         enforcement: enforce
@@ -178,7 +184,35 @@ network_policies:
       - { path: /usr/bin/wget }
       - { path: "/sandbox/work/.cursor-server/**" }
 
-  # --- StringCost presign creation ---
+  # --- Openrind Gateway presign creation ---
+  openrind_gateway_presign:
+    name: openrind-gateway-presign
+    endpoints:
+      - host: app.openrind.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        request_body_credential_rewrite: true
+        rules:
+          - allow:
+              method: POST
+              path: /v1/presign
+    binaries:
+      - { path: /usr/bin/node }
+
+  # --- Openrind Gateway metered Anthropic proxy ---
+  openrind_gateway_proxy:
+    name: openrind-gateway-proxy
+    endpoints:
+      - host: proxy.openrind.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: full
+    binaries:
+      - { path: /usr/local/bin/claude-real }
+
+  # --- Legacy StringCost endpoints (one-release migration window) ---
   # setup.sh sends both provider placeholders to this endpoint. OpenShell
   # resolves STRINGCOST_API_KEY in the Authorization header and
   # ANTHROPIC_API_KEY in the JSON body without exposing either raw key.
@@ -232,7 +266,7 @@ network_policies:
       - { host: "*.pooler.supabase.com", port: 6543, tls: skip }
     binaries:
       - { path: /usr/bin/node }
-      - { path: /usr/local/bin/openeral-fused }
+      - { path: /usr/local/bin/openrind-shell-fused }
 
   # --- Copilot ---
   copilot:

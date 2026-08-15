@@ -9,7 +9,7 @@ export type DbPool = pg.Pool;
  * when the current process has `HTTPS_PROXY`/`HTTP_PROXY` set AND the target
  * host is not a loopback address.
  *
- * This is how openeral reaches an external PostgreSQL (e.g. Supabase) from
+ * This is how Openrind Shell reaches external PostgreSQL (e.g. Supabase) from
  * inside an OpenShell sandbox. The sandbox netns rejects direct TCP to
  * supabase:5432; the CONNECT tunnel is the only route.
  *
@@ -32,10 +32,16 @@ export function createPool(connectionString: string): DbPool {
   const poolConfig: pg.PoolConfig = {
     connectionString,
     max: 16,
-    connectionTimeoutMillis: 15000,
+    // Supavisor may need time to wake a paused database before accepting a
+    // session. The caller adds bounded retries around transient failures.
+    connectionTimeoutMillis: 60000,
   };
 
-  if (process.env.OPENERAL_REQUIRE_POSTGRES_TLS === '1' && !isLocalHost(targetHost)) {
+  if (
+    (process.env.OPENRIND_SHELL_REQUIRE_POSTGRES_TLS === '1'
+      || process.env.OPENERAL_REQUIRE_POSTGRES_TLS === '1')
+    && !isLocalHost(targetHost)
+  ) {
     let sslMode = '';
     try {
       sslMode = new URL(connectionString).searchParams.get('sslmode')?.toLowerCase() ?? '';

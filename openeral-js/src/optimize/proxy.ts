@@ -3,7 +3,7 @@
  *
  * Intercepts every /v1/messages request made by Claude Code, saves the token
  * usage to the local database in real-time, and forwards the request to the
- * real Anthropic API (or a StringCost proxy URL if configured).
+ * real Anthropic API (or an Openrind Gateway proxy URL if configured).
  *
  * Handles both streaming (text/event-stream) and non-streaming responses so
  * that Claude Code's behaviour is never affected.
@@ -20,7 +20,7 @@ export interface ProxyConfig {
   port?: number;
   /** Anthropic API key forwarded upstream. */
   anthropicApiKey: string;
-  /** Upstream base URL, e.g. 'https://api.anthropic.com' or a StringCost URL. */
+  /** Upstream base URL, e.g. Anthropic or Openrind Gateway. */
   anthropicBaseUrl: string;
   /** DB pool for saving metrics. null = run without DB (passthrough only). */
   pool: DbPool | null;
@@ -282,7 +282,7 @@ export class OptimizerProxy {
       },
     }).catch((err: Error) => {
       // Non-fatal — never block the response
-      process.stderr.write(`openeral: failed to log usage: ${err.message}\n`);
+      process.stderr.write(`openrind-shell: failed to log usage: ${err.message}\n`);
     }) as Promise<void>;
 
     // Track so drain() can wait for this write before pool.end()
@@ -314,7 +314,10 @@ export async function startProxy(config: Partial<ProxyConfig> & { port?: number;
     anthropicApiKey: config.anthropicApiKey ?? process.env.ANTHROPIC_API_KEY ?? '',
     anthropicBaseUrl: config.anthropicBaseUrl ?? 'https://api.anthropic.com',
     pool: config.pool ?? null,
-    workspaceId: config.workspaceId ?? process.env.OPENERAL_WORKSPACE_ID ?? 'default',
+    workspaceId: config.workspaceId
+      ?? process.env.OPENRIND_SHELL_WORKSPACE_ID
+      ?? process.env.OPENERAL_WORKSPACE_ID
+      ?? 'default',
     sessionId: config.sessionId,
   });
   await proxy.start();

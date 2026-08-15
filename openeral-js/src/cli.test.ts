@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { execFileSync, execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
-import { parseCliArgs, findRepoRoot } from './cli.js';
+import { parseCliArgs, findRepoRoot, openrindGatewayProxyBaseUrl } from './cli.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -97,16 +97,18 @@ echo "connected to: $DATABASE_URL"
   });
 });
 
-describe('openeral-shell skill shape', () => {
-  const skillPath = join(__dirname, '../../.claude/skills/openeral-shell/SKILL.md');
+describe('openrind-shell skill shape', () => {
+  const skillPath = join(__dirname, '../../.claude/skills/openrind-shell/SKILL.md');
   const skill = readFileSync(skillPath, 'utf8');
 
-  it('distinguishes the published compatibility image from the source FUSE runtime', () => {
-    expect(skill).toContain('ghcr.io/sandys/openeral/sandbox:just-bash');
-    expect(skill).toContain('Dockerfile.openeral');
+  it('defaults to FUSE and keeps the compatibility image explicitly scoped', () => {
+    expect(skill).toContain('ghcr.io/openrind/openrind-shell/sandbox:just-bash');
+    expect(skill).toContain('Dockerfile.openrind-shell');
     expect(skill).toContain('--fuse');
     expect(skill).toContain('all `/sandbox/work`');
-    expect(skill).toContain('published compatibility runtime');
+    expect(skill).toContain('Use the primary FUSE runtime by default');
+    expect(skill).toContain('Never silently downgrade a FUSE request');
+    expect(skill).toContain('requires registry pull access');
   });
 
   it('uses openshell-only commands (no npx, no pnpm)', () => {
@@ -122,15 +124,16 @@ describe('openeral-shell skill shape', () => {
     expect(skill).toContain('sandbox create --help | grep -- --fuse');
   });
 
-  it('creates StringCost from an env lookup without exposing its value in argv', () => {
-    expect(skill).toMatch(/openshell provider create[\s\S]*--name stringcost[\s\S]*--credential STRINGCOST_API_KEY/);
-    expect(skill).not.toMatch(/--credential ["']?STRINGCOST_API_KEY=/);
+  it('creates Openrind Gateway from an env lookup without exposing its value in argv', () => {
+    expect(skill).toContain('openrind-gateway');
+    expect(skill).toContain('OPENRIND_GATEWAY_API_KEY');
+    expect(skill).not.toMatch(/--credential ["']?OPENRIND_GATEWAY_API_KEY=/);
     expect(skill).not.toMatch(/openshell provider create --name db\b/);
   });
 
-  it('lets OpenShell create the StringCost presign inside the sandbox', () => {
+  it('lets OpenShell create the gateway presign inside the sandbox', () => {
     expect(skill).not.toContain('curl -fsS https://app.stringcost.com/v1/presign');
-    expect(skill).toContain('presign creation happens inside the sandbox');
+    expect(skill).toContain('Initialization calls the presign endpoint inside the sandbox');
   });
 
   it('documents openshell sandbox exec for one-off commands', () => {
@@ -152,6 +155,7 @@ describe('CLI launch database handling', () => {
     expect(cliSource).toMatch(/'sandbox',\s*'exec'/);
     expect(cliSource).toContain("'--env'");
     expect(cliSource).toContain('WORKSPACE_ID=');
+    expect(cliSource).toContain('OPENRIND_SHELL_WORKSPACE_ID');
     expect(cliSource).toContain('MIN_OPENSHELL_VERSION');
     expect(cliSource).toContain('OPENSHELL_BIN');
     expect(cliSource).toContain('OPENSHELL_GATEWAY_ENDPOINT');
@@ -171,14 +175,14 @@ describe('OpenShell runtime architecture', () => {
 
   it('keeps setup.sh as one-shot init, not a long-running service', () => {
     expect(setup).toContain('OPENERAL_INIT_MARKER');
-    expect(setup).toContain('OpenEral initialized for workspace');
+    expect(setup).toContain('Openrind Shell initialized for workspace');
     expect(setup).not.toContain('wait "$DAEMON_PID"');
     expect(setup).not.toContain('launching Claude Code');
   });
 
   it('starts the daemon lazily from runtime entrypoints', () => {
-    expect(claudeWrapper).toContain('openeral-daemon-ensure');
-    expect(pgClient).toContain('openeral-daemon-ensure');
+    expect(claudeWrapper).toContain('openrind-shell-daemon-ensure');
+    expect(pgClient).toContain('openrind-shell-daemon-ensure');
   });
 
   it('does not let the detached daemon inherit the flock descriptor', () => {
@@ -187,7 +191,7 @@ describe('OpenShell runtime architecture', () => {
 
   it('parents Claude so it can flush after Claude exits', () => {
     expect(claudeWrapper).toContain('/usr/local/bin/claude-real "$@" &');
-    expect(claudeWrapper).toContain('/usr/local/bin/openeral-bash --flush');
+    expect(claudeWrapper).toContain('/usr/local/bin/openrind-shell-bash --flush');
     expect(claudeWrapper).not.toContain('exec /usr/local/bin/claude-real');
   });
 
@@ -197,9 +201,9 @@ describe('OpenShell runtime architecture', () => {
   });
 
   it('uses the canonical OpenShell sandbox home and does not persist provider keys', () => {
-    expect(setup).toContain('OPENERAL_HOME="${OPENERAL_HOME:-/sandbox}"');
+    expect(setup).toContain('OPENRIND_SHELL_HOME="${OPENRIND_SHELL_HOME:-${OPENERAL_HOME:-/sandbox}}"');
     expect(setup).not.toContain('write_export ANTHROPIC_API_KEY');
-    expect(daemon).toContain("process.env.OPENERAL_HOME || '/sandbox'");
+    expect(daemon).toContain('process.env.OPENRIND_SHELL_HOME');
   });
 });
 
@@ -235,19 +239,38 @@ describe('CLI argument parsing', () => {
     });
   });
 
-  it('treats --help after -- as a Claude arg, not OpenEral help', () => {
+  it('treats --help after -- as a Claude arg, not Openrind Shell help', () => {
     const parsed = parseCliArgs(['--', '--help']);
 
     expect(parsed).toEqual({
       kind: 'launch',
-      workspaceId: 'openeral-claude',
+      workspaceId: 'openrind-shell-claude',
       claudeArgs: ['--help'],
     });
   });
 });
 
+describe('Openrind Gateway URL normalization', () => {
+  it('normalizes the canonical gateway presign URL', () => {
+    expect(openrindGatewayProxyBaseUrl(
+      'https://proxy.openrind.com/openrind-gateway-proxy/t/token-1/v1/messages?x=1',
+    )).toBe('https://proxy.openrind.com/openrind-gateway-proxy/t/token-1');
+  });
+
+  it('accepts a legacy StringCost presign during migration', () => {
+    expect(openrindGatewayProxyBaseUrl(
+      'https://proxy.stringcost.com/stringcost-proxy/t/token-2/v1/messages',
+    )).toBe('https://proxy.stringcost.com/stringcost-proxy/t/token-2');
+  });
+
+  it('rejects an unrelated proxy origin', () => {
+    expect(() => openrindGatewayProxyBaseUrl('https://example.com/t/token'))
+      .toThrow('Unexpected Openrind Gateway presign URL shape');
+  });
+});
+
 describe('built CLI entrypoint', () => {
-  const binPath = join(__dirname, '../dist/bin/openeral.js');
+  const binPath = join(__dirname, '../dist/bin/openrind-shell.js');
 
   it('prints help when run through the built bin path', () => {
     const out = execFileSync(process.execPath, [binPath, '--help'], {
@@ -257,12 +280,15 @@ describe('built CLI entrypoint', () => {
     });
 
     expect(out).toContain('Usage:');
-    expect(out).toContain('openeral memory refresh');
+    expect(out).toContain('openrind-shell memory refresh');
+    expect(out).toContain('Launch primary PostgreSQL FUSE runtime');
+    expect(out).toContain('--compat');
+    expect(out).toContain('Full PostgreSQL-backed FUSE workspace by default');
   });
 
   it('prints help when the built bin is invoked via a symlinked path', () => {
-    const tmpDir = `/tmp/openeral-bin-symlink-${Date.now()}`;
-    const symlinkPath = join(tmpDir, 'openeral');
+    const tmpDir = `/tmp/openrind-shell-bin-symlink-${Date.now()}`;
+    const symlinkPath = join(tmpDir, 'openrind-shell');
 
     mkdirSync(tmpDir, { recursive: true });
     symlinkSync(binPath, symlinkPath);
@@ -275,10 +301,20 @@ describe('built CLI entrypoint', () => {
       });
 
       expect(out).toContain('Usage:');
-      expect(out).toContain('openeral memory refresh');
+      expect(out).toContain('openrind-shell memory refresh');
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  it('retains the legacy openeral bin as a compatibility alias', () => {
+    const legacyBin = join(__dirname, '../dist/bin/openeral.js');
+    const out = execFileSync(process.execPath, [legacyBin, '--help'], {
+      cwd: join(__dirname, '..'),
+      encoding: 'utf8',
+      stdio: 'pipe',
+    });
+    expect(out).toContain('openrind-shell memory refresh');
   });
 });
 

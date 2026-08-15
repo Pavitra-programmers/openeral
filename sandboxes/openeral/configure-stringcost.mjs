@@ -12,15 +12,18 @@ import {
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-const home = process.env.OPENERAL_HOME || '/sandbox/work';
-const runtimeDir = process.env.OPENERAL_RUNTIME_DIR || '/var/lib/openeral/runtime';
-const presignPath = join(home, '.openeral', 'presign.json');
+const home = process.env.OPENRIND_SHELL_HOME || process.env.OPENERAL_HOME || '/sandbox/work';
+const runtimeDir = process.env.OPENRIND_SHELL_RUNTIME_DIR
+  || process.env.OPENERAL_RUNTIME_DIR
+  || '/var/lib/openrind-shell/runtime';
+const presignPath = join(home, '.openrind-shell', 'presign.json');
+const legacyPresignPath = join(home, '.openeral', 'presign.json');
 const settingsPath = join(home, '.claude', 'settings.json');
 const baseUrlPath = join(runtimeDir, 'anthropic-base-url');
 
 function normalize(raw) {
   const match = String(raw || '').trim().match(
-    /https:\/\/proxy\.stringcost\.com\/stringcost-proxy\/t\/[^\s"'<>]+/,
+    /https:\/\/(?:proxy\.openrind\.com\/openrind-gateway-proxy|proxy\.stringcost\.com\/stringcost-proxy)\/t\/[^\s"'<>]+/,
   );
   if (!match) return '';
   const url = new URL(match[0]);
@@ -28,13 +31,17 @@ function normalize(raw) {
   url.search = '';
   url.hash = '';
   const value = url.toString().replace(/\/$/, '');
-  return /^https:\/\/proxy\.stringcost\.com\/stringcost-proxy\/t\/[^/]+$/.test(value)
+  return /^https:\/\/(?:proxy\.openrind\.com\/openrind-gateway-proxy|proxy\.stringcost\.com\/stringcost-proxy)\/t\/[^/]+$/.test(value)
     ? value
     : '';
 }
 
 function uploadedPresign() {
   const candidates = [
+    '/sandbox/openrind-gateway-presign',
+    '/sandbox/openrind-gateway-url',
+    '/sandbox/openrind-shell-input/presign.json',
+    '/sandbox/openrind-shell-input/openrind-gateway-url',
     '/sandbox/stringcost-presign',
     '/sandbox/stringcost-url',
     '/sandbox/openeral-input/presign.json',
@@ -69,22 +76,31 @@ function filesUnder(path, depth = 0) {
 }
 
 function storedPresign() {
-  try {
-    return normalize(JSON.parse(readFileSync(presignPath, 'utf8'))?.url || '');
-  } catch {
-    return '';
+  for (const path of [presignPath, legacyPresignPath]) {
+    try {
+      const value = normalize(JSON.parse(readFileSync(path, 'utf8'))?.url || '');
+      if (value) return value;
+    } catch {
+      // Continue to the legacy location.
+    }
   }
+  return '';
 }
 
 async function createPresign() {
-  if (!process.env.STRINGCOST_API_KEY || !process.env.ANTHROPIC_API_KEY) return '';
+  const openrindKey = process.env.OPENRIND_GATEWAY_API_KEY;
+  const legacyKey = process.env.STRINGCOST_API_KEY;
+  const gatewayKey = openrindKey || legacyKey;
+  if (!gatewayKey || !process.env.ANTHROPIC_API_KEY) return '';
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30_000);
   try {
-    const response = await fetch('https://app.stringcost.com/v1/presign', {
+    const response = await fetch(
+      openrindKey ? 'https://app.openrind.com/v1/presign' : 'https://app.stringcost.com/v1/presign',
+      {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${process.env.STRINGCOST_API_KEY}`,
+        Authorization: `Bearer ${gatewayKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -94,11 +110,15 @@ async function createPresign() {
         expires_in: -1,
         max_uses: -1,
         cost_limit: 10_000_000,
-        tags: ['openeral'],
-        metadata: { source: 'openeral-fuse-sandbox' },
+        metadata: {
+          source: 'openrind-shell-fuse-sandbox',
+          client: 'claude-code',
+          labels: ['openrind-shell', 'claude-code'],
+        },
       }),
       signal: controller.signal,
-    });
+      },
+    );
     if (!response.ok) {
       throw new Error(`presign failed (${response.status}): ${await response.text()}`);
     }
@@ -122,6 +142,11 @@ function persist(baseUrl) {
   try { settings = JSON.parse(readFileSync(settingsPath, 'utf8')); } catch {}
   settings.env = settings.env && typeof settings.env === 'object' ? settings.env : {};
   settings.env.ANTHROPIC_BASE_URL = baseUrl;
+  settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL ||= 'openrouter/free';
+  settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL ||= 'openrouter/free';
+  settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL ||= 'openrouter/free';
+  settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL ||= 'openrouter/free';
+  settings.env.CLAUDE_CODE_SUBAGENT_MODEL ||= 'openrouter/free';
   delete settings.env.ANTHROPIC_API_KEY;
   delete settings.env.ANTHROPIC_AUTH_TOKEN;
   writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
@@ -133,20 +158,21 @@ function persist(baseUrl) {
 async function main() {
   mkdirSync(runtimeDir, { recursive: true });
   const uploaded = uploadedPresign();
-  let baseUrl = normalize(process.env.STRINGCOST_PROXY_URL)
+  let baseUrl = normalize(process.env.OPENRIND_GATEWAY_PROXY_URL)
+    || normalize(process.env.STRINGCOST_PROXY_URL)
     || uploaded.url
     || storedPresign();
   if (!baseUrl) {
     try {
       baseUrl = await createPresign();
     } catch (error) {
-      process.stderr.write(`setup-fuse.sh: StringCost presign failed: ${error.message}\n`);
+      process.stderr.write(`setup-fuse.sh: Openrind Gateway presign failed: ${error.message}\n`);
     }
   }
 
   if (baseUrl) {
     persist(baseUrl);
-    process.stdout.write('setup-fuse.sh: StringCost proxy configured\n');
+    process.stdout.write('setup-fuse.sh: Openrind Gateway proxy configured\n');
   } else {
     rmSync(baseUrlPath, { force: true });
   }
@@ -154,6 +180,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  process.stderr.write(`setup-fuse.sh: StringCost configuration failed: ${error.message}\n`);
+  process.stderr.write(`setup-fuse.sh: Openrind Gateway configuration failed: ${error.message}\n`);
   process.exit(1);
 });

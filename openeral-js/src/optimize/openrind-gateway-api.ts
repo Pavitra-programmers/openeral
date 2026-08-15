@@ -1,19 +1,19 @@
 /**
- * StringCost API client
+ * OpenrindGateway API client
  *
- * How token counting works with StringCost:
- *   1. openrind-shell calls POST https://app.stringcost.com/v1/presign → gets a proxy URL
- *      e.g. https://proxy.stringcost.com/stringcost-proxy/t/{JWT}/v1/messages
+ * How token counting works with OpenrindGateway:
+ *   1. openrind-shell calls POST https://app.openrind.com/v1/presign → gets a proxy URL
+ *      e.g. https://proxy.openrind.com/openrind-gateway-proxy/t/{JWT}/v1/messages
  *   2. ANTHROPIC_BASE_URL is set to that proxy URL (without /v1/messages)
  *   3. Every Claude API response through that URL includes:
  *        "usage": { "input_tokens": N, "output_tokens": N, ... }
- *   4. StringCost logs these events server-side under the session (sid) embedded in the JWT
+ *   4. OpenrindGateway logs these events server-side under the session (sid) embedded in the JWT
  *
  * To retrieve the data later, we decode the JWT to get the session ID (sid)
- * and then query the StringCost management API at https://app.stringcost.com/v1/...
+ * and then query the OpenrindGateway management API at https://app.openrind.com/v1/...
  */
 
-export interface StringCostUsageEvent {
+export interface OpenrindGatewayUsageEvent {
   id: string;
   timestamp: string;
   model: string;
@@ -25,10 +25,10 @@ export interface StringCostUsageEvent {
 }
 
 /**
- * Decode the JWT from a StringCost presign URL to extract session metadata.
+ * Decode the JWT from a OpenrindGateway presign URL to extract session metadata.
  *
  * The presign URL format is:
- *   https://proxy.stringcost.com/stringcost-proxy/t/{JWT}/v1/messages
+ *   https://proxy.openrind.com/openrind-gateway-proxy/t/{JWT}/v1/messages
  *
  * The JWT is a base64url-encoded JSON with two fields:
  *   { "p": "<inner-base64url-JWT>", "s": "<signature>" }
@@ -41,7 +41,7 @@ export function decodePresignUrl(presignUrl: string): {
   clientId?: string;
   rawToken?: string;
 } {
-  const match = presignUrl.match(/\/stringcost-proxy\/t\/([^/]+)\//);
+  const match = presignUrl.match(/\/openrind-gateway-proxy\/t\/([^/]+)\//);
   if (!match) return {};
 
   const rawToken = match[1];
@@ -65,16 +65,16 @@ export function decodePresignUrl(presignUrl: string): {
 }
 
 /**
- * Fetch usage events from the StringCost management API.
+ * Fetch usage events from the OpenrindGateway management API.
  *
- * The management API lives at https://app.stringcost.com/v1/ — the same host
+ * The management API lives at https://app.openrind.com/v1/ — the same host
  * as the presign endpoint.  We try several plausible paths in order and return
  * whichever one responds with 200.
  *
  * Supported query parameters across all tried endpoints:
  *   limit, from (ISO timestamp), session_id / sink_id
  */
-export async function fetchStringCostEvents(
+export async function fetchOpenrindGatewayEvents(
   apiKey: string,
   options: {
     sessionId?: string;
@@ -82,7 +82,7 @@ export async function fetchStringCostEvents(
     from?: Date;
     limit?: number;
   } = {},
-): Promise<StringCostUsageEvent[]> {
+): Promise<OpenrindGatewayUsageEvent[]> {
   const { sessionId, from, limit = 1000 } = options;
 
   const params = new URLSearchParams();
@@ -104,18 +104,18 @@ export async function fetchStringCostEvents(
 
   if (sessionId) {
     candidates.push(
-      `https://app.stringcost.com/v1/sinks/${sessionId}/events`,
-      `https://app.stringcost.com/v1/sinks/${sessionId}`,
-      `https://app.stringcost.com/v1/sessions/${sessionId}/events`,
-      `https://app.stringcost.com/v1/sessions/${sessionId}`,
+      `https://app.openrind.com/v1/sinks/${sessionId}/events`,
+      `https://app.openrind.com/v1/sinks/${sessionId}`,
+      `https://app.openrind.com/v1/sessions/${sessionId}/events`,
+      `https://app.openrind.com/v1/sessions/${sessionId}`,
     );
   }
 
   candidates.push(
-    `https://app.stringcost.com/v1/events?${params}`,
-    `https://app.stringcost.com/v1/logs?${params}`,
-    `https://app.stringcost.com/v1/sessions?${params}`,
-    `https://app.stringcost.com/v1/usage?${params}`,
+    `https://app.openrind.com/v1/events?${params}`,
+    `https://app.openrind.com/v1/logs?${params}`,
+    `https://app.openrind.com/v1/sessions?${params}`,
+    `https://app.openrind.com/v1/usage?${params}`,
   );
 
   let lastError = 'no endpoints tried';
@@ -136,8 +136,8 @@ export async function fetchStringCostEvents(
 
       if (response.status === 401 || response.status === 403) {
         throw new Error(
-          'StringCost authentication failed. ' +
-          'Check that STRINGCOST_API_KEY is correct.',
+          'OpenrindGateway authentication failed. ' +
+          'Check that OPENRIND_GATEWAY_API_KEY is correct.',
         );
       }
 
@@ -155,23 +155,23 @@ export async function fetchStringCostEvents(
   }
 
   throw new Error(
-    `Could not retrieve usage data from StringCost API.\n` +
+    `Could not retrieve usage data from OpenrindGateway API.\n` +
     `Last error: ${lastError}\n\n` +
     `Possible reasons:\n` +
-    `  - StringCost may not yet expose a public management API for event queries\n` +
+    `  - OpenrindGateway may not yet expose a public management API for event queries\n` +
     `  - Your API key may not have read access to event data\n\n` +
-    `You can still view your usage at: https://app.stringcost.com`,
+    `You can still view your usage at: https://app.openrind.com`,
   );
 }
 
 /**
- * Normalise different JSON shapes that the StringCost API might return.
+ * Normalise different JSON shapes that the OpenrindGateway API might return.
  *
  * The proxy response looks like a standard Anthropic response body, so when
- * stringcost stores events it likely keeps the same shape:
+ * openrind-gateway stores events it likely keeps the same shape:
  *   { usage: { input_tokens, output_tokens, ... }, model, id, ... }
  */
-function normalizeEvents(data: unknown): StringCostUsageEvent[] {
+function normalizeEvents(data: unknown): OpenrindGatewayUsageEvent[] {
   if (Array.isArray(data)) {
     return data.flatMap((item) => normalizeEvent(item) ?? []);
   }
@@ -206,7 +206,7 @@ function normalizeEvents(data: unknown): StringCostUsageEvent[] {
   return [];
 }
 
-function normalizeEvent(item: unknown): StringCostUsageEvent | null {
+function normalizeEvent(item: unknown): OpenrindGatewayUsageEvent | null {
   if (!item || typeof item !== 'object') return null;
 
   const raw = item as Record<string, any>;
@@ -236,12 +236,12 @@ function normalizeEvent(item: unknown): StringCostUsageEvent | null {
 }
 
 /**
- * Store StringCost events in the local optimization_metrics table.
+ * Store OpenrindGateway events in the local optimization_metrics table.
  */
-export async function storeStringCostEvents(
+export async function storeOpenrindGatewayEvents(
   pool: any,
   workspaceId: string,
-  events: StringCostUsageEvent[],
+  events: OpenrindGatewayUsageEvent[],
 ): Promise<number> {
   const { calculateCost } = await import('./metrics.js');
   let stored = 0;
@@ -274,7 +274,7 @@ export async function storeStringCostEvents(
           [],
           'unknown',
           cacheHit,
-          0,   // tokens_saved — no optimisation baseline when syncing from StringCost
+          0,   // tokens_saved — no optimisation baseline when syncing from OpenrindGateway
           0,   // cost_saved
           0,   // savings_percentage
           JSON.stringify({
@@ -282,7 +282,7 @@ export async function storeStringCostEvents(
             cache_read_tokens: cacheReadTokens,
             cache_creation_tokens: cacheCreationTokens,
             event_id: event.id,
-            source: 'stringcost',
+            source: 'openrind-gateway',
           }),
         ],
       );
@@ -298,13 +298,13 @@ export async function storeStringCostEvents(
 }
 
 /**
- * Top-level sync: pull events from StringCost and persist them locally.
+ * Top-level sync: pull events from OpenrindGateway and persist them locally.
  *
  * Pass `sessionId` (from decodePresignUrl) to narrow the query to the
  * current workspace's session.  Without it, all events for the API key
  * are fetched.
  */
-export async function syncStringCostData(
+export async function syncOpenrindGatewayData(
   pool: any,
   workspaceId: string,
   apiKey: string,
@@ -323,7 +323,7 @@ export async function syncStringCostData(
     console.log(`   Session ID: ${sessionId.slice(0, 8)}...`);
   }
 
-  const events = await fetchStringCostEvents(apiKey, {
+  const events = await fetchOpenrindGatewayEvents(apiKey, {
     sessionId,
     clientId,
     from,
@@ -336,7 +336,7 @@ export async function syncStringCostData(
     return { fetched: 0, stored: 0 };
   }
 
-  const stored = await storeStringCostEvents(pool, workspaceId, events);
+  const stored = await storeOpenrindGatewayEvents(pool, workspaceId, events);
   console.log(`   Stored ${stored} new records`);
 
   return { fetched: events.length, stored };

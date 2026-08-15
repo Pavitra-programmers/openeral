@@ -1,5 +1,5 @@
 /**
- * openeral-js — PostgreSQL-backed virtual filesystem for AI agents via just-bash.
+ * Openrind Shell library compatibility path for PostgreSQL-backed agents.
  *
  * Replaces Linux FUSE with a TypeScript bash interpreter. The agent's bash tool
  * routes through just-bash with two virtual mounts:
@@ -12,11 +12,13 @@
 // Shell factory (main entry point)
 export {
   createOpeneralShell,
+  createOpenrindShell,
   createToolHandler,
   EXECUTION_LIMITS,
 } from './shell.js';
 export type {
   OpeneralShellOptions,
+  OpenrindShellOptions,
   ExecResult,
 } from './shell.js';
 
@@ -28,7 +30,7 @@ export { WorkspaceFs } from './workspace-fs/workspace-fs.js';
 export { parsePath, isDirectory, parsePkDisplay } from './pg-fs/path-parser.js';
 export type { PgNode } from './pg-fs/path-parser.js';
 
-// Filesystem sync (PostgreSQL ↔ real filesystem)
+// Compatibility-only filesystem sync (never attach this watcher to primary FUSE)
 export { syncToFs, syncFromFs, watchAndSync } from './sync.js';
 
 // Database utilities

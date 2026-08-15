@@ -1,6 +1,6 @@
 /**
  * Response logger - captures usage data from Anthropic API responses
- * Works with both direct Anthropic calls and StringCost proxied calls
+ * Works with direct Anthropic and Openrind Gateway proxied calls.
  */
 
 import type { DbPool } from '../db/pool.js';

@@ -143,7 +143,7 @@ export async function getOptimizationStats(
  */
 export function formatStats(stats: Awaited<ReturnType<typeof getOptimizationStats>>, days = 7): string {
   const lines = [
-    `Openeral - Usage Statistics (last ${days} day${days === 1 ? '' : 's'})`,
+    `Openrind Shell - Usage Statistics (last ${days} day${days === 1 ? '' : 's'})`,
     '═'.repeat(60),
     '',
     'COST',
@@ -157,9 +157,9 @@ export function formatStats(stats: Awaited<ReturnType<typeof getOptimizationStat
   ];
 
   if (stats.apiCallsMade === 0) {
-    lines.push('  No data yet — run sessions via "npx openeral" first.');
-    if (!process.env.STRINGCOST_API_KEY) {
-      lines.push('  Set STRINGCOST_API_KEY to sync live usage data from StringCost.');
+    lines.push('  No data yet — run sessions via "openrind-shell" first.');
+    if (!process.env.OPENRIND_GATEWAY_API_KEY && !process.env.STRINGCOST_API_KEY) {
+      lines.push('  Set OPENRIND_GATEWAY_API_KEY to sync live gateway usage data.');
     }
   } else {
     const totalCalls = stats.apiCallsMade;

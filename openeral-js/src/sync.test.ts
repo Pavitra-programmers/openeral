@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { getDatabaseConnection, stopEmbeddedDatabase } from './db/embedded.js';
 import { runMigrations } from './db/migrations.js';
-import { syncFromFs, syncToFs } from './sync.js';
+import { createHomeSyncOptions, isExcludedFromSync, syncFromFs, syncToFs } from './sync.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const syncSrc = readFileSync(join(__dirname, 'sync.ts'), 'utf8');
@@ -83,16 +83,12 @@ describe('sync.ts structural checks', () => {
     expect(syncSrc).toContain('!seenPaths.has(');
   });
 
-  it('syncFromFs uses st.mode, not hardcoded values', () => {
-    // Only check the walkDir function body (exclude the root dir INSERT)
-    const walkDirStart = syncSrc.indexOf('async function walkDir');
-    const walkDirEnd = syncSrc.indexOf('// Ensure root exists');
-    const walkDirBody = syncSrc.slice(walkDirStart, walkDirEnd);
-    expect(walkDirBody).toContain('st.mode');
-    const insertStatements = walkDirBody.match(/INSERT INTO[\s\S]*?ON CONFLICT[\s\S]*?\]/g) || [];
-    for (const stmt of insertStatements) {
-      expect(stmt).not.toMatch(/0o40755|0o100644/);
-    }
+  it('syncFromFs batches rows and preserves stat metadata', () => {
+    expect(syncSrc).toContain('FILE_BATCH_ROWS = 64');
+    expect(syncSrc).toContain('DIR_BATCH_ROWS = 256');
+    expect(syncSrc).toContain('FILE_BATCH_BYTES = 4 * 1024 * 1024');
+    expect(syncSrc).toContain('mode: stat.mode');
+    expect(syncSrc).toContain('stat.mtimeMs * 1_000_000');
   });
 
   it('syncToFs applies chmod after writing files', () => {
@@ -117,7 +113,7 @@ describe('sync.ts structural checks', () => {
     expect(syncSrc).toContain('DEFAULT_EXCLUDE_DIRS');
     expect(syncSrc).toContain("new Set(['node_modules', '.git'])");
     // shouldExclude must use .has(), not .test()
-    expect(syncSrc).toContain('excludeDirs.has(name)');
+    expect(syncSrc).toContain('opts.excludeDirs.has(segment)');
     // Must NOT have a regex-based exclude that would match .gitignore
     expect(syncSrc).not.toMatch(/exclude\.test\(name\)/);
   });
@@ -143,28 +139,37 @@ describe('sync.ts structural checks', () => {
   it('pruneLocal handles type conflicts (file↔dir)', () => {
     // pruneLocal must check dbTypes for type mismatches, not just presence
     expect(syncSrc).toContain('dbTypes');
-    expect(syncSrc).toContain('dbIsDir === false');
-    expect(syncSrc).toContain('dbIsDir === true');
+    expect(syncSrc).toContain('databaseIsDir === false');
+    expect(syncSrc).toContain('databaseIsDir === true');
   });
 
   it('supports scoped pathPrefix sync without changing legacy no-prefix behavior', () => {
-    expect(syncSrc).toContain('normalizePathPrefix');
+    expect(syncSrc).toContain('normalizeDbPath(opts?.pathPrefix');
     expect(syncSrc).toContain('opts?.pathPrefix');
     expect(syncSrc).toContain('path = $2 OR path LIKE $3');
-    expect(syncSrc).toContain('pruneLocal(targetDir, pathPrefix');
-    expect(syncSrc).toContain('pathPrefix === \'/\'');
+    expect(syncSrc).toContain('pruneLocal(targetDir, syncOpts.pathPrefix');
+    expect(syncSrc).toContain("syncOpts.pathPrefix === '/'");
   });
 
   it('watchAndSync passes pathPrefix through to syncFromFs', () => {
     const watchBody = syncSrc.slice(syncSrc.indexOf('export function watchAndSync'));
-    expect(watchBody).toContain('const pathPrefix = normalizePathPrefix(opts?.pathPrefix)');
-    expect(watchBody).toContain('const pathPrefixKind = opts?.pathPrefixKind ?? \'dir\'');
+    expect(watchBody).toContain('const syncOpts = normalizeSyncOptions(opts)');
     expect(watchBody).toContain('watchDir');
-    expect(watchBody).toContain('syncFromFs(pool, workspaceId, dir, { excludeDirs, pathPrefix, pathPrefixKind })');
+    expect(watchBody).toContain('syncFn(pool, workspaceId, dir, syncOpts)');
+    expect(watchBody).toContain('startedAtGeneration');
   });
 });
 
 describe('sync.ts behavior', () => {
+  it('excludes secrets and wildcard OpenClaw transcripts from home compatibility sync', () => {
+    const options = createHomeSyncOptions();
+    expect(isExcludedFromSync('/.ssh/id_ed25519', options)).toBe(true);
+    expect(isExcludedFromSync('/.npmrc', options)).toBe(true);
+    expect(isExcludedFromSync('/.openclaw/agents/main/sessions/a.jsonl', options)).toBe(true);
+    expect(isExcludedFromSync('/.openclaw/agents/main/agent.json', options)).toBe(false);
+    expect(isExcludedFromSync('/.gitignore', options)).toBe(false);
+  });
+
   it('confines syncFromFs deletions to the requested pathPrefix', async () => {
     const pool = await createTestPool();
     const workspaceId = 'sync-delete-prefix';
@@ -187,7 +192,7 @@ describe('sync.ts behavior', () => {
     expect(paths).not.toContain('/.claude/old.md');
     expect(paths).toContain('/.claude/keep.md');
     expect(paths).toContain('/src/code.ts');
-  }, 15000);
+  }, 30000);
 
   it('confines syncToFs hydration to the requested pathPrefix', async () => {
     const pool = await createTestPool();
@@ -202,7 +207,7 @@ describe('sync.ts behavior', () => {
 
     expect(readFileSync(join(root, '.claude', 'x.md'), 'utf8')).toBe('x');
     expect(existsSync(join(root, 'unrelated'))).toBe(false);
-  }, 15000);
+  }, 30000);
 
   it('persists an exact file pathPrefix without syncing the whole parent directory', async () => {
     const pool = await createTestPool();
@@ -226,7 +231,7 @@ describe('sync.ts behavior', () => {
     expect(paths).toContain('/.claude.json');
     expect(paths).not.toContain('/unrelated.txt');
     expect(Buffer.from(rows.find((row: any) => row.path === '/.claude.json').content).toString()).toBe('{"ok":true}');
-  }, 15000);
+  }, 30000);
 
   it('hydrates an exact file pathPrefix without creating unrelated rows on disk', async () => {
     const pool = await createTestPool();
@@ -244,5 +249,37 @@ describe('sync.ts behavior', () => {
 
     expect(readFileSync(join(root, '.claude.json'), 'utf8')).toBe('{"persisted":true}');
     expect(existsSync(join(root, '.claude'))).toBe(false);
-  }, 15000);
+  }, 30000);
+
+  it('round-trips a heavy scoped workspace without touching adjacent rows', async () => {
+    const pool = await createTestPool();
+    const workspaceId = 'sync-heavy-prefix';
+    const source = makeTempDir();
+    const target = makeTempDir();
+    const count = 320;
+    mkdirSync(join(source, '.claude', 'projects'), { recursive: true });
+    for (let index = 0; index < count; index++) {
+      writeFileSync(
+        join(source, '.claude', 'projects', `memory-${index}.md`),
+        `memory ${index}\n${'x'.repeat(index % 97)}`,
+      );
+    }
+
+    await seedWorkspace(pool, workspaceId);
+    await seedFile(pool, workspaceId, '/src/keep.ts', 'export const keep = true;');
+    await syncFromFs(pool as any, workspaceId, source, { pathPrefix: '/.claude' });
+
+    const { rows } = await pool.query(
+      `SELECT path FROM _openeral.workspace_files WHERE workspace_id = $1`,
+      [workspaceId],
+    );
+    expect(rows.filter((row: any) => row.path.startsWith('/.claude/projects/memory-')))
+      .toHaveLength(count);
+    expect(rows.some((row: any) => row.path === '/src/keep.ts')).toBe(true);
+
+    await syncToFs(pool as any, workspaceId, target, { pathPrefix: '/.claude' });
+    expect(readFileSync(join(target, '.claude', 'projects', 'memory-319.md'), 'utf8'))
+      .toBe(`memory 319\n${'x'.repeat(319 % 97)}`);
+    expect(existsSync(join(target, 'src'))).toBe(false);
+  }, 90000);
 });

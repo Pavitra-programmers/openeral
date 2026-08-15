@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-pub const DEFAULT_RUNTIME_DIR: &str = "/var/lib/openeral/runtime";
+pub const DEFAULT_RUNTIME_DIR: &str = "/var/lib/openrind-shell/runtime";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,11 +55,13 @@ impl RuntimeState {
 
     #[must_use]
     pub fn from_environment() -> Arc<Self> {
-        let workspace_id = std::env::var("WORKSPACE_ID")
+        let workspace_id = std::env::var("OPENRIND_SHELL_WORKSPACE_ID")
+            .or_else(|_| std::env::var("WORKSPACE_ID"))
             .or_else(|_| std::env::var("OPENSHELL_SANDBOX_ID"))
             .or_else(|_| std::env::var("OPENERAL_WORKSPACE_ID"))
             .unwrap_or_else(|_| "default".to_string());
-        let runtime_dir = std::env::var_os("OPENERAL_RUNTIME_DIR")
+        let runtime_dir = std::env::var_os("OPENRIND_SHELL_RUNTIME_DIR")
+            .or_else(|| std::env::var_os("OPENERAL_RUNTIME_DIR"))
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(DEFAULT_RUNTIME_DIR));
         Self::new(workspace_id, runtime_dir)

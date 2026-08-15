@@ -1,4 +1,4 @@
-# OpenEral FUSE Runtime: First-Class OpenShell Design
+# Openrind Shell FUSE Runtime: First-Class OpenShell Design
 
 **Status:** implemented experimental candidate; correctness and rollout contract
 
@@ -10,7 +10,7 @@
 [`c4b500a7de64d0b66e3ee8098f58d14299092162`](https://github.com/NVIDIA/OpenShell/tree/c4b500a7de64d0b66e3ee8098f58d14299092162),
 recorded in `vendor/openshell/UPSTREAM`
 
-**Audience:** the coding tool implementing OpenShell and OpenEral changes, and the
+**Audience:** the coding tool implementing OpenShell and Openrind Shell changes, and the
 reviewers responsible for security, filesystem correctness, and operability
 
 This document is the implementation and review contract. [FUSE.md](FUSE.md) is the
@@ -33,7 +33,7 @@ changes them:
 
 | Decision | Selected behavior |
 |---|---|
-| Product default | FUSE replaces scoped sync in the primary OpenEral sandbox image. |
+| Product default | FUSE replaces scoped sync in the primary Openrind Shell sandbox image. |
 | Persistent scope | Claude home and project workspace share one mount at `/sandbox/work`. |
 | Claude environment | `HOME=/sandbox/work`; default cwd `/sandbox/work`. |
 | Backing store | External PostgreSQL is mandatory. PGlite is unsupported in this image. |
@@ -43,7 +43,7 @@ changes them:
 | Mount owner | OpenShell supervisor mounts; Claude never receives mount capability. |
 | Daemon security | Spawn after supervisor hardening via the normal unprivileged child path. |
 | Crash recovery | FUSE daemon exit terminates the supervisor/container; Docker reconstructs the mount namespace. No in-place remount. |
-| Migration owner | TypeScript/OpenEral initialization owns all PostgreSQL schema migration. The Rust daemon never migrates. |
+| Migration owner | TypeScript/Openrind Shell initialization owns all PostgreSQL schema migration. The Rust daemon never migrates. |
 | Persistence authority | FUSE is the only sandbox-side persistence authority. The watcher is removed from this runtime. |
 | Historical Rust code | Evidence and test cases only; do not revive it wholesale. |
 
@@ -102,7 +102,7 @@ before the supervisor prelude**. Remount after that point is intentionally impos
 `ProcessHandle::spawn` prepares and enforces the child policy, enters the workload
 network namespace, drops to the configured sandbox UID/GID, sets `no_new_privs`,
 applies Landlock and child seccomp, strips supervisor-only environment, and injects
-the approved proxy/TLS/provider environment. `openeral-fused` must use this path.
+the approved proxy/TLS/provider environment. `openrind-shell-fused` must use this path.
 
 Do not spawn the daemon before startup hardening. A pre-hardening daemon would inherit
 root or supervisor privileges and become a larger escape surface than the agent.
@@ -151,16 +151,16 @@ OpenShell gateway and Docker driver
   -> PID 1: openshell-sandbox
        -> prepare workspace and mountpoint
        -> open /dev/fuse
-       -> mount(openeral, /sandbox/work, fuse, fd=N, ...)
+       -> mount(openrind-shell, /sandbox/work, fuse, fd=N, ...)
        -> apply supervisor TSYNC seccomp prelude
-       -> spawn openeral-fused as a normal sandbox child with mapped FUSE fd
+       -> spawn openrind-shell-fused as a normal sandbox child with mapped FUSE fd
        -> spawn SSH and sleep-infinity workload
        -> await workload, shutdown signal, or critical daemon exit
 
 Claude / git / npm / compiler
   -> kernel VFS at /sandbox/work
   -> FUSE fd
-  -> openeral-fused (sandbox UID, Landlock, seccomp, netns)
+  -> openrind-shell-fused (sandbox UID, Landlock, seccomp, netns)
   -> HTTP CONNECT through OpenShell proxy
   -> PostgreSQL TLS session inside the CONNECT tunnel
   -> _openeral.fs_* tables
@@ -280,10 +280,10 @@ Canonical image policy:
 
 ```yaml
 fuse_mounts:
-  - binary: /usr/local/bin/openeral-fused
+  - binary: /usr/local/bin/openrind-shell-fused
     args: ["serve"]
     mountpoint: /sandbox/work
-    fs_name: openeral
+    fs_name: openrind-shell
     allow_other: false
     startup_timeout_seconds: 30
 ```
@@ -309,7 +309,7 @@ Reject the sandbox before the mount syscall unless every entry satisfies:
 - absolute normalized mountpoint;
 - mountpoint is below the configured workspace root but is not the workspace root
   itself;
-- configured workspace root is `/sandbox` for the OpenEral image; reject an image or
+- configured workspace root is `/sandbox` for the Openrind Shell image; reject an image or
   request that resolves it to `/sandbox/work`;
 - no overlap with OpenShell control roots, SSH socket, TLS paths, netns paths, or any
   driver-provided mount target;
@@ -324,7 +324,7 @@ Reject the sandbox before the mount syscall unless every entry satisfies:
   character set;
 - `args` have count and byte limits;
 - `allow_other` defaults false; enabling it requires explicit policy and is not used
-  by OpenEral v1;
+  by Openrind Shell v1;
 - startup timeout is clamped to 1-120 seconds.
 
 Validation opens the binary with `O_PATH | O_NOFOLLOW`, records device/inode metadata,
@@ -362,7 +362,7 @@ fd=<actual_fd>,rootmode=40000,user_id=<sandbox_uid>,group_id=<sandbox_gid>,
 default_permissions,max_read=1048576
 ```
 
-Do not add `allow_other` for OpenEral. Do not set `MS_NOEXEC`: a coding workspace must
+Do not add `allow_other` for Openrind Shell. Do not set `MS_NOEXEC`: a coding workspace must
 support package-manager scripts, project virtual environments, and compiled test
 binaries. OpenShell's child seccomp, Landlock, process identity, and binary-attributed
 network policy remain the execution boundary. `MS_NOSUID` prevents workspace files
@@ -400,7 +400,7 @@ Rules:
 The daemon invocation is explicit and does not emulate `mount.fuse3` argv:
 
 ```text
-/usr/local/bin/openeral-fused serve
+/usr/local/bin/openrind-shell-fused serve
 ```
 
 It reads `OPENSHELL_FUSE_FD_0` and claims that fd. This avoids `/dev/fd/N` path
@@ -420,7 +420,7 @@ After `apply_supervisor_startup_hardening()`, spawn the FUSE daemon through the 
 - working directory `/` rather than the not-yet-ready FUSE mount.
 
 Landlock preparation must allow the daemon binary, read-only runtime libraries and CA
-files, `/tmp` or `/var/lib/openeral/runtime`, and the database readiness file. It does
+files, `/tmp` or `/var/lib/openrind-shell/runtime`, and the database readiness file. It does
 not need read/write access to `/dev/fuse`; it uses the inherited fd. The agent's
 Landlock rules need access to `/sandbox/work` but not `/dev/fuse`.
 
@@ -436,7 +436,7 @@ signals readiness only after:
 The supervisor waits up to `startup_timeout_seconds`. On timeout or daemon exit, fail
 startup. A mounted-but-unserved filesystem must never be reported Ready.
 
-Database readiness is separate. The FUSE session can be healthy while OpenEral init
+Database readiness is separate. The FUSE session can be healthy while Openrind Shell init
 has not yet supplied credentials or completed migrations.
 
 ### 6.5 Critical-child behavior
@@ -498,11 +498,12 @@ Tests must prove:
 Use the new upstream lifecycle event fences rather than creating a second restart
 state machine.
 
-## 7. OpenEral Daemon
+## 7. Openrind Shell Daemon
 
 ### 7.1 New implementation boundary
 
-Create a dedicated Rust binary named `openeral-fused`. It may reuse historical:
+Create a dedicated Rust binary installed as `openrind-shell-fused`. The Cargo package
+and source directory remain `openeral-fused` for compatibility. It may reuse historical:
 
 - fuser configuration patterns;
 - inode/attribute conversion helpers;
@@ -581,7 +582,7 @@ Requirements:
 - redact credentials and query strings from logs;
 - use a small pool or multiplexed connection strategy compatible with concurrent
   FUSE workers;
-- add `/usr/local/bin/openeral-fused` to only the PostgreSQL network policy rule.
+- add `/usr/local/bin/openrind-shell-fused` to only the PostgreSQL network policy rule.
 
 Force `synchronous_commit=on` for mutation and durability-barrier transactions. Reject
 connection options that disable TLS or weaken certificate/hostname verification. A
@@ -598,10 +599,10 @@ dependency must pass its advisory, license, source, and duplicate-version policy
 Runtime control data lives outside the FUSE mount:
 
 ```text
-/var/lib/openeral/runtime/database-url      mode 0600
-/var/lib/openeral/runtime/database.ready    mode 0600, atomic rename
-/var/lib/openeral/runtime/init.done          mode 0600, atomic rename
-/var/lib/openeral/runtime/fused.sock         mode 0600
+/var/lib/openrind-shell/runtime/database-url      mode 0600
+/var/lib/openrind-shell/runtime/database.ready    mode 0600, atomic rename
+/var/lib/openrind-shell/runtime/init.done          mode 0600, atomic rename
+/var/lib/openrind-shell/runtime/fused.sock         mode 0600
 ```
 
 The Dockerfile creates this directory as `sandbox:sandbox`, mode 0700, and the static
@@ -630,8 +631,8 @@ The Unix socket is the non-FUSE management channel. The same binary provides nar
 client subcommands:
 
 ```text
-openeral-fused health
-openeral-fused flush-all
+openrind-shell-fused health
+openrind-shell-fused flush-all
 ```
 
 `health` reports FUSE-loop, datasource hash, schema, lease owner/epoch, writable state,
@@ -925,7 +926,7 @@ background flush happened to persist. Newly created files are not covered merely
 
 These two rules intentionally model Linux ext4's
 [`auto_da_alloc`](https://cdn.kernel.org/doc/html/latest/admin-guide/ext4.html)
-protection for replace-via-rename and replace-via-truncate. They are explicit OpenEral
+protection for replace-via-rename and replace-via-truncate. They are explicit Openrind Shell
 guarantees, not generic POSIX guarantees and not a replacement for applications using
 `fsync` correctly.
 
@@ -935,12 +936,12 @@ dirty-source rename through its captured sequence, or truncate-rewrite close bar
 cannot be lost within PostgreSQL's own committed-durability contract. Documentation
 and tests must use exactly this language.
 
-## 10. OpenEral Initialization and Runtime
+## 10. Openrind Shell Initialization and Runtime
 
 ### 10.1 Image and policy
 
-Build `openeral-fused` in a Rust builder stage and copy a stripped binary to
-`/usr/local/bin/openeral-fused`. The runtime image does not install `fusermount`,
+Build the `openeral-fused` Cargo package in a Rust builder stage and copy a stripped
+binary to `/usr/local/bin/openrind-shell-fused`. The runtime image does not install `fusermount`,
 `fuse3`, or a setuid helper.
 
 Set or verify the image workspace as `/sandbox`; do not set OCI `WORKDIR` to the FUSE
@@ -950,11 +951,11 @@ mountpoint. The one-shot init runs from `/sandbox`, and the Claude wrapper chang
 Update `sandboxes/openeral/policy.yaml`:
 
 - add the static `fuse_mounts` declaration;
-- allow PostgreSQL endpoints for `/usr/local/bin/openeral-fused`;
+- allow PostgreSQL endpoints for `/usr/local/bin/openrind-shell-fused`;
 - retain `/usr/bin/node` temporarily because TypeScript init still performs migrations
   and legacy import; explicitly document that this means Claude, which shares the UID,
   can also invoke an authorized Node process against the permitted database endpoint;
-- keep Claude, package registry, Git, StringCost, and provider policies unchanged;
+- keep Claude, package registry, Git, Openrind Gateway, and provider policies unchanged;
 - keep `/sandbox` writable in Landlock so `/sandbox/work` is accessible;
 - do not expose `/dev/fuse` as a writable policy path to the agent.
 
@@ -962,12 +963,12 @@ Update structural lints to require the FUSE declaration and daemon binary while 
 forbidding setuid helpers, `/etc/fuse.conf`, fstab mutation, privileged images, and
 workload mount permissions.
 
-### 10.2 One-shot `openeral-init`
+### 10.2 One-shot `openrind-shell-init`
 
 The trailing command remains one-shot and idempotent:
 
 1. require and validate uploaded external `DATABASE_URL`;
-2. store it at `/var/lib/openeral/runtime/database-url` with mode 0600;
+2. store it at `/var/lib/openrind-shell/runtime/database-url` with mode 0600;
 3. run TypeScript migrations, including V7;
 4. acquire the volume/migration advisory lock;
 5. create volume/root rows and run one-time legacy import if needed;
@@ -977,15 +978,15 @@ The trailing command remains one-shot and idempotent:
 8. independently query PostgreSQL and require the reported lease owner/epoch to match
    the current `fs_mount_epochs` row;
 9. run the FUSE readiness probe described below;
-10. seed bundled skills and patch current Claude/StringCost settings through
+10. seed bundled skills and patch current Claude/Openrind Gateway settings through
    `/sandbox/work`, never outside the mount;
-11. call `openeral-fused flush-all` and require success;
+11. call `openrind-shell-fused flush-all` and require success;
 12. atomically write `init.done` with the same identity fields plus completion time;
 13. delete uploaded secret files;
 14. exit 0.
 
 The readiness probe creates a random 4 KiB canary below
-`/sandbox/work/.openeral/.init-probes/`, fsyncs the file and parent directory, reads
+`/sandbox/work/.openrind-shell/.init-probes/`, fsyncs the file and parent directory, reads
 back and compares the exact bytes, unlinks the canary, and fsyncs the parent directory
 again. Init removes stale probes from prior interrupted attempts. This proves the
 mounted request path and durability barrier work together; the independent lease-row
@@ -999,7 +1000,7 @@ and exit nonzero so `--ensure` can resume. Do not fall back to PGlite or an empt
 workspace.
 
 If a failure occurs after `database.ready` but before `init.done`, the daemon remains
-available and the next `openeral init --ensure` resumes the idempotent seed/settings
+available and the next `openrind-shell init --ensure` resumes the idempotent seed/settings
 steps. Publishing `init.done` is the product-ready barrier. The supervisor's FUSE
 readiness means only that the kernel session is served.
 
@@ -1029,15 +1030,15 @@ The primary wrapper becomes simpler:
 ```text
 export HOME=/sandbox/work
 cd /sandbox/work when invoked from /sandbox or /
-run openeral init --ensure; require matching init.done
-verify openeral-fused health is writable
+run openrind-shell init --ensure; require matching init.done
+verify openrind-shell-fused health is writable
 run claude-real as a child with signal forwarding
-on clean exit call openeral-fused flush-all and wait for completion
+on clean exit call openrind-shell-fused flush-all and wait for completion
 return Claude's status
 ```
 
-Remove `openeral-daemon-ensure`, scoped watcher startup, marker-gated hydration, and
-Node `openeral-bash --flush` from the primary FUSE image. The `pg` helper can use the
+Remove the compatibility daemon-ensure helper, scoped watcher startup, marker-gated
+hydration, and Node compatibility-daemon flush from the primary FUSE image. The `pg` helper can use the
 existing TypeScript database client or a daemon IPC query command, but it must not
 start a second persistence daemon.
 
@@ -1066,7 +1067,7 @@ part of the FUSE mount.
 
 ### Accepted v1 limitation
 
-Claude and `openeral-fused` share a UID. Claude can signal the daemon and may inspect
+Claude and `openrind-shell-fused` share a UID. Claude can signal the daemon and may inspect
 same-UID runtime state, including the database URL. Because Node remains authorized
 for TypeScript migrations in v1, the agent can also use Node to reach the same
 policy-declared PostgreSQL endpoint. Killing the daemon causes the sandbox to restart,
@@ -1190,10 +1191,10 @@ tests must fail with the documented errno, not be silently skipped.
 
 ### 13.4 Real product E2E
 
-With the actual patched OpenShell Docker gateway, published-style OpenEral image,
+With the actual patched OpenShell Docker gateway, published-style Openrind Shell image,
 Supabase URL, and real Claude credentials:
 
-1. create with `--fuse`, uploaded DB URL, and `-- openeral-init`;
+1. create with `--fuse`, uploaded DB URL, and `-- openrind-shell-init`;
 2. connect and verify `HOME` and cwd are `/sandbox/work`;
 3. verify init's lease cross-check and create/fsync/read/unlink canary completed before
    `init.done` appeared;
@@ -1258,7 +1259,7 @@ tree=30d1825d5be2a631823d941188803e29f09aedd5
 fetched_at=2026-08-14
 ```
 
-Keep the pristine source identity and OpenEral patch reviewable when rebasing. Commit generated SDK/API
+Keep the pristine source identity and Openrind Shell patch reviewable when rebasing. Commit generated SDK/API
 artifacts when OpenShell's normal generation workflow requires them. Put Rust targets,
 tool caches, generated scratch directories, and image-build outputs in the repository
 `.gitignore`; never hide them through selective commit behavior.
@@ -1281,7 +1282,7 @@ SDK/API artifacts. This is an estimate, not a target to game. At the Phase 1 exi
 record changed files, non-generated line count, generated line count, new dependencies,
 and driver-specific code. If the handwritten patch exceeds the envelope, split the
 upstream work into independently default-off resource/policy/driver and
-supervisor/lifecycle PRs before starting the OpenEral storage implementation.
+supervisor/lifecycle PRs before starting the Openrind Shell storage implementation.
 
 Measured implementation footprint against the pristine `UPSTREAM` archive, excluding
 `target`, `node_modules`, and the provenance file: 42 handwritten/source/doc paths
@@ -1306,7 +1307,7 @@ SDK conversion, tests, and documentation.
   gate rather than weakening OpenShell security controls.
 - If a newer OpenShell revision materially changes mount ordering, process hardening,
   or lifecycle state, rebase the pristine vendor snapshot first and rerun Phase 1
-  before carrying the OpenEral patch forward.
+  before carrying the Openrind Shell patch forward.
 
 ### 14.4 Paste-ready upstream proposal
 
@@ -1378,7 +1379,7 @@ rollout checks; record the final measured upstream patch footprint before submis
 
 ### Phase 2: PostgreSQL storage core — implemented
 
-- V7 migrations and normalized schema;
+- V7 normalized FUSE schema plus the V8 renamed-compatibility bridge;
 - TypeScript-only migration/seed/import flow;
 - Rust CONNECT + rustls pool;
 - lease/fencing and operation resolution;
@@ -1437,21 +1438,23 @@ e2e/rust/**
 generated SDK/API artifacts
 ```
 
-### OpenEral
+### Openrind Shell
 
 ```text
-.gitignore                                         # vendored build artifacts
-crates/openeral-fused/**                         # new
-openeral-js/src/db/migrations.ts                 # V7, sole migration owner
-openeral-js/src/db/fs-*.ts                       # init/import/admin as needed
-sandboxes/openeral/{Dockerfile,policy.yaml,setup.sh}
-sandboxes/openeral/openeral-claude.sh
-sandboxes/openeral/openeral-fused-health          # thin client or Rust subcommand
+.gitignore                                        # vendored build artifacts
+Dockerfile.openrind-shell                         # canonical primary image
+Dockerfile.openrind-shell-compat                  # canonical compatibility image
+crates/openeral-fused/**                          # Cargo package, installed under public name
+openeral-js/src/db/migrations.ts                  # V7, sole migration owner
+openeral-js/src/db/fuse-init.ts                   # init/import/admin
+sandboxes/openeral/{Dockerfile,policy.yaml,setup-fuse.sh}
+sandboxes/openeral/openeral-claude-fuse.sh
+crates/openeral-fused/src/management.rs            # health and flush subcommands
 tests/fuse/** and live E2E scripts
 README.md
 ARCHITECTURE.md
 BUILD.md
-.claude/skills/openeral-{dev,shell,navigate}/SKILL.md
+.claude/skills/openrind-{dev,shell,navigate}/SKILL.md
 openeral-js/lint.mjs
 ```
 
@@ -1510,7 +1513,7 @@ The design is implemented only when all of the following are true:
 - no legacy watcher participates in primary persistence;
 - real Claude Code runs with `HOME=/sandbox/work`, exits, restarts, continues, and
   survives sandbox delete/recreate from PostgreSQL alone;
-- all OpenShell and OpenEral unit, integration, lint, and E2E suites are green;
+- all OpenShell and Openrind Shell unit, integration, lint, and E2E suites are green;
 - the vendored source pin, patch footprint, generated artifacts, and upstream/fallback
   status are recorded reproducibly;
 - benchmark results and accepted limitations are published in the user and developer

@@ -195,6 +195,10 @@ export async function prepareFuseVolume(
       [workspaceId],
     );
     if (alreadyImported.rows.length === 0) {
+      const renamedWorkspace = await client.query(
+        'SELECT 1 FROM _openeral.renamed_workspace_imports WHERE workspace_id = $1',
+        [workspaceId],
+      );
       importedItems = await importLegacyWorkspace(
         client,
         workspaceId,
@@ -202,6 +206,7 @@ export async function prepareFuseVolume(
         rootNodeId,
         uid,
         gid,
+        renamedWorkspace.rows.length > 0,
       );
     }
   } finally {
@@ -222,19 +227,23 @@ async function importLegacyWorkspace(
   rootNodeId: number,
   fallbackUid: number,
   fallbackGid: number,
+  includeWholeWorkspace: boolean,
 ): Promise<number> {
   const result = await client.query<LegacyRow>(
     `SELECT path, is_dir, content, mode, size, mtime_ns, ctime_ns,
             atime_ns, nlink, uid, gid
        FROM _openeral.workspace_files
       WHERE workspace_id = $1
+        AND path <> '/'
         AND (
-          path IN ('/.claude', '/.openeral', '/.claude.json')
+          $2::boolean
+          OR path IN ('/.claude', '/.openrind-shell', '/.openeral', '/.claude.json')
           OR path LIKE '/.claude/%'
+          OR path LIKE '/.openrind-shell/%'
           OR path LIKE '/.openeral/%'
         )
       ORDER BY array_length(regexp_split_to_array(path, '/'), 1), path`,
-    [workspaceId],
+    [workspaceId, includeWholeWorkspace],
   );
 
   await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
@@ -267,7 +276,7 @@ async function importLegacyWorkspace(
 
     let imported = 0;
     for (const row of result.rows) {
-      validateLegacyPath(row.path);
+      validateLegacyPath(row.path, includeWholeWorkspace);
       const parentPath = dirnamePath(row.path);
       const parentNodeId = await ensureDirectory(parentPath);
       const prior = paths.get(row.path);
@@ -410,16 +419,20 @@ function basenamePath(path: string): string {
   return path.slice(path.lastIndexOf('/') + 1);
 }
 
-function validateLegacyPath(path: string): void {
+function validateLegacyPath(path: string, includeWholeWorkspace: boolean): void {
   if (!path.startsWith('/') || path.endsWith('/')) {
     throw new Error(`invalid legacy path: ${path}`);
   }
   const allowed = path === '/.claude'
+    || path === '/.openrind-shell'
     || path === '/.openeral'
     || path === '/.claude.json'
     || path.startsWith('/.claude/')
+    || path.startsWith('/.openrind-shell/')
     || path.startsWith('/.openeral/');
-  if (!allowed) throw new Error(`legacy path is outside the import allowlist: ${path}`);
+  if (!includeWholeWorkspace && !allowed) {
+    throw new Error(`legacy path is outside the import allowlist: ${path}`);
+  }
   for (const component of path.slice(1).split('/')) {
     if (!component || component === '.' || component === '..' || Buffer.byteLength(component) > 255) {
       throw new Error(`invalid legacy path component in ${path}`);

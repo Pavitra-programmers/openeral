@@ -28,30 +28,43 @@ function envOf(opts: InitMarkerOptions): NodeJS.ProcessEnv {
 export function workspaceIdForMarker(opts: InitMarkerOptions = {}): string {
   const env = envOf(opts);
   return opts.workspaceId
+    || env.OPENRIND_SHELL_WORKSPACE_ID
+    || env.OPENERAL_WORKSPACE_ID
     || env.WORKSPACE_ID
     || env.OPENSHELL_SANDBOX_ID
-    || env.OPENERAL_WORKSPACE_ID
     || 'default';
 }
 
 export function stateDirForMarker(opts: InitMarkerOptions = {}): string {
   const env = envOf(opts);
-  return opts.stateDir || env.OPENERAL_STATE_DIR || '/tmp/openeral';
+  return opts.stateDir
+    || env.OPENRIND_SHELL_STATE_DIR
+    || env.OPENERAL_STATE_DIR
+    || '/tmp/openrind-shell';
 }
 
 export function dataDirForMarker(opts: InitMarkerOptions = {}): string {
   const env = envOf(opts);
-  return opts.dataDir || env.OPENERAL_DATA_DIR || '/tmp/openeral/data';
+  return opts.dataDir
+    || env.OPENRIND_SHELL_DATA_DIR
+    || env.OPENERAL_DATA_DIR
+    || '/tmp/openrind-shell/data';
 }
 
 export function dbUrlFileForMarker(opts: InitMarkerOptions = {}): string {
   const env = envOf(opts);
-  return opts.dbUrlFile || env.OPENERAL_DB_URL_FILE || join(stateDirForMarker(opts), 'database-url');
+  return opts.dbUrlFile
+    || env.OPENRIND_SHELL_DB_URL_FILE
+    || env.OPENERAL_DB_URL_FILE
+    || join(stateDirForMarker(opts), 'database-url');
 }
 
 export function initMarkerPath(opts: InitMarkerOptions = {}): string {
   const env = envOf(opts);
-  return opts.markerPath || env.OPENERAL_INIT_MARKER || join(stateDirForMarker(opts), 'init.done');
+  return opts.markerPath
+    || env.OPENRIND_SHELL_INIT_MARKER
+    || env.OPENERAL_INIT_MARKER
+    || join(stateDirForMarker(opts), 'init.done');
 }
 
 export function storedDatabaseUrlForMarker(opts: InitMarkerOptions = {}): string {

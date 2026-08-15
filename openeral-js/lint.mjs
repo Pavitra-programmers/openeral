@@ -172,7 +172,7 @@ try {
   const primary = readFileSync('../sandboxes/openeral/Dockerfile', 'utf8');
   const compatibility = readFileSync('../sandboxes/openeral/Dockerfile.compat', 'utf8');
   const policy = readFileSync('../sandboxes/openeral/policy.yaml', 'utf8');
-  for (const required of ['openeral-fused', 'setup-fuse.sh', 'openeral-claude-fuse.sh']) {
+  for (const required of ['openrind-shell-fused', 'setup-fuse.sh', 'openeral-claude-fuse.sh']) {
     if (!primary.includes(required)) {
       fail('sandboxes/openeral/Dockerfile', `primary image must include ${required}`);
     }
@@ -180,13 +180,13 @@ try {
   if (/fuse3|libfuse|fuse\.conf|\/etc\/fstab/i.test(primary)) {
     fail('sandboxes/openeral/Dockerfile', 'must leave the device and mount operation to the OpenShell supervisor');
   }
-  if (!policy.includes('fuse_mounts:') || !policy.includes('binary: /usr/local/bin/openeral-fused')) {
+  if (!policy.includes('fuse_mounts:') || !policy.includes('binary: /usr/local/bin/openrind-shell-fused')) {
     fail('sandboxes/openeral/policy.yaml', 'primary policy must declare the trusted FUSE daemon');
   }
-  if (/COPY[^\n]*(?:openeral-fused|setup-fuse|openeral-claude-fuse)|\/dev\/fuse/i.test(compatibility)) {
+  if (/COPY[^\n]*(?:openeral-fused|openrind-shell-fused|setup-fuse|openeral-claude-fuse)|\/dev\/fuse/i.test(compatibility)) {
     fail('sandboxes/openeral/Dockerfile.compat', 'compatibility image must not install the FUSE runtime');
   }
-  if (!compatibility.includes("'/^fuse_mounts:/") || !compatibility.includes("/openeral-fused/d'")) {
+  if (!compatibility.includes("'/^fuse_mounts:/") || !compatibility.includes("/openrind-shell-fused/d'")) {
     fail('sandboxes/openeral/Dockerfile.compat', 'compatibility image must strip the primary policy FUSE declaration');
   }
   pass('primary uses supervisor-owned FUSE and compatibility stays FUSE-free');
@@ -215,11 +215,15 @@ if (shellSrc.includes("defineCommand('pg'") || shellSrc.includes('defineCommand(
 // ---------------------------------------------------------------------------
 console.log('\n--- Lint: sandbox imports use dist/ ---');
 
-for (const f of ['../sandboxes/openeral/setup.sh', '../sandboxes/openeral/openeral-bash.mjs']) {
+for (const f of [
+  '../sandboxes/openeral/setup.sh',
+  '../sandboxes/openeral/setup-fuse.sh',
+  '../sandboxes/openeral/openeral-bash.mjs',
+]) {
   try {
     const content = readFileSync(f, 'utf8');
-    if (/\/opt\/openeral\/src\//.test(content)) {
-      fail(f, 'imports from /opt/openeral/src/ — must use /opt/openeral/dist/');
+    if (/\/opt\/(?:openeral|openrind-shell)\/src\//.test(content)) {
+      fail(f, 'imports from src/ — sandbox scripts must use compiled dist/ files');
     }
   } catch {}
 }
@@ -353,7 +357,7 @@ console.log('\n--- Lint: exclude uses exact matching ---');
 
 if (syncContent.includes('.test(name)') && syncContent.includes('/node_modules|\\.git/')) {
   fail('src/sync.ts', 'exclude uses regex substring matching — .gitignore and .github would be wrongly excluded');
-} else if (!syncContent.includes('excludeDirs.has(name)')) {
+} else if (!syncContent.includes('opts.excludeDirs.has(segment)')) {
   fail('src/sync.ts', 'exclude must use Set.has() for exact directory name matching');
 } else {
   pass('exclude uses exact Set-based matching');
@@ -392,7 +396,7 @@ if (pruneIdx < 0 || firstMkdir < 0 || pruneIdx > firstMkdir) {
 // ---------------------------------------------------------------------------
 console.log('\n--- Lint: pruneLocal handles type conflicts ---');
 
-if (!syncContent.includes('dbTypes') || !syncContent.includes('dbIsDir === false') || !syncContent.includes('dbIsDir === true')) {
+if (!syncContent.includes('dbTypes') || !syncContent.includes('databaseIsDir === false') || !syncContent.includes('databaseIsDir === true')) {
   fail('src/sync.ts', 'pruneLocal must check dbTypes for file↔dir conflicts, not just presence');
 } else {
   pass('pruneLocal handles type conflicts');
@@ -408,7 +412,7 @@ console.log('\n--- Lint: README has no npx/pnpm (user-facing only) ---');
 try {
   const readme = readFileSync('../README.md', 'utf8');
   const forbidden = [
-    [/\bnpx openeral\b/, 'contains `npx openeral` — move to BUILD.md'],
+    [/\bnpx (?:openeral|openrind-shell)\b/, 'contains an npx product command — move it to BUILD.md'],
     [/\bpnpm (install|build|check|run)\b/, 'contains `pnpm install|build|check|run` — move to BUILD.md'],
     [/\bnpm install\b/, 'contains `npm install` — move to BUILD.md'],
   ];
@@ -424,20 +428,19 @@ try {
   pass('README not found (skipped)');
 }
 
-// BUILD.md SHOULD contain the build steps — verify the first npx-openeral
-// block shows users how to install+build first
+// If BUILD.md uses npx, verify the first product invocation follows install/build.
 console.log('\n--- Lint: BUILD.md installs before running ---');
 try {
   const build = readFileSync('../BUILD.md', 'utf8');
-  if (!build.includes('npx openeral')) {
+  const firstNpxProduct = build.search(/\bnpx (?:openeral|openrind-shell)\b/);
+  if (firstNpxProduct < 0) {
     pass('BUILD.md has no npx (skipped)');
   } else {
-    const firstOpeneral = build.indexOf('npx openeral');
-    const priorText = build.slice(0, firstOpeneral);
+    const priorText = build.slice(0, firstNpxProduct);
     if (!priorText.includes('pnpm install') && !priorText.includes('pnpm build')) {
-      fail('BUILD.md', 'first `npx openeral` must be preceded by `pnpm install && pnpm build` instructions');
+      fail('BUILD.md', 'the first npx product command must follow pnpm install/build instructions');
     } else {
-      pass('BUILD.md shows install+build before first npx openeral');
+      pass('BUILD.md shows install/build before its first npx product command');
     }
   }
 } catch {
@@ -451,8 +454,8 @@ try {
 console.log('\n--- Lint: migrations use advisory lock ---');
 
 const migrationsContent = readFileSync('src/db/migrations.ts', 'utf8');
-if (!migrationsContent.includes('pg_advisory_lock')) {
-  fail('src/db/migrations.ts', 'runMigrations must use pg_advisory_lock to serialize concurrent callers');
+if (!migrationsContent.includes('pg_try_advisory_lock')) {
+  fail('src/db/migrations.ts', 'runMigrations must use pg_try_advisory_lock to serialize concurrent callers');
 } else {
   pass('migrations use advisory lock');
 }
@@ -464,9 +467,9 @@ if (!migrationsContent.includes('pg_advisory_lock')) {
 console.log('\n--- Lint: skill checks node_modules ---');
 
 try {
-  const skill = readFileSync('../.claude/skills/openeral-shell/SKILL.md', 'utf8');
+  const skill = readFileSync('../.claude/skills/openrind-shell/SKILL.md', 'utf8');
   if (skill.includes('[ -d dist ]') && !skill.includes('node_modules')) {
-    fail('.claude/skills/openeral-shell/SKILL.md', 'bootstrap check must verify node_modules exists, not just dist');
+    fail('.claude/skills/openrind-shell/SKILL.md', 'bootstrap check must verify node_modules exists, not just dist');
   } else {
     pass('skill checks node_modules');
   }
@@ -568,25 +571,27 @@ try {
 }
 
 // ---------------------------------------------------------------------------
-// Lint 27: no stale test files referencing vendor/ or fork-specific fields
-// Catches: tests that depend on the removed vendor/openshell/ tree
+// Lint 27: primary FUSE entrypoints must not start compatibility synchronization
+// Catches: introducing a second persistence authority beside /sandbox/work
 // ---------------------------------------------------------------------------
-console.log('\n--- Lint: no stale vendor test scripts ---');
+console.log('\n--- Lint: primary FUSE has no compatibility watcher ---');
 
 try {
-  const { readdirSync } = await import('node:fs');
-  const testDir = '../tests';
-  try {
-    const tests = readdirSync(testDir);
-    for (const t of tests) {
-      const content = readFileSync(`${testDir}/${t}`, 'utf8');
-      if (content.includes('vendor/openshell')) {
-        fail(`tests/${t}`, 'references vendor/openshell which no longer exists');
-      }
+  const primaryFiles = [
+    '../sandboxes/openeral/setup-fuse.sh',
+    '../sandboxes/openeral/openeral-claude-fuse.sh',
+    '../sandboxes/openeral/pg-client-fuse.mjs',
+  ];
+  for (const file of primaryFiles) {
+    const content = readFileSync(file, 'utf8');
+    if (/watchAndSync|syncFromFs|syncToFs|openeral-bash|openrind-shell-bash/.test(content)) {
+      fail(file, 'primary FUSE runtime must not invoke compatibility sync or its daemon');
     }
-  } catch {}
-  pass('no stale vendor test scripts');
-} catch {}
+  }
+  pass('primary FUSE entrypoints have one persistence authority');
+} catch {
+  fail('sandboxes/openeral', 'primary FUSE entrypoints must exist');
+}
 
 // ---------------------------------------------------------------------------
 // Lint 28: setup.sh must use NPM_CONFIG_USERCONFIG for Socket.dev config
@@ -612,14 +617,14 @@ try {
 console.log('\n--- Lint: skill socket provider is conditional ---');
 
 try {
-  const skill = readFileSync('../.claude/skills/openeral-shell/SKILL.md', 'utf8');
+  const skill = readFileSync('../.claude/skills/openrind-shell/SKILL.md', 'utf8');
   // Find the openshell sandbox create line in Step 3c
   if (skill.includes('--provider socket --auto-providers')) {
     // Check it's inside a conditional block
     const socketIdx = skill.indexOf('--provider socket');
     const precedingBlock = skill.slice(Math.max(0, socketIdx - 300), socketIdx);
     if (!precedingBlock.includes('SOCKET_TOKEN')) {
-      fail('.claude/skills/openeral-shell/SKILL.md', '--provider socket must be conditional on SOCKET_TOKEN');
+      fail('.claude/skills/openrind-shell/SKILL.md', '--provider socket must be conditional on SOCKET_TOKEN');
     } else {
       pass('skill socket provider is conditional');
     }
@@ -680,32 +685,36 @@ if (!hasSandboxExec || !hasCreateEnv || !hasFuseRequest) {
 }
 
 // ---------------------------------------------------------------------------
-// Lint 32: StringCost management endpoint must be least privilege
+// Lint 32: Openrind Gateway management endpoints must be least privilege
 // Catches: exposing raw body placeholders or allowing broad management access
 // ---------------------------------------------------------------------------
-console.log('\n--- Lint: StringCost presign policy is scoped ---');
+console.log('\n--- Lint: Openrind Gateway presign policy is scoped ---');
 
 try {
   const policy = readFileSync('../sandboxes/openeral/policy.yaml', 'utf8');
-  const start = policy.indexOf('stringcost_presign:');
-  const end = policy.indexOf('\n  #', start + 1);
-  const block = policy.slice(start, end > 0 ? end : undefined);
-  for (const required of [
-    'host: app.stringcost.com',
-    'request_body_credential_rewrite: true',
-    'method: POST',
-    'path: /v1/presign',
-    '/usr/bin/node',
+  for (const [name, host] of [
+    ['openrind_gateway_presign:', 'host: app.openrind.com'],
+    ['stringcost_presign:', 'host: app.stringcost.com'],
   ]) {
-    if (!block.includes(required)) {
-      fail('sandboxes/openeral/policy.yaml', `StringCost presign policy missing ${required}`);
+    const start = policy.indexOf(name);
+    const end = policy.indexOf('\n  #', start + 1);
+    const block = policy.slice(start, end > 0 ? end : undefined);
+    for (const required of [
+      host,
+      'request_body_credential_rewrite: true',
+      'method: POST',
+      'path: /v1/presign',
+      '/usr/bin/node',
+    ]) {
+      if (!block.includes(required)) {
+        fail('sandboxes/openeral/policy.yaml', `${name} policy missing ${required}`);
+      }
+    }
+    if (block.includes('access: full')) {
+      fail('sandboxes/openeral/policy.yaml', `${name} must not use access: full`);
     }
   }
-  if (block.includes('access: full')) {
-    fail('sandboxes/openeral/policy.yaml', 'StringCost management endpoint must not use access: full');
-  } else {
-    pass('StringCost presign policy is method/path/body-rewrite constrained');
-  }
+  pass('current and legacy gateway presign policies are constrained');
 } catch {
   pass('policy.yaml not found (skipped)');
 }
@@ -719,8 +728,8 @@ console.log('\n--- Lint: sandbox home and session env are safe ---');
 try {
   const setup = readFileSync('../sandboxes/openeral/setup.sh', 'utf8');
   const dockerfile = readFileSync('../sandboxes/openeral/Dockerfile', 'utf8');
-  if (!setup.includes('OPENERAL_HOME="${OPENERAL_HOME:-/sandbox}"')) {
-    fail('sandboxes/openeral/setup.sh', 'must default OPENERAL_HOME to /sandbox');
+  if (!setup.includes('OPENRIND_SHELL_HOME="${OPENRIND_SHELL_HOME:-${OPENERAL_HOME:-/sandbox}}"')) {
+    fail('sandboxes/openeral/setup.sh', 'must default OPENRIND_SHELL_HOME to /sandbox');
   }
   if (setup.includes('write_export ANTHROPIC_API_KEY')) {
     fail('sandboxes/openeral/setup.sh', 'must not persist provider credentials/placeholders in session env');
@@ -733,6 +742,118 @@ try {
 } catch {
   pass('sandbox runtime files not found (skipped)');
 }
+
+// ---------------------------------------------------------------------------
+// Lint 34: public rename keeps canonical commands plus deliberate legacy aliases
+// ---------------------------------------------------------------------------
+console.log('\n--- Lint: Openrind Shell public commands and aliases ---');
+
+try {
+  const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+  const primary = readFileSync('../Dockerfile.openrind-shell', 'utf8');
+  const compatibility = readFileSync('../Dockerfile.openrind-shell-compat', 'utf8');
+  if (!pkg.bin?.['openrind-shell'] || !pkg.bin?.openeral) {
+    fail('package.json', 'must expose openrind-shell and the legacy openeral alias');
+  }
+  for (const [file, content] of [
+    ['Dockerfile.openrind-shell', primary],
+    ['Dockerfile.openrind-shell-compat', compatibility],
+  ]) {
+    for (const command of ['openrind-shell', 'openrind-shell-init', 'openeral-init']) {
+      if (!content.includes(`/usr/local/bin/${command}`)) {
+        fail(file, `must install ${command}`);
+      }
+    }
+  }
+  pass('canonical commands and legacy aliases are installed');
+} catch {
+  fail('Dockerfile.openrind-shell', 'canonical Dockerfiles must exist');
+}
+
+// ---------------------------------------------------------------------------
+// Lint 35: root and sandbox Dockerfiles may differ only in comments/blank lines
+// ---------------------------------------------------------------------------
+console.log('\n--- Lint: duplicate Dockerfile instructions stay synchronized ---');
+
+function dockerInstructions(path) {
+  return readFileSync(path, 'utf8')
+    .split(/\r?\n/)
+    .filter((line) => line.trim() && !line.trimStart().startsWith('#'))
+    .join('\n');
+}
+
+for (const [root, nested] of [
+  ['../Dockerfile.openrind-shell', '../sandboxes/openeral/Dockerfile'],
+  ['../Dockerfile.openrind-shell-compat', '../sandboxes/openeral/Dockerfile.compat'],
+]) {
+  if (dockerInstructions(root) !== dockerInstructions(nested)) {
+    fail(root, `instructions differ from ${nested}`);
+  }
+}
+pass('canonical and nested Dockerfile instructions match');
+
+// ---------------------------------------------------------------------------
+// Lint 36: Gateway metadata and OpenRouter support match the current contract
+// ---------------------------------------------------------------------------
+console.log('\n--- Lint: Openrind Gateway labels and model route are current ---');
+
+try {
+  const configure = readFileSync('../sandboxes/openeral/configure-stringcost.mjs', 'utf8');
+  const compatibilitySetup = readFileSync('../sandboxes/openeral/setup.sh', 'utf8');
+  const policy = readFileSync('../sandboxes/openeral/policy.yaml', 'utf8');
+  for (const [file, content] of [
+    ['sandboxes/openeral/configure-stringcost.mjs', configure],
+    ['sandboxes/openeral/setup.sh', compatibilitySetup],
+  ]) {
+    if (!content.includes("labels: ['openrind-shell', 'claude-code']")) {
+      fail(file, 'presign metadata must label Claude Code usage');
+    }
+    if (/\n\s*tags:\s*\[/.test(content)) {
+      fail(file, 'top-level presign tags are ignored; use metadata.labels');
+    }
+  }
+  for (const name of [
+    'ANTHROPIC_DEFAULT_SONNET_MODEL',
+    'ANTHROPIC_DEFAULT_OPUS_MODEL',
+    'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+    'CLAUDE_CODE_SUBAGENT_MODEL',
+  ]) {
+    for (const [file, content] of [
+      ['sandboxes/openeral/configure-stringcost.mjs', configure],
+      ['sandboxes/openeral/setup.sh', compatibilitySetup],
+    ]) {
+      if (!content.includes(name)) {
+        fail(file, `missing ${name} gateway default`);
+      }
+    }
+  }
+  const claudeStart = policy.indexOf('  claude_code:');
+  const claudeEnd = policy.indexOf('\n  #', claudeStart + 1);
+  const claudeBlock = policy.slice(claudeStart, claudeEnd > 0 ? claudeEnd : undefined);
+  if (!claudeBlock.includes('host: openrouter.ai')) {
+    fail('sandboxes/openeral/policy.yaml', 'Claude policy must allow the OpenRouter model route');
+  }
+  pass('Gateway labels, model defaults, and Claude OpenRouter route are present');
+} catch {
+  fail('sandboxes/openeral/configure-stringcost.mjs', 'gateway runtime files must exist');
+}
+
+// ---------------------------------------------------------------------------
+// Lint 37: uploaded PostgreSQL URLs are normalized at every shell boundary
+// ---------------------------------------------------------------------------
+console.log('\n--- Lint: database URL files tolerate CRLF and trailing whitespace ---');
+
+for (const file of [
+  '../sandboxes/openeral/setup-fuse.sh',
+  '../sandboxes/openeral/setup.sh',
+  '../sandboxes/openeral/openeral-daemon-ensure.sh',
+]) {
+  const content = readFileSync(file, 'utf8');
+  if (!content.includes("tr -d '\\r'") || !content.includes("s/[[:space:]]*$//")) {
+    fail(file, 'must trim CRLF and surrounding whitespace from stored database URLs');
+  }
+}
+pass('FUSE init, compatibility init, and daemon recovery normalize database URL files');
 
 // ---------------------------------------------------------------------------
 // Summary

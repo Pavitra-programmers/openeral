@@ -13,8 +13,8 @@ if (!DB_URL) {
 }
 
 const workspaceId = `memory-refresh-${Date.now()}`;
-const repoDir = mkdtempSync(join(tmpdir(), 'openeral-memory-project-'));
-const homeDir = mkdtempSync(join(tmpdir(), 'openeral-memory-home-'));
+const repoDir = mkdtempSync(join(tmpdir(), 'openrind-shell-memory-project-'));
+const homeDir = mkdtempSync(join(tmpdir(), 'openrind-shell-memory-home-'));
 
 let passed = 0;
 let failed = 0;
@@ -67,7 +67,7 @@ try {
   execFileSync('git', ['commit', '-m', 'init'], { cwd: repoDir, stdio: 'ignore' });
 
   execFileSync(process.execPath, [
-    'dist/bin/openeral.js',
+    'dist/bin/openrind-shell.js',
     'memory',
     'refresh',
     '--workspace', workspaceId,
@@ -78,7 +78,7 @@ try {
     env: {
       ...process.env,
       DATABASE_URL: DB_URL,
-      OPENERAL_HOME: homeDir,
+      OPENRIND_SHELL_HOME: homeDir,
     },
     stdio: 'pipe',
   });

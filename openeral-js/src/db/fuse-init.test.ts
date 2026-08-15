@@ -67,6 +67,14 @@ describe('FUSE initialization', () => {
       ['/', '', '', true, null],
       ['/.claude', '/', '.claude', true, null],
       ['/.claude/settings.json', '/.claude', 'settings.json', false, Buffer.from('{}')],
+      ['/.openrind-shell', '/', '.openrind-shell', true, null],
+      [
+        '/.openrind-shell/presign.json',
+        '/.openrind-shell',
+        'presign.json',
+        false,
+        Buffer.from('{"url":"test"}'),
+      ],
       ['/src', '/', 'src', true, null],
       ['/src/code.ts', '/src', 'code.ts', false, Buffer.from('not imported')],
     ] as const) {
@@ -86,7 +94,7 @@ describe('FUSE initialization', () => {
 
     const prepared = await prepareFuseVolume(pool, 'fuse-test', 998, 998);
     expect(prepared.volumeId).toBe('workspace:fuse-test');
-    expect(prepared.importedItems).toBe(2);
+    expect(prepared.importedItems).toBe(4);
     const rootOwner = await pool.query(
       `SELECT uid, gid FROM _openeral.fs_nodes
         WHERE volume_id = $1 AND node_id = $2`,
@@ -100,7 +108,12 @@ describe('FUSE initialization', () => {
         ORDER BY name`,
       ['workspace:fuse-test'],
     );
-    expect(dirents.rows.map(row => row.name)).toEqual(['.claude', 'settings.json']);
+    expect(dirents.rows.map(row => row.name)).toEqual([
+      '.claude',
+      '.openrind-shell',
+      'presign.json',
+      'settings.json',
+    ]);
 
     const repeated = await prepareFuseVolume(pool, 'fuse-test', 997, 997);
     expect(repeated.importedItems).toBe(0);
@@ -111,5 +124,5 @@ describe('FUSE initialization', () => {
     );
     expect(remappedRootOwner.rows[0]).toMatchObject({ uid: 997, gid: 997 });
     await pool.end();
-  }, 30_000);
+  }, 90_000);
 });

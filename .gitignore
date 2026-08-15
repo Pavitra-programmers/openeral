@@ -10,12 +10,14 @@ target/
 !.codex/skills
 AGENTS.md
 .claude/skills/*
-!.claude/skills/openeral-dev/
-!.claude/skills/openeral-dev/**
-!.claude/skills/openeral-navigate/
-!.claude/skills/openeral-navigate/**
-!.claude/skills/openeral-shell/
-!.claude/skills/openeral-shell/**
+!.claude/skills/openrind-dev/
+!.claude/skills/openrind-dev/**
+!.claude/skills/openrind-navigate/
+!.claude/skills/openrind-navigate/**
+!.claude/skills/openrind-shell/
+!.claude/skills/openrind-shell/**
+!.claude/skills/excel-report/
+!.claude/skills/excel-report/**
 
 # Node
 node_modules/

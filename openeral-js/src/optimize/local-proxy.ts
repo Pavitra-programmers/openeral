@@ -1,6 +1,6 @@
 /**
- * Lightweight local proxy that optimizes requests before sending to StringCost
- * Runs automatically when npx openeral starts
+ * Lightweight local proxy that optimizes requests before sending upstream.
+ * Runs automatically when openrind-shell starts.
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -12,7 +12,7 @@ const LOCAL_PROXY_PORT = 54321; // Local optimization proxy
 let proxyServer: ReturnType<typeof createServer> | null = null;
 
 export interface ProxyOptions {
-  targetUrl: string; // StringCost URL or Anthropic URL
+  targetUrl: string; // Openrind Gateway, legacy StringCost, or Anthropic URL
   optimizationEnabled: boolean;
 }
 
@@ -89,12 +89,12 @@ async function handleProxyRequest(
     const tokensSaved = originalTokens - optimizedTokens;
 
     // Log optimization (silent, just for debugging)
-    if (process.env.OPENERAL_DEBUG) {
+    if (process.env.OPENRIND_SHELL_DEBUG || process.env.OPENERAL_DEBUG) {
       console.log(`[Optimizer] ${originalModel} → ${optimalModel}, saved ${tokensSaved} tokens`);
     }
   }
 
-  // Forward to target (StringCost or Anthropic)
+  // Forward to the configured gateway or Anthropic target.
   const targetUrl = `${options.targetUrl}${req.url}`;
   
   const response = await fetch(targetUrl, {

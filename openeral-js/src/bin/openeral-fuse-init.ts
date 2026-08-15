@@ -12,8 +12,11 @@ import {
 } from '../db/fuse-init.js';
 import { runMigrations } from '../db/migrations.js';
 
-const runtimeDir = process.env.OPENERAL_RUNTIME_DIR || '/var/lib/openeral/runtime';
-const workspaceId = process.env.WORKSPACE_ID
+const runtimeDir = process.env.OPENRIND_SHELL_RUNTIME_DIR
+  || process.env.OPENERAL_RUNTIME_DIR
+  || '/var/lib/openrind-shell/runtime';
+const workspaceId = process.env.OPENRIND_SHELL_WORKSPACE_ID
+  || process.env.WORKSPACE_ID
   || process.env.OPENSHELL_SANDBOX_ID
   || process.env.OPENERAL_WORKSPACE_ID
   || 'default';
@@ -54,8 +57,12 @@ async function main(): Promise<void> {
   }
 
   if (command === 'verify-lease') {
-    const owner = process.env.OPENERAL_LEASE_OWNER || '';
-    const epoch = process.env.OPENERAL_LEASE_EPOCH || '';
+    const owner = process.env.OPENRIND_SHELL_LEASE_OWNER
+      || process.env.OPENERAL_LEASE_OWNER
+      || '';
+    const epoch = process.env.OPENRIND_SHELL_LEASE_EPOCH
+      || process.env.OPENERAL_LEASE_EPOCH
+      || '';
     if (!owner || !/^\d+$/.test(epoch)) throw new Error('lease owner and epoch are required');
     const { pool } = await getDatabaseConnection();
     try {
@@ -97,10 +104,10 @@ async function main(): Promise<void> {
     process.exit(matches ? 0 : 1);
   }
 
-  throw new Error('usage: openeral-fuse-init <prepare|verify-lease|mark-done|check-ready>');
+  throw new Error('usage: openrind-shell-fuse-init <prepare|verify-lease|mark-done|check-ready>');
 }
 
 main().catch((error) => {
-  process.stderr.write(`openeral-fuse-init: ${error instanceof Error ? error.message : String(error)}\n`);
+  process.stderr.write(`openrind-shell-fuse-init: ${error instanceof Error ? error.message : String(error)}\n`);
   process.exit(1);
 });

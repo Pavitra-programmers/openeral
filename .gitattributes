@@ -1,0 +1,4 @@
+# Scripts copied into Linux sandbox images must retain LF line endings.
+*.sh            text eol=lf
+sandboxes/**    text eol=lf
+tests/**        text eol=lf

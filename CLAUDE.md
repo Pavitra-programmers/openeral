@@ -1,71 +1,95 @@
 # CLAUDE.md
 
-## Documentation layout
+## Documentation Layout
 
-- `README.md` — **end-user** docs. Uses ONLY `openshell sandbox create ...` with the published GHCR image. No `npx`, no `pnpm`, no clone steps. This is the supported path for anyone who wants to run OpenEral.
-- `BUILD.md` — **contributor / developer** docs. All `npx openeral`, `pnpm`, `docker build`, and test-suite commands live here.
-- `CLAUDE.md` (this file) — conventions for modifying the codebase.
+- \`README.md\` is the end-user OpenShell flow. Keep package-manager commands out.
+- \`BUILD.md\` is the contributor build, test, and local-gateway guide.
+- \`ARCHITECTURE.md\` describes the implemented runtime split and security boundary.
+- \`FUSE.md\` records alternatives and source research.
+- \`FUSE-DESIGN.md\` is the detailed FUSE correctness contract.
 
-When editing user docs, **never add `npx`/`pnpm`/`npm install` commands to `README.md`** — those belong in `BUILD.md`.
+Public names use **Openrind Shell** and \`openrind-shell\`. Historical source paths,
+Cargo package names, legacy aliases, and the \`_openeral\` PostgreSQL schema remain
+until an explicit compatibility migration exists.
 
-## Build & Test
+## Runtime Split
 
-```bash
+\`\`\`mermaid
+flowchart LR
+  primary["Primary FUSE image"] --> mount["/sandbox/work<br/>all files persisted"]
+  mount --> normalized[("_openeral.fs_*")]
+
+  compat["Compatibility image"] --> watcher["Scoped watcher only"]
+  watcher --> legacy[("_openeral.workspace_files")]
+
+  custom["Custom-agent library"] --> justbash["createOpenrindShell<br/>WorkspaceFs + /db PgFs"]
+\`\`\`
+
+- Primary FUSE requires external PostgreSQL and the patched OpenShell Docker driver.
+- Compatibility supports optional PostgreSQL or sandbox-lifetime PGlite.
+- \`sync.ts\` is compatibility-only. Never watch or mirror \`/sandbox/work\`.
+- Claude uses native bash in both images. \`/db\` is custom-agent-only.
+
+## Build And Test
+
+\`\`\`bash
 cd openeral-js
-pnpm install && pnpm build
-pnpm check                    # typecheck + 30 lints + 117 unit tests
+pnpm install
+pnpm check
 
-# Integration (requires PostgreSQL)
-DATABASE_URL='...' node test-integration.mjs
+cd ..
+cargo fmt --all --check
+cargo test -p openeral-fused
+cargo clippy -p openeral-fused --all-targets -- -D warnings
 
-# Docker image verification (requires Docker + PostgreSQL)
-DATABASE_URL='...' bash ../tests/test_sandbox_e2e.sh
+cd vendor/openshell
+cargo fmt --all --check
+cargo check -p openshell-cli -p openshell-driver-docker \
+  -p openshell-policy -p openshell-supervisor-process
+\`\`\`
 
-# Setup.sh flow inside container (requires Docker + PostgreSQL)
-DATABASE_URL='...' bash ../tests/test_setup_e2e.sh
+Docker and live tests:
 
-# Real Claude Code persistence (requires PostgreSQL + ANTHROPIC_API_KEY)
-DATABASE_URL='...' ANTHROPIC_API_KEY='...' bash ../tests/test_claude_e2e.sh
-```
+\`\`\`bash
+docker build --pull=false -f Dockerfile.openrind-shell -t openrind-shell-fuse:local .
+docker build --pull=false -f Dockerfile.openrind-shell-compat -t openrind-shell-compat:local .
+
+DATABASE_URL='...' tests/test_sandbox_e2e.sh
+DATABASE_URL='...' tests/test_setup_e2e.sh
+
+DATABASE_URL='...' \
+OPENSHELL_GATEWAY_ENDPOINT='http://127.0.0.1:18770' \
+OPENRIND_SHELL_FUSE_E2E_IMAGE='openrind-shell-fuse:local' \
+tests/fuse/test_openshell_e2e.sh
+\`\`\`
+
+Do not rebuild NVIDIA's Community base to solve an image-resolution problem.
 
 ## Project Structure
 
-- `openeral-js/` — TypeScript package
-  - `src/bin/openeral.ts` — executable wrapper for npm/npx and scripts
-  - `src/cli.ts` — CLI parsing and command dispatch
-  - `src/sync.ts` — PostgreSQL ↔ real filesystem sync
-  - `src/pg-fs/` — PgFs: read-only IFileSystem backed by SQL queries
-  - `src/workspace-fs/` — WorkspaceFs: read-write IFileSystem backed by workspace_files
-  - `src/db/` — SQL queries, migrations, pool, types
-  - `src/safety.ts` — command safety analysis via just-bash parse() AST
-  - `src/shell.ts` — createOpeneralShell(), createToolHandler()
-  - `src/index.ts` — public API
-  - `lint.mjs` — 30 structural lint rules
-- `sandboxes/openeral/` — OpenShell sandbox image (stock base, no FUSE)
-  - `Dockerfile` — Node.js + openeral-js on stock OpenShell base
-  - `openeral-bash.mjs` — daemon/client bridge for custom agents
-  - `setup.sh` — sandbox entry point
-  - `policy.yaml` — network policy
-- `crates/` — original Rust implementation (reference, not used)
-
-## Conventions
-
-- Persistence is optional — CLI works without DATABASE_URL (local-only mode)
-- IFileSystem implementations are path-based (no inodes)
-- `parsePath()` returns a `PgNode` discriminated union
-- SQL queries use `quoteIdent()` for identifiers, `$N` params for values, `::text` casts
-- PgFs throws EROFS on all write methods
-- WorkspaceFs receives complete content per writeFile() — no write-back buffering
-- Command safety: just-bash parse() AST walk with regex fallback
-- `pg` command: SQL with parens or quotes must be double-quoted
+\`\`\`text
+crates/openeral-fused/       primary PostgreSQL FUSE daemon
+openeral-js/                 migrations, CLI, compatibility sync, just-bash library
+sandboxes/openeral/          image scripts and shared policy
+vendor/openshell/            pinned OpenShell FUSE capability patch
+tests/fuse/                  POSIX conformance and real OpenShell FUSE E2E
+.claude/skills/openrind-*/   repository operating skills
+\`\`\`
 
 ## Hard Rules
 
-- **Never fix forward from the middle.** Stop and restart the flow from scratch.
-- **Never delete, move, or overwrite user files without explicit permission.**
-- **If a file appears risky, stop and ask first.**
-- **Never hardcode credentials, connection strings, or secrets into files.** Always read from environment variables at runtime.
+- Keep the supervisor-owned mount and critical-child lifecycle intact.
+- Never give Claude \`/dev/fuse\`, mount syscalls, mount capability, or daemon choice.
+- Never add a direct PostgreSQL dialing or TLS-disable fallback to the FUSE daemon.
+- TypeScript owns migrations/import; Rust validates schema and volume state.
+- Lease loss is terminal; a fenced process discards dirty state and exits.
+- Preserve rename-replace, \`O_TRUNC\`, fsync, sparse-file, and open-unlinked semantics.
+- Keep compatibility sync prefix-scoped and exclude credential/cache paths.
+- Do not rename \`_openeral\` without a tested in-place data migration.
+- Never hardcode credentials or print database URLs/provider keys.
+- Ignore generated artifacts through \`.gitignore\`, not selective commit omission.
+- Never delete, move, or overwrite user files without explicit permission.
 
 ## Commit Style
 
-Descriptive, imperative mood. Look at `git log --oneline` for examples.
+Use descriptive imperative commit subjects. Do not amend unless explicitly requested.

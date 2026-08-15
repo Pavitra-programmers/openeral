@@ -1,30 +1,29 @@
 #!/usr/bin/env node
 
 /**
- * openeral CLI — run Claude Code inside an OpenShell sandbox.
+ * Openrind Shell CLI — run Claude Code inside an OpenShell sandbox.
  *
- * `npx openeral` launches an OpenShell sandbox from the openeral image.
- * Inside the sandbox, openeral-init runs migrations, seeds/hydrates the
- * workspace, then Claude starts through a wrapper that lazily starts the daemon.
+ * `openrind-shell` launches the primary PostgreSQL FUSE runtime. Inside the
+ * sandbox, openrind-shell-init prepares the selected runtime and Claude starts
+ * through its runtime-specific wrapper. `--compat` selects scoped just-bash
+ * persistence explicitly.
  *
  * Usage:
- *   npx openeral                      # interactive Claude Code (published image)
- *   npx openeral --dev                # interactive Claude Code (local dev image)
- *   npx openeral -d                   # same as --dev (short flag)
- *   npx openeral -- -p 'hello'        # non-interactive
- *   npx openeral --workspace myid     # custom workspace ID
- *   npx openeral optimize stats       # show optimization stats
+ *   openrind-shell                          # primary PostgreSQL FUSE runtime
+ *   openrind-shell --compat                 # scoped just-bash compatibility
+ *   openrind-shell -- -p 'hello'            # non-interactive
+ *   openrind-shell --workspace myid         # custom workspace ID
  *
  * Auth:
  *   OpenShell providers inject credential placeholders into each sandbox
- *   process. StringCost presigns are created inside the sandbox so raw keys
+ *   process. Openrind Gateway presigns are created inside the sandbox so raw keys
  *   remain inside OpenShell's credential boundary.
  *
  * Optional env:
- *   DATABASE_URL            Required by the FUSE dev runtime; optional in compatibility mode
- *   OPENERAL_WORKSPACE_ID   Workspace ID (default: openeral-claude, normalized to lowercase)
- *   OPENERAL_SANDBOX_IMAGE  Override sandbox image (default: ghcr.io/sandys/openeral/sandbox:just-bash)
- *   OPENERAL_DEV_IMAGE      Override the Dockerfile/image used with --dev
+ *   DATABASE_URL            Required by FUSE; optional in compatibility mode
+ *   OPENRIND_SHELL_WORKSPACE_ID   Workspace ID (default: openrind-shell-claude)
+ *   OPENRIND_SHELL_FUSE_IMAGE     Primary FUSE Dockerfile/image override
+ *   OPENRIND_SHELL_COMPAT_IMAGE   Compatibility image override
  *   OPENSHELL_BIN            OpenShell CLI path (use the vendored build for FUSE)
  *   OPENSHELL_GATEWAY_ENDPOINT  Direct patched gateway endpoint
  *
@@ -49,45 +48,57 @@ const OPENSHELL_BIN = process.env.OPENSHELL_BIN?.trim() || 'openshell';
 const OPENSHELL_GLOBAL_ARGS = process.env.OPENSHELL_GATEWAY_ENDPOINT?.trim()
   ? ['--gateway-endpoint', process.env.OPENSHELL_GATEWAY_ENDPOINT.trim()]
   : [];
+const DEFAULT_WORKSPACE_ID = 'openrind-shell-claude';
+const DEFAULT_COMPATIBILITY_IMAGE = 'ghcr.io/openrind/openrind-shell/sandbox:just-bash';
+
+function renamedEnv(primary: string, legacy: string): string | undefined {
+  return process.env[primary]?.trim() || process.env[legacy]?.trim() || undefined;
+}
 
 function openShellArgs(args: string[]): string[] {
   return [...OPENSHELL_GLOBAL_ARGS, ...args];
 }
 
 // ---------------------------------------------------------------------------
-// Presign persistence — store one permanent presign in ~/.config/openeral/
+// Presign persistence. Read the old path, but write only the canonical path.
 // ---------------------------------------------------------------------------
 
 interface StoredPresign {
-  /** Full URL as returned by StringCost (e.g. .../t/{JWT}/v1/messages) */
+  /** Full URL as returned by Openrind Gateway or legacy StringCost. */
   url: string;
   createdAt: string;
-  /** StringCost API key stored so skill downloads work without the env var */
+  openrindGatewayApiKey?: string;
+  /** Legacy field retained when importing ~/.config/openeral/presign.json. */
   stringcostApiKey?: string;
 }
 
 function getPresignConfigPath(): string {
-  return join(homedir(), '.config', 'openeral', 'presign.json');
+  return join(homedir(), '.config', 'openrind-shell', 'presign.json');
 }
 
 function loadStoredPresign(): StoredPresign | null {
-  const path = getPresignConfigPath();
-  if (!existsSync(path)) return null;
-  try {
-    const data = JSON.parse(readFileSync(path, 'utf8')) as StoredPresign;
-    if (data?.url) return data;
-    return null;
-  } catch {
-    return null;
+  const paths = [
+    getPresignConfigPath(),
+    join(homedir(), '.config', 'openeral', 'presign.json'),
+  ];
+  for (const path of paths) {
+    if (!existsSync(path)) continue;
+    try {
+      const data = JSON.parse(readFileSync(path, 'utf8')) as StoredPresign;
+      if (data?.url) return data;
+    } catch {
+      // Try the legacy path before reporting no stored presign.
+    }
   }
+  return null;
 }
 
 function saveStoredPresign(url: string, apiKey?: string): void {
-  const configDir = join(homedir(), '.config', 'openeral');
+  const configDir = join(homedir(), '.config', 'openrind-shell');
   mkdirSync(configDir, { recursive: true, mode: 0o700 });
   const presignPath = getPresignConfigPath();
   const data: StoredPresign = { url, createdAt: new Date().toISOString() };
-  if (apiKey) data.stringcostApiKey = apiKey;
+  if (apiKey) data.openrindGatewayApiKey = apiKey;
   writeFileSync(presignPath, JSON.stringify(data, null, 2), { mode: 0o600 });
   // Ensure restrictive permissions (covers cases where mode is ignored)
   try {
@@ -97,31 +108,37 @@ function saveStoredPresign(url: string, apiKey?: string): void {
   }
 }
 
-function stringCostProxyBaseUrl(presignUrl: string): string {
+export function openrindGatewayProxyBaseUrl(presignUrl: string): string {
   const url = new URL(presignUrl.trim());
   url.pathname = url.pathname.replace(/\/v1\/.*$/, '');
   url.search = '';
   url.hash = '';
   const normalized = url.toString().replace(/\/$/, '');
-  if (!/^https:\/\/proxy\.stringcost\.com\/stringcost-proxy\/t\/[^/]+$/.test(normalized)) {
-    throw new Error('Unexpected StringCost presign URL shape');
+  if (!/^https:\/\/(?:proxy\.openrind\.com\/openrind-gateway-proxy|proxy\.stringcost\.com\/stringcost-proxy)\/t\/[^/]+$/.test(normalized)) {
+    throw new Error('Unexpected Openrind Gateway presign URL shape');
   }
   return normalized;
 }
 
 /**
- * Create a new StringCost presign: never expires, unlimited uses, $10 cost cap.
- * Returns the full presign URL as returned by StringCost.
+ * Create a new Openrind Gateway presign. Legacy StringCost keys use the legacy
+ * endpoint so existing installations continue to work during the rename.
  */
-async function createPresignUrl(anthropicKey: string, stringcostKey: string): Promise<string> {
+async function createPresignUrl(
+  anthropicKey: string,
+  gatewayKey: string,
+  legacyGateway = false,
+): Promise<string> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
 
   try {
-    const response = await fetch('https://app.stringcost.com/v1/presign', {
+    const response = await fetch(
+      legacyGateway ? 'https://app.stringcost.com/v1/presign' : 'https://app.openrind.com/v1/presign',
+      {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${stringcostKey}`,
+        'Authorization': `Bearer ${gatewayKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -131,26 +148,27 @@ async function createPresignUrl(anthropicKey: string, stringcostKey: string): Pr
         expires_in: -1,
         max_uses: -1,
         cost_limit: 10000000, // $10 in micro-dollars
-        tags: ['openeral'],
-        metadata: { source: 'openeral' },
+        tags: ['openrind-shell'],
+        metadata: { source: 'openrind-shell' },
       }),
       signal: controller.signal,
-    });
+      },
+    );
 
     clearTimeout(timeoutId);
 
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`StringCost presign failed (${response.status}): ${text}`);
+      throw new Error(`Openrind Gateway presign failed (${response.status}): ${text}`);
     }
 
     const data = await response.json() as { url: string };
-    if (!data?.url) throw new Error('StringCost presign returned no URL');
+    if (!data?.url) throw new Error('Openrind Gateway presign returned no URL');
     return data.url;
   } catch (err) {
     clearTimeout(timeoutId);
     if (err instanceof Error && err.name === 'AbortError') {
-      throw new Error('StringCost presign request timed out after 30 seconds');
+      throw new Error('Openrind Gateway presign request timed out after 30 seconds');
     }
     throw err;
   }
@@ -174,7 +192,8 @@ export function parseCliArgs(args: string[]): ParsedArgs {
 
   // Check for memory refresh command
   if (args[0] === 'memory' && args[1] === 'refresh') {
-    let workspaceId = process.env.OPENERAL_WORKSPACE_ID || 'openeral-claude';
+    let workspaceId = renamedEnv('OPENRIND_SHELL_WORKSPACE_ID', 'OPENERAL_WORKSPACE_ID')
+      || DEFAULT_WORKSPACE_ID;
     let projectRoot = '';
     let query = '';
     let dryRun = false;
@@ -200,7 +219,7 @@ export function parseCliArgs(args: string[]): ParsedArgs {
     
     // Prevent empty workspace ID
     if (workspaceId.length === 0) {
-      workspaceId = 'openeral-claude';
+      workspaceId = DEFAULT_WORKSPACE_ID;
       process.stderr.write(`\x1b[33mwarning: workspace ID "${originalId}" normalized to empty string, using default: ${workspaceId}\x1b[0m\n`);
     }
 
@@ -208,7 +227,8 @@ export function parseCliArgs(args: string[]): ParsedArgs {
   }
 
   // Default: launch mode
-  let workspaceId = process.env.OPENERAL_WORKSPACE_ID || 'openeral-claude';
+  let workspaceId = renamedEnv('OPENRIND_SHELL_WORKSPACE_ID', 'OPENERAL_WORKSPACE_ID')
+    || DEFAULT_WORKSPACE_ID;
   let claudeArgs: string[] = [];
 
   const dashIdx = args.indexOf('--');
@@ -227,7 +247,7 @@ export function parseCliArgs(args: string[]): ParsedArgs {
   
   // Prevent empty workspace ID
   if (workspaceId.length === 0) {
-    workspaceId = 'openeral-claude';
+    workspaceId = DEFAULT_WORKSPACE_ID;
     process.stderr.write(`\x1b[33mwarning: workspace ID "${originalId}" normalized to empty string, using default: ${workspaceId}\x1b[0m\n`);
   }
 
@@ -236,21 +256,20 @@ export function parseCliArgs(args: string[]): ParsedArgs {
 
 function printHelp(): void {
   console.log(`Usage:
-  openeral [options] [-- claude-args]    Launch Claude Code (published image)
-  openeral --dev [options] [-- args]     Launch Claude Code (local dev image)
-  openeral presign                        Show the current StringCost presign
-  openeral presign renew                  Create and store a new StringCost presign
-  openeral init [--ensure]                Initialize or verify sandbox state
-  openeral init --check-marker            Internal: exit 0 if sandbox init marker is current
-  openeral init --write-marker            Internal: write the current sandbox init marker
-  openeral stats [options]                Show API usage statistics
-  openeral analyze [options]              Analyze session history and suggest optimizations
-  openeral apply [options]                Apply optimization suggestions to project files
-  openeral memory refresh [options]       Refresh memory system
+  openrind-shell [options] [-- claude-args]  Launch primary PostgreSQL FUSE runtime
+  openrind-shell --compat [options] [-- args]  Launch scoped compatibility runtime
+  openrind-shell presign                     Show the current gateway presign
+  openrind-shell presign renew               Create and store a gateway presign
+  openrind-shell init [--ensure]             Initialize or verify sandbox state
+  openrind-shell stats [options]             Show API usage statistics
+  openrind-shell analyze [options]           Analyze session history
+  openrind-shell apply [options]             Apply optimization suggestions
+  openrind-shell memory refresh [options]    Refresh Claude memory
 
 Launch Options:
-  --workspace, -w <id>    Workspace ID (default: openeral-claude)
-  --dev, -d               Use local dev image instead of published image
+  --workspace, -w <id>    Workspace ID (default: openrind-shell-claude)
+  --compat                Use stock-OpenShell/PGlite compatibility runtime
+  --dev, -d               Legacy alias for the primary source FUSE runtime
   --help, -h              Show this help
 
 Stats / Analyze / Apply Options:
@@ -270,26 +289,29 @@ Memory Refresh Options:
 
 Auth:
   ANTHROPIC_API_KEY is resolved through the OpenShell Claude provider.
-  If STRINGCOST_API_KEY is set, OpenShell also resolves it and creates the
-  StringCost presign inside the sandbox. Raw provider keys are not uploaded.
+  OPENRIND_GATEWAY_API_KEY enables Openrind Gateway metering. The legacy
+  STRINGCOST_API_KEY name is accepted during migration. Raw keys stay behind
+  OpenShell provider resolution.
 
 Optional env:
-  DATABASE_URL             Required by --dev FUSE; optional for the compatibility image
-  OPENERAL_WORKSPACE_ID    Default workspace ID (will be normalized to lowercase)
-  OPENERAL_SANDBOX_IMAGE   Override prod sandbox image (default: ghcr.io/sandys/openeral/sandbox:just-bash)
-  OPENERAL_DEV_IMAGE       Override the Dockerfile/image used with --dev/-d
+  DATABASE_URL             Required by FUSE; optional for compatibility
+  OPENRIND_SHELL_WORKSPACE_ID    Default workspace ID
+  OPENRIND_SHELL_FUSE_IMAGE      FUSE Dockerfile/image (default: repository Dockerfile)
+  OPENRIND_SHELL_COMPAT_IMAGE    Compatibility image (default: ${DEFAULT_COMPATIBILITY_IMAGE})
   OPENSHELL_BIN             OpenShell CLI path (vendored patched build for FUSE)
   OPENSHELL_GATEWAY_ENDPOINT  Direct gateway endpoint
 
 Features:
   - OpenShell-managed credentials and default-deny network policy
-  - OpenShell-owned /sandbox home; no host filesystem injection
-  - Full PostgreSQL-backed FUSE workspace in --dev mode
-  - Scoped PostgreSQL/PGlite persistence in the published compatibility image
+  - OpenShell-supervised /sandbox/work FUSE home; no host filesystem injection
+  - Full PostgreSQL-backed FUSE workspace by default
+  - Scoped PostgreSQL/PGlite persistence only with --compat
   - API usage statistics and optimization suggestions
 
 Notes:
-  - Presign stored in ~/.config/openeral/presign.json (mode 600, expires_in=-1, max_uses=-1, cost_limit=$10)
+  - Presign stored in ~/.config/openrind-shell/presign.json (mode 600)
+  - Legacy openeral command and OPENERAL_* environment aliases remain supported
+  - Internal PostgreSQL schema stays _openeral to preserve existing volumes
   - Workspace IDs are automatically normalized to be Kubernetes-compliant
   - OpenShell >= 0.0.59 and a selected gateway are required
   - Claude CLI comes from the OpenShell Community base image
@@ -298,27 +320,35 @@ Notes:
 }
 
 // ---------------------------------------------------------------------------
-// StringCost org skills
+// Openrind Gateway organization skills
 // ---------------------------------------------------------------------------
 
 /**
- * Fetch the org skills bundle from StringCost and return only the validated entries.
+ * Fetch the org skills bundle and return only validated entries.
  *
  * Handles timeout, HTTP errors, and slug validation.
  * Slugs are validated against `[a-z0-9][a-z0-9-]*` to prevent path traversal.
  *
  * Throws on network/HTTP failure — callers decide whether to propagate or warn.
  */
-export async function fetchOrgSkills(apiKey: string): Promise<Array<{ slug: string; content: string }>> {
+export async function fetchOrgSkills(
+  apiKey: string,
+  legacyGateway = false,
+): Promise<Array<{ slug: string; content: string }>> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 10000);
 
   let res: Response;
   try {
-    res = await fetch('https://app.stringcost.com/v2/skills/bundle', {
+    res = await fetch(
+      legacyGateway
+        ? 'https://app.stringcost.com/v2/skills/bundle'
+        : 'https://app.openrind.com/v2/skills/bundle',
+      {
       headers: { Authorization: `Bearer ${apiKey}` },
       signal: controller.signal,
-    });
+      },
+    );
   } finally {
     clearTimeout(timeoutId);
   }
@@ -330,7 +360,7 @@ export async function fetchOrgSkills(apiKey: string): Promise<Array<{ slug: stri
 }
 
 /**
- * Download org skills from StringCost and write them into `homeDir/.claude/skills/`.
+ * Download organization skills into `homeDir/.claude/skills/`.
  *
  * Each skill is a directory named by its slug with a `SKILL.md` file inside.
  *
@@ -355,7 +385,10 @@ function refreshClaudeProxySettings(): void {
   const baseUrl = process.env.ANTHROPIC_BASE_URL;
   if (!baseUrl) return;
 
-  const home = process.env.OPENERAL_HOME || process.env.HOME || '/sandbox';
+  const home = process.env.OPENRIND_SHELL_HOME
+    || process.env.OPENERAL_HOME
+    || process.env.HOME
+    || '/sandbox';
   const settingsPath = join(home, '.claude', 'settings.json');
   mkdirSync(dirname(settingsPath), { recursive: true });
 
@@ -387,11 +420,13 @@ async function cmdInit(args: string[]): Promise<void> {
   const ensure = args.includes('--ensure');
   if (ensure && initMarkerMatches()) {
     refreshClaudeProxySettings();
-    process.stderr.write('\x1b[2mopeneral: init already complete\x1b[0m\n');
+    process.stderr.write('\x1b[2mopenrind-shell: init already complete\x1b[0m\n');
     return;
   }
 
-  const setupPath = '/opt/openeral/setup.sh';
+  const setupPath = existsSync('/opt/openrind-shell/setup.sh')
+    ? '/opt/openrind-shell/setup.sh'
+    : '/opt/openeral/setup.sh';
   if (!existsSync(setupPath)) {
     if (ensure) {
       throw new Error(`init marker is missing or stale, and ${setupPath} is not available`);
@@ -404,9 +439,17 @@ async function cmdInit(args: string[]): Promise<void> {
     env: {
       ...process.env,
       HOME: process.env.HOME || '/sandbox',
-      OPENERAL_HOME: process.env.OPENERAL_HOME || '/sandbox',
+      OPENRIND_SHELL_HOME: process.env.OPENRIND_SHELL_HOME
+        || process.env.OPENERAL_HOME
+        || '/sandbox',
+      OPENERAL_HOME: process.env.OPENRIND_SHELL_HOME
+        || process.env.OPENERAL_HOME
+        || '/sandbox',
+      OPENRIND_SHELL_STATE_DIR: stateDirForMarker(),
       OPENERAL_STATE_DIR: stateDirForMarker(),
+      OPENRIND_SHELL_DATA_DIR: dataDirForMarker(),
       OPENERAL_DATA_DIR: dataDirForMarker(),
+      OPENRIND_SHELL_DB_URL_FILE: dbUrlFileForMarker(),
       OPENERAL_DB_URL_FILE: dbUrlFileForMarker(),
       WORKSPACE_ID: workspaceIdForMarker(),
     },
@@ -487,7 +530,7 @@ function requireCurrentOpenShell(requireFuse = false): void {
     const output = `${help.stdout ?? ''}\n${help.stderr ?? ''}`;
     if (help.error || help.status !== 0 || !output.includes('--fuse')) {
       throw new Error(
-        'this OpenEral image requires an OpenShell build with the policy-gated --fuse capability',
+        'this Openrind Shell image requires an OpenShell build with the policy-gated --fuse capability',
       );
     }
   }
@@ -537,7 +580,7 @@ function removeExistingSandbox(name: string): void {
   });
   if (existing.status !== 0) return;
 
-  process.stderr.write(`\x1b[2mopeneral: replacing existing sandbox ${name}...\x1b[0m\n`);
+  process.stderr.write(`\x1b[2mopenrind-shell: replacing existing sandbox ${name}...\x1b[0m\n`);
   const removed = spawnSync(OPENSHELL_BIN, openShellArgs(['sandbox', 'delete', name]), {
     stdio: 'inherit',
     timeout: 120_000,
@@ -553,53 +596,63 @@ function removeExistingSandbox(name: string): void {
 // ---------------------------------------------------------------------------
 
 /**
- * `npx openeral presign` — show the currently stored StringCost presign.
+ * Show the currently stored Openrind Gateway presign.
  */
 async function cmdPresignShow(): Promise<void> {
   const stored = loadStoredPresign();
   if (!stored) {
     console.log('No presign stored.');
     console.log('');
-    console.log('Set STRINGCOST_API_KEY and ANTHROPIC_API_KEY, then run:');
-    console.log('  npx openeral presign renew');
+    console.log('Set OPENRIND_GATEWAY_API_KEY and ANTHROPIC_API_KEY, then run:');
+    console.log('  openrind-shell presign renew');
     return;
   }
 
-  const { decodePresignUrl } = await import('./optimize/stringcost-api.js');
-  const decoded = decodePresignUrl(stored.url);
+  const gateway = stored.url.includes('/stringcost-proxy/')
+    ? await import('./optimize/stringcost-api.js')
+    : await import('./optimize/openrind-gateway-api.js');
+  const decoded = gateway.decodePresignUrl(stored.url);
 
-  console.log('StringCost presign (currently in use):');
+  console.log('Openrind Gateway presign (currently in use):');
   console.log(`  Proxy URL:  ${stored.url.replace(/\/v1\/.*$/, '')}`);
   console.log(`  Full URL:   ${stored.url}`);
   console.log(`  Created:    ${new Date(stored.createdAt).toLocaleString()}`);
   if (decoded.sessionId) console.log(`  Session ID: ${decoded.sessionId}`);
-  if (stored.stringcostApiKey) {
-    const k = stored.stringcostApiKey;
+  const storedGatewayKey = stored.openrindGatewayApiKey || stored.stringcostApiKey;
+  if (storedGatewayKey) {
+    const k = storedGatewayKey;
     const masked = k.length > 8 ? `${k.slice(0, 4)}...${k.slice(-4)}` : '****';
-    console.log(`  StringCost API Key: ${masked}  (stored — used for automatic skill downloads)`);
+    console.log(`  Gateway API key: ${masked}  (stored for automatic skill downloads)`);
   } else {
-    console.log(`  StringCost API Key: not stored — run \`npx openeral presign renew\` to save it`);
+    console.log('  Gateway API key: not stored; run `openrind-shell presign renew`');
   }
   console.log('');
   console.log('Settings: expires_in=-1  max_uses=-1  cost_limit=10$  (all infinite, never exhausts)');
 }
 
 /**
- * `npx openeral presign renew` — create a new StringCost presign and persist it.
+ * Create a new Openrind Gateway presign and persist it.
  *
- * Prompts for ANTHROPIC_API_KEY and STRINGCOST_API_KEY if not set in env.
+ * Prompts for ANTHROPIC_API_KEY and OPENRIND_GATEWAY_API_KEY if needed.
  * Writes the new presign to:
- *   - ~/.config/openeral/presign.json  (openeral's own cache)
+ *   - ~/.config/openrind-shell/presign.json
  *   - ~/.claude/settings.json          (Claude Code picks this up automatically)
  */
 async function cmdPresignRenew(): Promise<void> {
   let anthropicKey = (process.env.ANTHROPIC_API_KEY ?? '').replace('@anthropic_api_key', '').trim();
-  let stringcostKey = (process.env.STRINGCOST_API_KEY ?? '').replace('@stringcost_api_key', '').trim();
+  const openrindGatewayKey = (process.env.OPENRIND_GATEWAY_API_KEY ?? '')
+    .replace('@openrind_gateway_api_key', '')
+    .trim();
+  const legacyGatewayKey = (process.env.STRINGCOST_API_KEY ?? '')
+    .replace('@stringcost_api_key', '')
+    .trim();
+  let gatewayKey = openrindGatewayKey || legacyGatewayKey;
+  let legacyGateway = !openrindGatewayKey && !!legacyGatewayKey;
 
-  if (!anthropicKey || !stringcostKey) {
+  if (!anthropicKey || !gatewayKey) {
     if (!process.stdin.isTTY) {
       process.stderr.write(
-        '\x1b[31merror: ANTHROPIC_API_KEY and STRINGCOST_API_KEY must be set\x1b[0m\n',
+        '\x1b[31merror: ANTHROPIC_API_KEY and OPENRIND_GATEWAY_API_KEY must be set\x1b[0m\n',
       );
       process.exit(1);
     }
@@ -613,15 +666,16 @@ async function cmdPresignRenew(): Promise<void> {
       if (!anthropicKey) {
         anthropicKey = (await question('Anthropic API key: ')).trim();
       }
-      if (!stringcostKey) {
-        stringcostKey = (await question('StringCost API key: ')).trim();
+      if (!gatewayKey) {
+        gatewayKey = (await question('Openrind Gateway API key: ')).trim();
+        legacyGateway = false;
       }
     } finally {
       rl.close();
     }
   }
 
-  if (!anthropicKey || !stringcostKey) {
+  if (!anthropicKey || !gatewayKey) {
     process.stderr.write('\x1b[31merror: both API keys are required\x1b[0m\n');
     process.exit(1);
   }
@@ -629,12 +683,11 @@ async function cmdPresignRenew(): Promise<void> {
   console.log('Creating new presign (expires_in=-1, max_uses=-1, cost_limit=10$)...');
 
   try {
-    const fullUrl = await createPresignUrl(anthropicKey, stringcostKey);
-    const baseUrl = stringCostProxyBaseUrl(fullUrl);
+    const fullUrl = await createPresignUrl(anthropicKey, gatewayKey, legacyGateway);
+    const baseUrl = openrindGatewayProxyBaseUrl(fullUrl);
 
-    // 1. Store in openeral's own config (include the API key so skill downloads
-    //    work automatically on future runs without the env var being set)
-    saveStoredPresign(fullUrl, stringcostKey);
+    // Store the API key so organization skills can be downloaded later.
+    saveStoredPresign(fullUrl, gatewayKey);
     console.log(`\x1b[32m✓ Stored in ${getPresignConfigPath()}\x1b[0m`);
 
     // 2. Write into host Claude Code settings so Claude picks it up automatically
@@ -664,7 +717,7 @@ async function cmdPresignRenew(): Promise<void> {
     console.log(`  Proxy URL: ${baseUrl}`);
     console.log('');
     console.log('This presign will be reused for all future sessions (never expires).');
-    console.log('Run "npx openeral presign" to view it, or "npx openeral presign renew" to replace it.');
+    console.log('Run "openrind-shell presign" to view or renew it.');
   } catch (err) {
     process.stderr.write(`\x1b[31merror: ${(err as Error).message}\x1b[0m\n`);
     process.exit(1);
@@ -677,29 +730,48 @@ async function cmdPresignRenew(): Promise<void> {
  * then started with sandbox exec; its wrapper owns lazy daemon startup and the
  * post-session persistence flush.
  */
-async function launchViaSandbox(workspaceId: string, claudeArgs: string[], devMode = false): Promise<void> {
-  const repoRoot = devMode ? findRepoRoot() : null;
-  const sandboxSource = devMode
-    ? (process.env.OPENERAL_DEV_IMAGE
-      ?? (repoRoot ? join(repoRoot, 'Dockerfile.openeral') : null))
-    : (process.env.OPENERAL_SANDBOX_IMAGE
-      ?? 'ghcr.io/sandys/openeral/sandbox:just-bash');
+async function launchViaSandbox(
+  workspaceId: string,
+  claudeArgs: string[],
+  runtime: 'fuse' | 'compatibility' = 'fuse',
+): Promise<void> {
+  const fuseRuntime = runtime === 'fuse';
+  const repoRoot = fuseRuntime ? findRepoRoot() : null;
+  const sandboxSource = fuseRuntime
+    ? (renamedEnv('OPENRIND_SHELL_FUSE_IMAGE', 'OPENERAL_FUSE_IMAGE')
+      ?? renamedEnv('OPENRIND_SHELL_DEV_IMAGE', 'OPENERAL_DEV_IMAGE')
+      ?? (repoRoot
+        ? join(
+          repoRoot,
+          existsSync(join(repoRoot, 'Dockerfile.openrind-shell'))
+            ? 'Dockerfile.openrind-shell'
+            : 'Dockerfile.openeral',
+        )
+        : null))
+    : (renamedEnv('OPENRIND_SHELL_COMPAT_IMAGE', 'OPENERAL_COMPAT_IMAGE')
+      ?? renamedEnv('OPENRIND_SHELL_SANDBOX_IMAGE', 'OPENERAL_SANDBOX_IMAGE')
+      ?? DEFAULT_COMPATIBILITY_IMAGE);
   if (!sandboxSource) {
-    throw new Error('could not locate Dockerfile.openeral; set OPENERAL_DEV_IMAGE explicitly');
+    throw new Error('could not locate Dockerfile.openrind-shell; set OPENRIND_SHELL_FUSE_IMAGE');
   }
-  const fuseRuntime = devMode
-    || process.env.OPENERAL_FUSE === '1'
-    || /(?:^|[:/])fuse(?:-|$)/.test(sandboxSource);
   requireCurrentOpenShell(fuseRuntime);
 
   removeExistingSandbox(workspaceId);
 
   const storedPresign = loadStoredPresign();
-  const stringcostKey = (process.env.STRINGCOST_API_KEY ?? '')
+  const openrindGatewayKey = (process.env.OPENRIND_GATEWAY_API_KEY ?? '')
+    .replace('@openrind_gateway_api_key', '')
+    .trim();
+  const legacyGatewayKey = (process.env.STRINGCOST_API_KEY ?? '')
     .replace('@stringcost_api_key', '')
     .trim();
-  if (!storedPresign && stringcostKey) {
-    ensureGenericProvider('stringcost', 'STRINGCOST_API_KEY');
+  const gatewayKey = openrindGatewayKey || legacyGatewayKey;
+  const legacyGateway = !openrindGatewayKey && !!legacyGatewayKey;
+  if (!storedPresign && gatewayKey) {
+    ensureGenericProvider(
+      legacyGateway ? 'stringcost' : 'openrind-gateway',
+      legacyGateway ? 'STRINGCOST_API_KEY' : 'OPENRIND_GATEWAY_API_KEY',
+    );
   }
 
   const temporaryPaths: string[] = [];
@@ -716,7 +788,7 @@ async function launchViaSandbox(workspaceId: string, claudeArgs: string[], devMo
     throw new Error('DATABASE_URL is required by the FUSE runtime; use the compatibility image for PGlite');
   }
   if (dbUrl) {
-    const dbUploadPath = join(tmpdir(), `openeral-db-url-${process.pid}-${Date.now()}`);
+    const dbUploadPath = join(tmpdir(), `openrind-shell-db-url-${process.pid}-${Date.now()}`);
     writeFileSync(dbUploadPath, dbUrl, { mode: 0o600 });
     chmodSync(dbUploadPath, 0o600);
     temporaryPaths.push(dbUploadPath);
@@ -724,7 +796,7 @@ async function launchViaSandbox(workspaceId: string, claudeArgs: string[], devMo
   }
 
   if (storedPresign) {
-    const presignUploadPath = join(tmpdir(), `openeral-presign-${process.pid}-${Date.now()}.json`);
+    const presignUploadPath = join(tmpdir(), `openrind-shell-presign-${process.pid}-${Date.now()}.json`);
     writeFileSync(
       presignUploadPath,
       JSON.stringify({ url: storedPresign.url }, null, 2),
@@ -732,26 +804,32 @@ async function launchViaSandbox(workspaceId: string, claudeArgs: string[], devMo
     );
     chmodSync(presignUploadPath, 0o600);
     temporaryPaths.push(presignUploadPath);
-    sandboxArgs.push('--upload', `${presignUploadPath}:/sandbox/stringcost-presign`);
+    sandboxArgs.push('--upload', `${presignUploadPath}:/sandbox/openrind-gateway-presign`);
   } else {
     sandboxArgs.push('--provider', 'claude');
-    if (stringcostKey) sandboxArgs.push('--provider', 'stringcost');
+    if (gatewayKey) sandboxArgs.push('--provider', legacyGateway ? 'stringcost' : 'openrind-gateway');
     sandboxArgs.push('--auto-providers');
   }
 
   sandboxArgs.push(
+    '--env', `OPENRIND_SHELL_WORKSPACE_ID=${workspaceId}`,
     '--env', `WORKSPACE_ID=${workspaceId}`,
     '--',
-    'openeral-init',
+    'openrind-shell-init',
   );
 
   let skillsRoot: string | undefined;
-  const skillsKey = stringcostKey || storedPresign?.stringcostApiKey?.trim() || '';
+  const skillsKey = gatewayKey
+    || storedPresign?.openrindGatewayApiKey?.trim()
+    || storedPresign?.stringcostApiKey?.trim()
+    || '';
+  const legacySkillsGateway = legacyGateway
+    || (!storedPresign?.openrindGatewayApiKey && !!storedPresign?.stringcostApiKey);
   if (skillsKey) {
     try {
-      const skills = await fetchOrgSkills(skillsKey);
+      const skills = await fetchOrgSkills(skillsKey, legacySkillsGateway);
       if (skills.length > 0) {
-        skillsRoot = join(tmpdir(), `openeral-skills-${process.pid}-${Date.now()}`);
+        skillsRoot = join(tmpdir(), `openrind-shell-skills-${process.pid}-${Date.now()}`);
         const skillsDir = join(skillsRoot, 'skills');
         for (const skill of skills) {
           const skillDir = join(skillsDir, skill.slug);
@@ -760,19 +838,19 @@ async function launchViaSandbox(workspaceId: string, claudeArgs: string[], devMo
         }
         temporaryPaths.push(skillsRoot);
         process.stderr.write(
-          `\x1b[32m✓ Downloaded ${skills.length} StringCost org skill${skills.length === 1 ? '' : 's'}\x1b[0m\n`,
+          `\x1b[32mDownloaded ${skills.length} Openrind Gateway org skill${skills.length === 1 ? '' : 's'}\x1b[0m\n`,
         );
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       process.stderr.write(
-        `\x1b[33mwarning: StringCost skill download failed: ${message}\x1b[0m\n`,
+        `\x1b[33mwarning: Openrind Gateway skill download failed: ${message}\x1b[0m\n`,
       );
     }
   }
 
   process.stderr.write(
-    `\x1b[2mopeneral: creating OpenShell sandbox ${workspaceId} from ${sandboxSource}...\x1b[0m\n`,
+    `\x1b[2mopenrind-shell: creating OpenShell sandbox ${workspaceId} from ${sandboxSource}...\x1b[0m\n`,
   );
 
   try {
@@ -797,7 +875,7 @@ async function launchViaSandbox(workspaceId: string, claudeArgs: string[], devMo
       if (uploaded.error) throw uploaded.error;
       if (uploaded.status !== 0) {
         process.stderr.write(
-          '\x1b[33mwarning: StringCost org skills could not be uploaded\x1b[0m\n',
+          '\x1b[33mwarning: Openrind Gateway org skills could not be uploaded\x1b[0m\n',
         );
       }
     }
@@ -808,7 +886,7 @@ async function launchViaSandbox(workspaceId: string, claudeArgs: string[], devMo
   }
 
   process.stderr.write(
-    `\x1b[2mopeneral: starting Claude Code in ${workspaceId}...\x1b[0m\n`,
+    `\x1b[2mopenrind-shell: starting Claude Code in ${workspaceId}...\x1b[0m\n`,
   );
   const child = spawn(
     OPENSHELL_BIN,
@@ -848,15 +926,26 @@ async function launchViaSandbox(workspaceId: string, claudeArgs: string[], devMo
 export async function main() {
   const rawArgs = process.argv.slice(2);
 
-  // Separate openeral's own args from claude passthrough args (after --)
+  // Separate Openrind Shell arguments from Claude passthrough arguments.
   const dashIdx = rawArgs.indexOf('--');
   const ownRawArgs = dashIdx >= 0 ? rawArgs.slice(0, dashIdx) : rawArgs;
   const passthroughPart = dashIdx >= 0 ? rawArgs.slice(dashIdx) : [];
 
-  // Extract --dev/-d flag (must happen before subcommand dispatch so
-  // `npx openeral --dev presign` works — the flag can appear anywhere before --)
+  // Runtime flags can appear anywhere before the Claude `--` separator.
+  const compatibilityMode = ownRawArgs.some(
+    (arg) => arg === '--compat' || arg === '--compatibility',
+  );
   const devMode = ownRawArgs.some(a => a === '--dev' || a === '-d' || a === '-dev');
-  const ownArgs = ownRawArgs.filter(a => a !== '--dev' && a !== '-d' && a !== '-dev');
+  if (compatibilityMode && devMode) {
+    throw new Error('--compat and --dev select different runtimes; use only one');
+  }
+  const ownArgs = ownRawArgs.filter((arg) => ![
+    '--compat',
+    '--compatibility',
+    '--dev',
+    '-d',
+    '-dev',
+  ].includes(arg));
   const args = [...ownArgs, ...passthroughPart];
 
   // presign show / renew
@@ -873,7 +962,7 @@ export async function main() {
     try {
       await cmdInit(ownArgs.slice(1));
     } catch (err: any) {
-      process.stderr.write(`\x1b[31mopeneral: init failed: ${err?.message || err}\x1b[0m\n`);
+      process.stderr.write(`\x1b[31mopenrind-shell: init failed: ${err?.message || err}\x1b[0m\n`);
       process.exit(1);
     }
     return;
@@ -885,7 +974,10 @@ export async function main() {
     const optimizeCliPath = fileURLToPath(new URL('./optimize/cli.js', import.meta.url));
     const env: NodeJS.ProcessEnv = { ...process.env };
     const stored = loadStoredPresign();
-    if (stored) env['OPENERAL_PRESIGN_URL'] = stored.url;
+    if (stored) {
+      env.OPENRIND_GATEWAY_PRESIGN_URL = stored.url;
+      env.OPENERAL_PRESIGN_URL = stored.url;
+    }
     const child = spawn('node', [optimizeCliPath, ...ownArgs], { stdio: 'inherit', env });
     child.on('exit', (code) => process.exit(code ?? 0));
     return;
@@ -897,7 +989,10 @@ export async function main() {
     const optimizeCliPath = fileURLToPath(new URL('./optimize/cli.js', import.meta.url));
     const env: NodeJS.ProcessEnv = { ...process.env };
     const stored = loadStoredPresign();
-    if (stored) env['OPENERAL_PRESIGN_URL'] = stored.url;
+    if (stored) {
+      env.OPENRIND_GATEWAY_PRESIGN_URL = stored.url;
+      env.OPENERAL_PRESIGN_URL = stored.url;
+    }
     const child = spawn('node', [optimizeCliPath, ...ownArgs.slice(1)], { stdio: 'inherit', env });
     child.on('exit', (code) => process.exit(code ?? 0));
     return;
@@ -914,7 +1009,10 @@ export async function main() {
     const { refreshClaudeMemory } = await import('./memory/refresh.js');
     try {
       const result = await refreshClaudeMemory({
-        homeDir: process.env.OPENERAL_HOME || process.env.HOME || '/sandbox',
+        homeDir: process.env.OPENRIND_SHELL_HOME
+          || process.env.OPENERAL_HOME
+          || process.env.HOME
+          || '/sandbox',
         cwd: process.cwd(),
         projectRoot: parsed.projectRoot || undefined,
         query: parsed.query || undefined,
@@ -922,13 +1020,13 @@ export async function main() {
         backup: parsed.backup,
       });
       process.stderr.write(
-        `\x1b[2mopeneral: memory ${result.mode} mode (project: ${result.context.projectSlug})\x1b[0m\n`,
+        `\x1b[2mopenrind-shell: memory ${result.mode} mode (project: ${result.context.projectSlug})\x1b[0m\n`,
       );
       process.stderr.write(
-        `\x1b[2mopeneral: memory dir  ${result.context.memoryDir}\x1b[0m\n`,
+        `\x1b[2mopenrind-shell: memory dir  ${result.context.memoryDir}\x1b[0m\n`,
       );
       if (result.backupDir) {
-        process.stderr.write(`\x1b[2mopeneral: backup      ${result.backupDir}\x1b[0m\n`);
+        process.stderr.write(`\x1b[2mopenrind-shell: backup      ${result.backupDir}\x1b[0m\n`);
       }
       for (const f of result.writtenFiles) {
         process.stderr.write(`\x1b[32m  wrote\x1b[0m ${f}\n`);
@@ -941,7 +1039,7 @@ export async function main() {
       }
       return;
     } catch (err: any) {
-      process.stderr.write(`\x1b[31mopeneral: memory refresh failed: ${err?.message || err}\x1b[0m\n`);
+      process.stderr.write(`\x1b[31mopenrind-shell: memory refresh failed: ${err?.message || err}\x1b[0m\n`);
       if (err?.stack) process.stderr.write(err.stack + '\n');
       process.exit(1);
     }
@@ -949,10 +1047,13 @@ export async function main() {
 
   const { workspaceId, claudeArgs } = parsed;
 
-  process.stderr.write(`\x1b[2mopeneral: workspace  ${workspaceId}\x1b[0m\n`);
-  if (devMode) {
-    const devImage = process.env.OPENERAL_DEV_IMAGE ?? 'Dockerfile.openeral';
-    process.stderr.write(`\x1b[2mopeneral: mode       dev (${devImage})\x1b[0m\n`);
-  }
-  await launchViaSandbox(workspaceId, claudeArgs, devMode);
+  process.stderr.write(`\x1b[2mopenrind-shell: workspace  ${workspaceId}\x1b[0m\n`);
+  process.stderr.write(
+    `\x1b[2mopenrind-shell: mode       ${compatibilityMode ? 'compatibility' : 'primary FUSE'}${devMode ? ' (--dev alias)' : ''}\x1b[0m\n`,
+  );
+  await launchViaSandbox(
+    workspaceId,
+    claudeArgs,
+    compatibilityMode ? 'compatibility' : 'fuse',
+  );
 }

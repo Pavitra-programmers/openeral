@@ -22,7 +22,7 @@ async function main() {
 Openeral Optimizer Proxy
 
 Usage:
-  npx openeral proxy [options]
+  openrind-shell proxy [options]
 
 Options:
   --port <number>     Port to listen on (default: 8000)
@@ -32,14 +32,14 @@ Options:
 Environment Variables:
   ANTHROPIC_API_KEY   Your Anthropic API key (required)
   DATABASE_URL        PostgreSQL connection for metrics (optional)
-  OPENERAL_WORKSPACE_ID  Workspace ID (default: 'default')
+  OPENRIND_SHELL_WORKSPACE_ID  Workspace ID (default: 'default')
 
 Example:
-  npx openeral proxy --port 8000
+  openrind-shell proxy --port 8000
   
 Then set in your environment:
   export ANTHROPIC_BASE_URL=http://localhost:8000
-  npx openeral
+  openrind-shell
 `);
       process.exit(0);
     }

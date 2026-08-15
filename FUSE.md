@@ -1,4 +1,4 @@
-# FUSE and Persistent Filesystem Options for OpenEral
+# FUSE and Persistent Filesystem Options for Openrind Shell
 
 **Status:** architecture survey with implementation status; the selected contract is
 specified in [FUSE-DESIGN.md](FUSE-DESIGN.md)
@@ -8,7 +8,7 @@ specified in [FUSE-DESIGN.md](FUSE-DESIGN.md)
 **Audience:** an engineer or coding agent expected to challenge the design before
 rollout
 
-This report records every filesystem route investigated for OpenEral. It is not the
+This report records every filesystem route investigated for Openrind Shell. It is not the
 implementation specification. Where this survey and FUSE-DESIGN.md differ,
 FUSE-DESIGN.md wins.
 
@@ -16,7 +16,8 @@ FUSE-DESIGN.md wins.
 
 The historical and currently published `:just-bash` runtime is a scoped replication
 system, not a live filesystem. Claude Code uses the kernel filesystem under `/sandbox`;
-a detached Node daemon copies only `.claude`, `.claude.json`, and `.openeral` between
+a detached Node daemon copies only `.claude`, `.claude.json`, `.openrind-shell`, and
+legacy `.openeral` between
 disk and PostgreSQL. That design remains the compatibility route.
 
 The current source-tree primary runtime implements the selected FUSE design: one
@@ -47,7 +48,7 @@ subject to OpenShell's binary-attributed egress policy.
 
 This requires a substantial, first-class OpenShell patch. It does not require relaxing
 the agent's seccomp filter, giving mount capability to Claude, replacing OpenShell's
-supervisor, or carrying the historical OpenEral gateway/cluster/CSI image matrix.
+supervisor, or carrying the historical Openrind Shell gateway/cluster/CSI image matrix.
 
 ## Evidence Labels
 
@@ -62,9 +63,9 @@ supervisor, or carrying the historical OpenEral gateway/cluster/CSI image matrix
 | Repository or branch | Pinned revision | Use |
 |---|---:|---|
 | NVIDIA/OpenShell `main` | [`c4b500a7de64d0b66e3ee8098f58d14299092162`](https://github.com/NVIDIA/OpenShell/tree/c4b500a7de64d0b66e3ee8098f58d14299092162) | Current supervisor, policy, driver, lifecycle, public API, and SDK behavior. Fresh clone: `/tmp/OpenShell-latest-20260814`. |
-| OpenEral `nemo` | `0dcabc8ad3aecf6a562fef5b611d52ec4cee018a` plus this implementation worktree | Scoped-sync baseline plus the implemented primary FUSE candidate. |
-| OpenEral historical Rust tree | current repository `crates/` plus historical commits | FUSE correctness evidence; not a reusable production implementation. |
-| OpenEral renamed `origin/just-bash` | `6775f03f763e4405a155e081e035c43fc47f5977` | Virtual-filesystem comparison. |
+| Openrind Shell `nemo` | `0dcabc8ad3aecf6a562fef5b611d52ec4cee018a` plus this implementation worktree | Scoped-sync baseline plus the implemented primary FUSE candidate. |
+| Historical Rust tree | current repository `crates/` plus historical commits | FUSE correctness evidence; not a reusable production implementation. |
+| Renamed `origin/just-bash` | `6775f03f763e4405a155e081e035c43fc47f5977` | Virtual-filesystem comparison. |
 | vercel-labs/just-bash | `2586623e5dbfd9bd88871c185b251dc7b6c02a78` | Interpreter and `IFileSystem` behavior. |
 | NVIDIA/NemoClaw | `b5283712bb3da9a6e7de7c2e334a665f0f04c9be` | Recovery-controller and process-lifecycle lessons. |
 | NVIDIA/OpenShell-Community | `fffb6b2248ff6ba585f50517f3711b08122089f2` | Published sandbox base; it contains no FUSE integration. |
@@ -98,7 +99,8 @@ Only these paths round-trip:
 ```text
 /sandbox/.claude/**
 /sandbox/.claude.json
-/sandbox/.openeral/**
+/sandbox/.openrind-shell/**
+/sandbox/.openeral/** (legacy)
 ```
 
 The design preserves native `git`, `node`, `npm`, language servers, and arbitrary
@@ -113,7 +115,8 @@ binaries. Its limitations are structural:
 
 ### just-bash library path
 
-`createOpeneralShell()` still exposes an in-process virtual namespace:
+`createOpenrindShell()` still exposes an in-process virtual namespace; the old export
+is a compatibility alias:
 
 ```text
 /db          -> PgFs, read-only SQL browser
@@ -285,7 +288,7 @@ relay streams are not resumed after every gateway/supervisor interruption.
 
 `service expose` is HTTP-oriented. A WebSocket can carry multiplexed binary RPC over
 one durable connection, but every broken stream must be reconnected and reconciled by
-OpenEral. `ForwardTcp` is a better protocol fit, but a production controller must run
+Openrind Shell. `ForwardTcp` is a better protocol fit, but a production controller must run
 on the compute host and repair forwards; a forward on a user's remote laptop cannot
 serve a Docker volume plugin on the gateway host.
 
@@ -299,7 +302,7 @@ plugin, storage sandbox, relay controller, wire protocol, and second trust bound
 Claude/native tool
   -> kernel VFS at /sandbox/work
   -> inherited /dev/fuse connection
-  -> unprivileged openeral-fused process
+  -> unprivileged openrind-shell-fused process
   -> OpenShell netns and CONNECT proxy
   -> PostgreSQL with end-to-end TLS
 ```
@@ -309,7 +312,7 @@ The supervisor performs only the privileged setup:
 1. validate the static policy declaration;
 2. open `/dev/fuse` and mount `/sandbox/work` before startup hardening;
 3. apply its normal process-wide hardening;
-4. spawn `openeral-fused` through `ProcessHandle`, passing only explicitly mapped
+4. spawn `openrind-shell-fused` through `ProcessHandle`, passing only explicitly mapped
    inherited fds;
 5. treat the daemon as a critical child.
 
@@ -324,7 +327,7 @@ correctness-focused FUSE daemon.
 
 The implementation is present against a plain source snapshot at
 `vendor/openshell/`, initially pinned to
-`c4b500a7de64d0b66e3ee8098f58d14299092162`, with pristine upstream import and OpenEral
+`c4b500a7de64d0b66e3ee8098f58d14299092162`, with pristine upstream import and Openrind Shell
 patches kept separate. Comparable upstream resource and lifecycle changes
 show that this is likely a 30-60-file OpenShell patch with 3,000-6,000 non-generated
 changed lines, plus generated SDK/API artifacts. "Minimal" means default-off and
@@ -389,7 +392,7 @@ instead of using an SSH-side `nohup` process.
 The selected route preserves OpenShell's network controls:
 
 - raw PostgreSQL traffic remains blocked by the sandbox network namespace;
-- `openeral-fused` uses HTTP CONNECT through the OpenShell proxy;
+- `openrind-shell-fused` uses HTTP CONNECT through the OpenShell proxy;
 - PostgreSQL negotiates TLS end-to-end inside that tunnel;
 - policy permits the PostgreSQL host/port for the daemon and the init-time Node
   migration path; both remain destination- and binary-attributed by OpenShell;
@@ -428,7 +431,7 @@ write is durable":
 The safe-replacement rules intentionally protect the common replace-via-rename and
 replace-via-truncate patterns described by Linux ext4's
 [`auto_da_alloc`](https://cdn.kernel.org/doc/html/latest/admin-guide/ext4.html). They
-are explicit OpenEral guarantees, not generic POSIX guarantees or a substitute for
+are explicit Openrind Shell guarantees, not generic POSIX guarantees or a substitute for
 application `fsync`. No proposal should claim zero data loss for ordinary unbarriered
 writes or transparent survival of open file descriptors across a mount restart.
 
@@ -475,7 +478,7 @@ Verified in the current implementation:
 - the OpenShell pin is imported under `vendor/openshell` with provenance metadata;
 - the default-off FUSE resource, policy, Docker gate, inherited-fd path, readiness,
   critical-child handling, and gateway restart mapping compile and pass focused tests;
-- `openeral-fused` runs through OpenShell's hardened child path and mandatory CONNECT
+- `openrind-shell-fused` runs through OpenShell's hardened child path and mandatory CONNECT
   proxy;
 - the normalized chunked schema passes eight live filesystem conformance checks;
 - Docker automatic restart reconstructs the mount, advances the lease epoch, returns

@@ -7,15 +7,70 @@
  *
  * PGlite is a WASM build of PostgreSQL that runs fully in-process.
  * No Docker, no server process, no runtime binary downloads.
- * Data is persisted to disk at OPENERAL_DATA_DIR (default: ~/.openeral/data).
+ * Data is persisted to disk at OPENRIND_SHELL_DATA_DIR or the legacy
+ * OPENERAL_DATA_DIR (default: ~/.openeral/data).
  */
 
 import { PGlite } from '@electric-sql/pglite';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
+import type pg from 'pg';
 import { createPool } from './pool.js';
 import type { DbPool } from './pool.js';
+
+const DEFAULT_CONNECT_RETRY_MS = 5_000;
+const DEFAULT_CONNECT_DEADLINE_MS = 120_000;
+
+function positiveIntegerEnv(primary: string, legacy: string, fallback: number): number {
+  const raw = process.env[primary] ?? process.env[legacy];
+  if (!raw) return fallback;
+  const value = Number.parseInt(raw, 10);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function isTransientConnectionError(err: unknown): boolean {
+  const code = err && typeof err === 'object' && 'code' in err
+    ? String((err as { code?: unknown }).code ?? '')
+    : '';
+  const message = err instanceof Error ? err.message : String(err);
+  return /\{:error,\s*:timeout\}|ECONNREFUSED|ECONNRESET|ETIMEDOUT/i.test(message)
+    || ['08001', '08006', '57P03'].includes(code);
+}
+
+function annotateConnectionError(err: unknown, connectionString: string): Error {
+  const original = err instanceof Error ? err : new Error(String(err));
+  const message = original.message || '';
+  let hint = '';
+
+  if (/tenant or user not found|tenant\/user .* not found/i.test(message)) {
+    let host = '(unparseable host)';
+    try {
+      host = new URL(connectionString).host;
+    } catch {
+      // The original parse error remains the useful failure when the URL is invalid.
+    }
+    hint =
+      `\n\nThe connection reached the Supabase pooler, but the tenant was not found. `
+      + `DATABASE_URL commonly has the wrong pooler shard or region (current host: ${host}). `
+      + `Copy the exact pooler URL from Supabase Dashboard > Connect; keep the `
+      + '`postgres.<project-ref>` username unchanged.';
+  } else if (/\{:error,\s*:timeout\}/.test(message)) {
+    hint =
+      '\n\nThe Supabase pooler timed out reaching the underlying database. '
+      + 'A paused project may need to be resumed from the Supabase dashboard.';
+  }
+
+  if (!hint) return original;
+
+  const annotated = new Error(message + hint);
+  annotated.stack = original.stack;
+  const code = (original as { code?: unknown }).code;
+  if (typeof code === 'string') {
+    (annotated as { code?: string }).code = code;
+  }
+  return annotated;
+}
 
 /** Default data directory (persists across sessions). */
 const DEFAULT_DATA_DIR = join(homedir(), '.openeral', 'data');
@@ -73,20 +128,59 @@ export async function getDatabaseConnection(): Promise<{
 }> {
   // ── External PostgreSQL ────────────────────────────────────────────────────
   if (process.env.DATABASE_URL) {
-    const pool = createPool(process.env.DATABASE_URL);
-    const client = await pool.connect();
-    await client.query('SELECT 1');
-    client.release();
-    return {
-      pool,
-      connectionString: process.env.DATABASE_URL,
-      isEmbedded: false,
-    };
+    const connectionString = process.env.DATABASE_URL;
+    const pool = createPool(connectionString);
+    const retryMs = positiveIntegerEnv(
+      'OPENRIND_SHELL_DB_CONNECT_RETRY_MS',
+      'OPENERAL_DB_CONNECT_RETRY_MS',
+      DEFAULT_CONNECT_RETRY_MS,
+    );
+    const deadlineMs = positiveIntegerEnv(
+      'OPENRIND_SHELL_DB_CONNECT_DEADLINE_MS',
+      'OPENERAL_DB_CONNECT_DEADLINE_MS',
+      DEFAULT_CONNECT_DEADLINE_MS,
+    );
+    const deadline = Date.now() + deadlineMs;
+    let attempt = 0;
+    let lastError: unknown;
+
+    while (Date.now() < deadline) {
+      attempt++;
+      let client: pg.PoolClient | undefined;
+      try {
+        client = await pool.connect();
+        await client.query('SELECT 1');
+        client.release();
+        return {
+          pool,
+          connectionString,
+          isEmbedded: false,
+        };
+      } catch (err) {
+        lastError = err;
+        if (client) {
+          try {
+            client.release(err instanceof Error ? err : true);
+          } catch {
+            // The pool is closed below if the retry budget is exhausted.
+          }
+        }
+
+        if (!isTransientConnectionError(err) || Date.now() + retryMs >= deadline) break;
+        process.stderr.write(`[db] connection attempt ${attempt} failed; retrying in ${retryMs}ms\n`);
+        await new Promise((resolve) => setTimeout(resolve, retryMs));
+      }
+    }
+
+    await pool.end().catch(() => undefined);
+    throw annotateConnectionError(lastError, connectionString);
   }
 
   // ── Embedded PGlite ────────────────────────────────────────────────────────
   if (!_db) {
-    const dataDir = process.env.OPENERAL_DATA_DIR ?? DEFAULT_DATA_DIR;
+    const dataDir = process.env.OPENRIND_SHELL_DATA_DIR
+      ?? process.env.OPENERAL_DATA_DIR
+      ?? DEFAULT_DATA_DIR;
     mkdirSync(dataDir, { recursive: true });
 
     _db = new PGlite(dataDir);
@@ -96,7 +190,9 @@ export async function getDatabaseConnection(): Promise<{
     if (maybeReady) await maybeReady;
   }
 
-  const dataDir = process.env.OPENERAL_DATA_DIR ?? DEFAULT_DATA_DIR;
+  const dataDir = process.env.OPENRIND_SHELL_DATA_DIR
+    ?? process.env.OPENERAL_DATA_DIR
+    ?? DEFAULT_DATA_DIR;
   return {
     pool: buildPGlitePool(_db),
     connectionString: `pglite://${dataDir}`,

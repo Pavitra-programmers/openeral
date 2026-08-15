@@ -1,7 +1,7 @@
-# Building And Developing OpenEral
+# Building And Developing Openrind Shell
 
-This guide covers source builds. The currently published compatibility image requires
-none of these tools; use [README.md](./README.md) for that flow.
+This guide covers source builds. The GHCR compatibility target requires registry pull
+access; [README.md](./README.md) also shows the local child-image fallback.
 
 ## Source Layout
 
@@ -11,9 +11,19 @@ openeral-js/                 migrations, init/import, CLI, and compatibility lib
 sandboxes/openeral/          primary and compatibility image runtime files
 vendor/openshell/            pinned, patched OpenShell source snapshot
 tests/fuse/                  FUSE conformance and real OpenShell E2E
-Dockerfile.openeral          primary FUSE image
-Dockerfile.openeral-compat   scoped-sync/PGlite compatibility image
+Dockerfile.openrind-shell          primary FUSE image
+Dockerfile.openrind-shell-compat   scoped-sync/PGlite compatibility image
 ```
+
+The historical source-directory, Cargo-package, test build-argument, and `_openeral`
+schema names remain stable for compatibility. Installed commands, environment
+variables, skills, and image names use `openrind-shell`; legacy aliases are tested.
+
+Migration V8 bridges workspace rows written by the renamed just-bash branch from
+`_openrind.workspace_*` into the stable `_openeral.workspace_*` namespace. It does
+not rename `_openeral.fs_*` or overwrite a compatibility row with an older mtime.
+Source provenance permits a first FUSE volume to import the full just-bash home;
+historical scoped workspaces keep their state-only import boundary.
 
 The OpenShell snapshot is pinned in [`vendor/openshell/UPSTREAM`](./vendor/openshell/UPSTREAM):
 
@@ -24,7 +34,7 @@ tree=30d1825d5be2a631823d941188803e29f09aedd5
 ```
 
 `vendor/openshell` has no nested `.git`; it contains the pristine snapshot plus the
-default-off OpenEral FUSE patch.
+default-off Openrind Shell FUSE patch.
 
 ## Prerequisites
 
@@ -33,7 +43,7 @@ default-off OpenEral FUSE patch.
 - Node.js 22 and pnpm for `openeral-js` development.
 - OpenShell build dependencies, including Protobuf and Z3.
 - External PostgreSQL with TLS for primary-runtime tests.
-- Optional Anthropic, AWS, and StringCost providers for live agent tests.
+- Optional Anthropic, AWS, and Openrind Gateway providers for live agent tests.
 
 The primary image pulls this existing base and does not rebuild it:
 
@@ -44,7 +54,7 @@ docker pull ghcr.io/nvidia/openshell-community/sandboxes/base:latest
 If an anonymous GHCR pull is denied, remove stale registry credentials with
 `docker logout ghcr.io` and retry before changing the image source.
 
-## Build OpenEral
+## Build Openrind Shell
 
 Rust daemon and historical Rust workspace:
 
@@ -97,17 +107,17 @@ The gateway must run the patched supervisor and explicitly enable FUSE. Generate
 temporary development identity outside the repository:
 
 ```bash
-export OPENERAL_GATEWAY_DIR="$(mktemp -d /tmp/openeral-fuse-gateway-XXXXXX)"
-mkdir -p "$OPENERAL_GATEWAY_DIR/jwt" "$OPENERAL_GATEWAY_DIR/state"
-openssl genpkey -algorithm ED25519 -out "$OPENERAL_GATEWAY_DIR/jwt/signing.pem"
+export OPENRIND_SHELL_GATEWAY_DIR="$(mktemp -d /tmp/openrind-shell-fuse-gateway-XXXXXX)"
+mkdir -p "$OPENRIND_SHELL_GATEWAY_DIR/jwt" "$OPENRIND_SHELL_GATEWAY_DIR/state"
+openssl genpkey -algorithm ED25519 -out "$OPENRIND_SHELL_GATEWAY_DIR/jwt/signing.pem"
 openssl pkey \
-  -in "$OPENERAL_GATEWAY_DIR/jwt/signing.pem" \
+  -in "$OPENRIND_SHELL_GATEWAY_DIR/jwt/signing.pem" \
   -pubout \
-  -out "$OPENERAL_GATEWAY_DIR/jwt/public.pem"
-printf '%s\n' openeral-fuse-dev > "$OPENERAL_GATEWAY_DIR/jwt/kid"
+  -out "$OPENRIND_SHELL_GATEWAY_DIR/jwt/public.pem"
+printf '%s\n' openrind-shell-fuse-dev > "$OPENRIND_SHELL_GATEWAY_DIR/jwt/kid"
 ```
 
-Create `$OPENERAL_GATEWAY_DIR/gateway.toml`, replacing `/absolute/repo` with this
+Create `$OPENRIND_SHELL_GATEWAY_DIR/gateway.toml`, replacing `/absolute/repo` with this
 checkout's absolute path:
 
 ```toml
@@ -127,13 +137,13 @@ allow_unauthenticated_users = true
 signing_key_path = "/tmp/replace/jwt/signing.pem"
 public_key_path = "/tmp/replace/jwt/public.pem"
 kid_path = "/tmp/replace/jwt/kid"
-gateway_id = "openeral-fuse-dev"
+gateway_id = "openrind-shell-fuse-dev"
 ttl_secs = 0
 
 [openshell.drivers.docker]
-default_image = "openeral-fuse:local"
+default_image = "openrind-shell-fuse:local"
 image_pull_policy = "Never"
-sandbox_namespace = "openeral-fuse-dev"
+sandbox_namespace = "openrind-shell-fuse-dev"
 grpc_endpoint = "http://host.openshell.internal:18770"
 supervisor_bin = "/absolute/repo/vendor/openshell/target/debug/openshell-sandbox"
 enable_fuse = true
@@ -144,8 +154,8 @@ values. Start the gateway in a dedicated terminal:
 
 ```bash
 vendor/openshell/target/debug/openshell-gateway \
-  --config "$OPENERAL_GATEWAY_DIR/gateway.toml" \
-  --db-url "sqlite:$OPENERAL_GATEWAY_DIR/state/gateway.db?mode=rwc"
+  --config "$OPENRIND_SHELL_GATEWAY_DIR/gateway.toml" \
+  --db-url "sqlite:$OPENRIND_SHELL_GATEWAY_DIR/state/gateway.db?mode=rwc"
 ```
 
 This repository does not install, start, or mutate a gateway automatically. The
@@ -167,13 +177,13 @@ export OPENSHELL_GATEWAY_ENDPOINT="http://127.0.0.1:18770"
 Primary FUSE image:
 
 ```bash
-docker build --pull=false -f Dockerfile.openeral -t openeral-fuse:local .
+docker build --pull=false -f Dockerfile.openrind-shell -t openrind-shell-fuse:local .
 ```
 
 Compatibility image:
 
 ```bash
-docker build --pull=false -f Dockerfile.openeral-compat -t openeral-compat:local .
+docker build --pull=false -f Dockerfile.openrind-shell-compat -t openrind-shell-compat:local .
 ```
 
 The root Dockerfiles are canonical for local builds because their context includes
@@ -202,7 +212,7 @@ allows the supplied database host:
 export DATABASE_URL='postgresql://...'
 export OPENSHELL_GATEWAY_ENDPOINT='http://127.0.0.1:18770'
 export OPENSHELL_XDG_CONFIG_HOME="$HOME/.config"
-export OPENERAL_FUSE_E2E_IMAGE='openeral-fuse:local'
+export OPENRIND_SHELL_FUSE_E2E_IMAGE='openrind-shell-fuse:local'
 
 tests/fuse/test_openshell_e2e.sh
 ```
@@ -221,8 +231,8 @@ the v1 Docker driver.
 To include a real Claude write, attach a configured provider:
 
 ```bash
-export OPENERAL_FUSE_REAL_CLAUDE=1
-export OPENERAL_FUSE_E2E_PROVIDER=claude
+export OPENRIND_SHELL_FUSE_REAL_CLAUDE=1
+export OPENRIND_SHELL_FUSE_E2E_PROVIDER=claude
 tests/fuse/test_openshell_e2e.sh
 ```
 
@@ -240,7 +250,7 @@ docker build \
   -f tests/fuse/Dockerfile.local-postgres \
   --build-arg OPENERAL_TEST_DB_HOST=172.17.0.1 \
   --build-arg OPENERAL_TEST_DB_PORT=55432 \
-  -t openeral-fuse-localdb:test \
+  -t openrind-shell-fuse-localdb:test \
   /path/to/context-containing-ca.crt
 ```
 
@@ -265,7 +275,7 @@ DATABASE_URL='postgresql://...' node test-integration.mjs
 DATABASE_URL='postgresql://...' node test-memory-refresh.mjs
 ```
 
-`createOpeneralShell()` exposes `/db`, `/home/agent`, and `/tmp` through just-bash for
+`createOpenrindShell()` exposes `/db`, `/home/agent`, and `/tmp` through just-bash for
 custom agents. That path is independent of the primary kernel FUSE mount.
 
 ## Custom PostgreSQL Hosts
@@ -279,7 +289,7 @@ network_policies:
       - { host: db.example.com, port: 5432, tls: skip }
     binaries:
       - { path: /usr/bin/node }
-      - { path: /usr/local/bin/openeral-fused }
+      - { path: /usr/local/bin/openrind-shell-fused }
 ```
 
 `tls: skip` applies to OpenShell inspection, not PostgreSQL. It tells OpenShell to
@@ -288,7 +298,7 @@ relay the tunnel; Node/Rust then require and verify PostgreSQL TLS end to end.
 ## Source And Rollout Rules
 
 - Never grant mount syscalls or `/dev/fuse` to Claude.
-- Never start `openeral-fused` outside the normal hardened `ProcessHandle` path.
+- Never start `openrind-shell-fused` outside the normal hardened `ProcessHandle` path.
 - Never make Rust own schema migration.
 - Never run a watcher beside FUSE in the primary image.
 - Never selectively omit generated/vendor changes from commits; ignore artifacts only

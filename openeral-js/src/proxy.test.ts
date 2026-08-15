@@ -109,12 +109,12 @@ describe('setup.sh Socket.dev integration', () => {
     expect(setup).toContain('_authToken');
   });
 
-  it('uses a separate openeral-managed file, not the user .npmrc', () => {
+  it('uses a separate Openrind Shell-managed file, not the user .npmrc', () => {
     // Must NOT write to the user's .npmrc.
     expect(setup).not.toContain('/sandbox/.npmrc');
-    // Must use a temp/openeral-owned file
-    expect(setup).toMatch(/openeral-npmrc|OPENERAL_NPMRC/);
-    // Must set NPM_CONFIG_USERCONFIG to point npm at the openeral file
+    // Must use a dedicated temporary file.
+    expect(setup).toMatch(/openrind-shell-npmrc|OPENRIND_SHELL_NPMRC/);
+    // Must set NPM_CONFIG_USERCONFIG to point npm at the managed file.
     expect(setup).toContain('NPM_CONFIG_USERCONFIG');
   });
 
@@ -132,7 +132,7 @@ describe('setup.sh Socket.dev integration', () => {
   });
 });
 
-describe('setup.sh StringCost integration', () => {
+describe('setup.sh Openrind Gateway integration', () => {
   it('normalizes presign URLs before writing Claude settings', () => {
     expect(setup).toContain('normalize_stringcost_proxy_url');
     expect(setup).toContain('url.pathname = url.pathname.replace(/\\/v1\\/.*$/, "");');
@@ -146,17 +146,19 @@ describe('setup.sh StringCost integration', () => {
     expect(setup).not.toContain('2>&1)"');
   });
 
-  it('extracts StringCost URLs from noisy presign output', () => {
-    expect(setup).toMatch(/raw\.match\(\/https:\\\/\\\/proxy\\\.stringcost\\\.com\\\/stringcost-proxy\\\/t\\\/\[\^\\s/);
+  it('extracts current and legacy gateway URLs from noisy presign output', () => {
+    expect(setup).toContain('proxy\\.openrind\\.com\\/openrind-gateway-proxy');
+    expect(setup).toContain('proxy\\.stringcost\\.com\\/stringcost-proxy');
     expect(setup).toContain('const candidate = match ? match[0] : raw;');
     expect(setup).toContain('const url = new URL(candidate);');
     expect(setup).toContain('normalize_stringcost_proxy_url_or_warn');
-    expect(setup).toContain('setup.sh: ignoring invalid StringCost proxy URL from');
+    expect(setup).toContain('setup.sh: ignoring invalid Openrind Gateway proxy URL from');
   });
 
-  it('keeps uploaded StringCost presigns as a compatibility path', () => {
+  it('uses the renamed upload and keeps old presigns as a compatibility path', () => {
+    expect(setup).toContain('/sandbox/openrind-shell-input/presign.json');
     expect(setup).toContain('/sandbox/openeral-input/presign.json');
-    expect(setup).toContain('setup.sh: using uploaded StringCost presign');
+    expect(setup).toContain('setup.sh: using uploaded Openrind Gateway presign');
     expect(setup).not.toContain('skipping StringCost presign creation because ANTHROPIC_API_KEY is an OpenShell placeholder');
   });
 
@@ -171,9 +173,10 @@ describe('setup.sh StringCost integration', () => {
     // exported env var, the fallback URL in settings.json wins and produces
     // doubled /v1/messages paths against StringCost.
     expect(setup).toContain('write_export ANTHROPIC_BASE_URL "$STRINGCOST_PROXY_URL"');
-    expect(claudeWrapper).toContain('. /tmp/openeral-session.env');
+    expect(claudeWrapper).toContain('. /tmp/openrind-shell-session.env');
     expect(claudeWrapper).not.toMatch(/unset ANTHROPIC_API_KEY/);
     expect(claudeWrapper).toMatch(/unset STRINGCOST_API_KEY/);
+    expect(claudeWrapper).toMatch(/unset OPENRIND_GATEWAY_API_KEY/);
     expect(claudeWrapper).toMatch(/unset ANTHROPIC_AUTH_TOKEN/);
   });
 
@@ -195,7 +198,7 @@ describe('setup.sh StringCost integration', () => {
   });
 
   it('CLI starts the sandbox wrapper through sandbox exec', () => {
-    expect(cli).toContain('openeral-init');
+    expect(cli).toContain('openrind-shell-init');
     expect(cli).toMatch(/'sandbox',\s*'exec'/);
     expect(cli).toContain("'claude', ...claudeArgs");
     expect(cli).not.toMatch(/-u ANTHROPIC_API_KEY/);

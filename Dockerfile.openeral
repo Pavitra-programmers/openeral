@@ -1,4 +1,4 @@
-# OpenEral primary sandbox: OpenShell-mounted, PostgreSQL-backed FUSE workspace.
+# Openrind Shell primary sandbox: OpenShell-mounted PostgreSQL FUSE workspace.
 #
 # This repo-root Dockerfile exists for OpenShell local builds:
 #
@@ -30,36 +30,41 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # TypeScript owns migrations and one-time legacy import. Rust never migrates.
-COPY openeral-js/ /opt/openeral/
-RUN cd /opt/openeral && npm install && npm run build && npm prune --omit=dev \
-    && chmod -R a+rX /opt/openeral \
-    && chown -R sandbox:sandbox /opt/openeral
+COPY openeral-js/ /opt/openrind-shell/
+RUN cd /opt/openrind-shell && npm install && npm run build && npm prune --omit=dev \
+    && chmod -R a+rX /opt/openrind-shell \
+    && chown -R sandbox:sandbox /opt/openrind-shell \
+    && ln -s /opt/openrind-shell /opt/openeral
 
 # The OpenShell Community base installs Claude with Anthropic's native
-# installer. Preserve it behind OpenEral's persistence-aware wrapper.
+# installer. Preserve it behind Openrind Shell's persistence-aware wrapper.
 RUN test -x /usr/local/bin/claude \
     && mv /usr/local/bin/claude /usr/local/bin/claude-real
 
 # The supervisor validates this root-owned binary and supplies /dev/fuse and
 # readiness descriptors. No fusermount helper or workload mount capability ships.
-COPY --from=fused-builder /source/target/release/openeral-fused /usr/local/bin/openeral-fused
+COPY --from=fused-builder /source/target/release/openeral-fused /usr/local/bin/openrind-shell-fused
 
 COPY sandboxes/openeral/openeral-claude-fuse.sh /usr/local/bin/claude
 COPY sandboxes/openeral/pg-client-fuse.mjs /usr/local/bin/pg
-COPY sandboxes/openeral/setup-fuse.sh /opt/openeral/setup.sh
-COPY sandboxes/openeral/configure-stringcost.mjs /opt/openeral/configure-stringcost.mjs
-RUN chmod 755 /usr/local/bin/openeral-fused /usr/local/bin/claude /usr/local/bin/pg \
-        /opt/openeral/setup.sh /opt/openeral/configure-stringcost.mjs \
-    && ln -sf /opt/openeral/setup.sh /usr/local/bin/openeral \
-    && ln -sf /opt/openeral/setup.sh /usr/local/bin/openeral-init \
-    && ln -sf /opt/openeral/setup.sh /usr/local/bin/openeral-start \
-    && install -d -o sandbox -g sandbox -m 0700 /var/lib/openeral/runtime
+COPY sandboxes/openeral/setup-fuse.sh /opt/openrind-shell/setup.sh
+COPY sandboxes/openeral/configure-stringcost.mjs /opt/openrind-shell/configure-openrind-gateway.mjs
+RUN chmod 755 /usr/local/bin/openrind-shell-fused /usr/local/bin/claude /usr/local/bin/pg \
+        /opt/openrind-shell/setup.sh /opt/openrind-shell/configure-openrind-gateway.mjs \
+    && ln -sf /usr/local/bin/openrind-shell-fused /usr/local/bin/openeral-fused \
+    && ln -sf /opt/openrind-shell/setup.sh /usr/local/bin/openrind-shell \
+    && ln -sf /opt/openrind-shell/setup.sh /usr/local/bin/openrind-shell-init \
+    && ln -sf /opt/openrind-shell/setup.sh /usr/local/bin/openrind-shell-start \
+    && ln -sf /usr/local/bin/openrind-shell /usr/local/bin/openeral \
+    && ln -sf /usr/local/bin/openrind-shell-init /usr/local/bin/openeral-init \
+    && ln -sf /usr/local/bin/openrind-shell-start /usr/local/bin/openeral-start \
+    && install -d -o sandbox -g sandbox -m 0700 /var/lib/openrind-shell/runtime
 
 # Override the upstream base policy.
 COPY sandboxes/openeral/policy.yaml /etc/openshell/policy.yaml
 
 # Bundled skills are copied into the mounted home by one-shot init without
 # overwriting user-owned files.
-COPY --chown=root:root .claude/skills/ /opt/openeral/skills/
+COPY --chown=root:root .claude/skills/ /opt/openrind-shell/skills/
 
 WORKDIR /sandbox

@@ -1,4 +1,4 @@
-# OpenEral compatibility sandbox: scoped PostgreSQL sync with optional PGlite.
+# Openrind Shell compatibility sandbox: scoped sync with optional PGlite.
 # This root-level file keeps the repository root as the Docker build context.
 
 FROM ghcr.io/nvidia/openshell-community/sandboxes/base:latest
@@ -11,37 +11,45 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-COPY openeral-js/ /opt/openeral/
-RUN cd /opt/openeral && npm install && npm run build && npm prune --omit=dev \
-    && chmod -R a+rX /opt/openeral \
-    && chown -R sandbox:sandbox /opt/openeral
+COPY openeral-js/ /opt/openrind-shell/
+RUN cd /opt/openrind-shell && npm install && npm run build && npm prune --omit=dev \
+    && chmod -R a+rX /opt/openrind-shell \
+    && chown -R sandbox:sandbox /opt/openrind-shell \
+    && ln -s /opt/openrind-shell /opt/openeral
 
 RUN test -x /usr/local/bin/claude \
     && mv /usr/local/bin/claude /usr/local/bin/claude-real
 
-COPY --chown=sandbox:sandbox sandboxes/openeral/openeral-bash.mjs /opt/openeral/openeral-bash.mjs
-RUN chmod a+rx /opt/openeral/openeral-bash.mjs \
-    && ln -sf /opt/openeral/openeral-bash.mjs /usr/local/bin/openeral-bash
+COPY --chown=sandbox:sandbox sandboxes/openeral/openeral-bash.mjs /opt/openrind-shell/openrind-shell-bash.mjs
+RUN chmod a+rx /opt/openrind-shell/openrind-shell-bash.mjs \
+    && ln -sf /opt/openrind-shell/openrind-shell-bash.mjs /opt/openrind-shell/openeral-bash.mjs \
+    && ln -sf /opt/openrind-shell/openrind-shell-bash.mjs /usr/local/bin/openrind-shell-bash \
+    && ln -sf /usr/local/bin/openrind-shell-bash /usr/local/bin/openeral-bash
 
 COPY sandboxes/openeral/openeral-claude.sh /usr/local/bin/claude
-COPY sandboxes/openeral/openeral-daemon-ensure.sh /usr/local/bin/openeral-daemon-ensure
+COPY sandboxes/openeral/openeral-daemon-ensure.sh /usr/local/bin/openrind-shell-daemon-ensure
 COPY sandboxes/openeral/pg-client.mjs /usr/local/bin/pg
-RUN chmod 755 /usr/local/bin/claude /usr/local/bin/openeral-daemon-ensure /usr/local/bin/pg
+RUN chmod 755 /usr/local/bin/claude /usr/local/bin/openrind-shell-daemon-ensure /usr/local/bin/pg \
+    && ln -sf /usr/local/bin/openrind-shell-daemon-ensure /usr/local/bin/openeral-daemon-ensure
 
 RUN cp /bin/bash /bin/bash.real
 
-COPY sandboxes/openeral/setup.sh /opt/openeral/setup.sh
-RUN chmod 755 /opt/openeral/setup.sh \
-    && chown sandbox:sandbox /opt/openeral/setup.sh \
-    && ln -sf /opt/openeral/setup.sh /usr/local/bin/openeral \
-    && ln -sf /opt/openeral/setup.sh /usr/local/bin/openeral-init \
-    && ln -sf /opt/openeral/setup.sh /usr/local/bin/openeral-start
+COPY sandboxes/openeral/setup.sh /opt/openrind-shell/setup.sh
+RUN chmod 755 /opt/openrind-shell/setup.sh \
+    && chown sandbox:sandbox /opt/openrind-shell/setup.sh \
+    && ln -sf /opt/openrind-shell/setup.sh /usr/local/bin/openrind-shell \
+    && ln -sf /opt/openrind-shell/setup.sh /usr/local/bin/openrind-shell-init \
+    && ln -sf /opt/openrind-shell/setup.sh /usr/local/bin/openrind-shell-start \
+    && ln -sf /usr/local/bin/openrind-shell /usr/local/bin/openeral \
+    && ln -sf /usr/local/bin/openrind-shell-init /usr/local/bin/openeral-init \
+    && ln -sf /usr/local/bin/openrind-shell-start /usr/local/bin/openeral-start
 
 COPY sandboxes/openeral/policy.yaml /etc/openshell/policy.yaml
 RUN sed -i \
+      -e '/^    - \/var\/lib\/openrind-shell\/runtime$/d' \
       -e '/^    - \/var\/lib\/openeral\/runtime$/d' \
       -e '/^fuse_mounts:/,/^# --- Network policies/ { /^# --- Network policies/!d; }' \
-      -e '/path: \/usr\/local\/bin\/openeral-fused/d' \
+      -e '/path: \/usr\/local\/bin\/openrind-shell-fused/d' \
       -e 's#/sandbox/work/#/sandbox/#g' \
       /etc/openshell/policy.yaml
 COPY --chown=sandbox:sandbox .claude/skills/ /sandbox/.skills/

@@ -1,6 +1,6 @@
-# Openeral Optimizer
+# Openrind Shell Optimizer
 
-Active token and cost optimization for Claude Code running in Openeral.
+Token and cost analysis components for Claude Code running in Openrind Shell.
 
 ## Features
 
@@ -31,22 +31,22 @@ Automatically routes requests to the optimal model based on task complexity:
 
 ```bash
 # Enable optimizer (default)
-npx openeral --optimize
+openrind-shell --optimize
 
 # Disable optimizer
-npx openeral --no-optimize
+openrind-shell --no-optimize
 
 # View statistics
-npx openeral optimize stats
+openrind-shell optimize stats
 
 # View stats for specific workspace
-npx openeral optimize stats --workspace my-project --days 30
+openrind-shell optimize stats --workspace my-project --days 30
 ```
 
 ### Programmatic
 
 ```typescript
-import { createOptimizer } from 'openeral-js';
+import { createOptimizer } from 'openrind-shell-js';
 
 const optimizer = createOptimizer(pool, 'my-workspace', {
   enabled: true,
@@ -74,27 +74,17 @@ await optimizer.recordResponse(optimizedRequest, response, metrics);
 
 ## Configuration
 
-Environment variables:
-
-```bash
-# Enable/disable optimizer
-OPENERAL_OPTIMIZER=on|off
-
-# Prefer Haiku for all tasks (maximum savings)
-OPENERAL_OPTIMIZER_PREFER_HAIKU=true
-
-# Cache timeout (milliseconds)
-OPENERAL_OPTIMIZER_CACHE_TIMEOUT=3600000
-```
+Configure the programmatic optimizer through `createOptimizer()` options. The sandbox
+CLI does not currently expose environment-variable toggles for these components.
 
 ## Proof & Validation
 
 The optimizer tracks every API call with before/after metrics:
 
 ```bash
-$ npx openeral optimize stats
+$ openrind-shell optimize stats
 
-Openeral Optimizer - Last 7 Days
+Openrind Shell Optimizer - Last 7 Days
 ════════════════════════════════════════════════════════════
 
 TOTAL SAVINGS

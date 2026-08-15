@@ -1,10 +1,15 @@
 # Gap Plan: Query-driven semantic memory refresh
 
+> Historical implementation plan. Public examples use the current Openrind Shell
+> command, but references to `sync.ts` apply only to the compatibility runtime.
+> The primary FUSE runtime persists `/sandbox/work` directly and must not start a
+> second filesystem watcher.
+
 ## Goal
 
-Let users run `openeral memory refresh --query "..."` and have OpenEral regenerate Claude Code's memory files (`~/.claude/projects/<slug>/memory/MEMORY.md` + topic files) with semantically relevant content pulled from PostgreSQL, using pgvector embeddings.
+Let users run `openrind-shell memory refresh --query "..."` and have Openrind Shell regenerate Claude Code's memory files (`~/.claude/projects/<slug>/memory/MEMORY.md` + topic files) with semantically relevant content pulled from PostgreSQL, using pgvector embeddings.
 
-Default behaviour (`openeral memory refresh` with no query) must match what Claude Code itself expects — the existing 5 topic templates already do this.
+Default behaviour (`openrind-shell memory refresh` with no query) must match what Claude Code itself expects — the existing 5 topic templates already do this.
 
 ---
 
@@ -27,7 +32,7 @@ Default behaviour (`openeral memory refresh` with no query) must match what Clau
 
 | # | Gap | Consequence |
 |---|---|---|
-| 1 | CLI handler is a stub | `openeral memory refresh` exits with "not yet implemented" at `src/cli.ts:1999-2001` |
+| 1 | CLI handler is a stub | `openrind-shell memory refresh` exits with "not yet implemented" at `src/cli.ts:1999-2001` |
 | 2 | No pgvector, no embeddings column | `--query` can only rank lexically; "how does auth work" misses files that say "login flow" |
 | 3 | No embedding provider client | Cannot call OpenAI/Voyage — even if schema existed, we have no way to populate it |
 | 4 | No session-log indexing | Claude's own `~/.claude/projects/<slug>/*.jsonl` transcripts are never searched |
@@ -198,8 +203,8 @@ Final score = `0.7 * cosine + 0.3 * lexicalScore` (weights tunable), reasons arr
 Parse two new subcommands:
 
 ```
-openeral memory stats      # chunk count, embed coverage %, provider in use, dims
-openeral memory reindex    # drop embedding, re-embed every chunk (e.g. after switching provider)
+openrind-shell memory stats      # chunk count, embed coverage %, provider in use, dims
+openrind-shell memory reindex    # drop embedding, re-embed every chunk (e.g. after switching provider)
 ```
 
 Both reuse the existing pool/workspace resolution.
@@ -227,7 +232,7 @@ Both reuse the existing pool/workspace resolution.
 - `openeral-js/src/memory/types.ts` (add `source`, `contentHash`, optional `embedding`)
 - `openeral-js/src/sync.ts` (trigger embedChunks after walks)
 - `openeral-js/src/db/migrations.ts` (V6 inside advisory-lock block)
-- `.claude/skills/openeral-shell/SKILL.md` (document new subcommands)
+- `.claude/skills/openrind-shell/SKILL.md` (document new subcommands)
 - `README.md` (document `--query`, env vars, pgvector requirement)
 - `openeral-js/lint.mjs` (new lints — see below)
 
@@ -258,7 +263,7 @@ Fixture: insert 10 chunks with known vectors (mocked provider that maps strings 
 
 ### E2E (extends `tests/test_claude_e2e.sh`)
 
-Add a session 3 that runs `openeral memory refresh --query "<content from session 1 file>"`, then checks that the resulting `focus-*.md` mentions the file path written in session 1.
+Add a session 3 that runs `openrind-shell memory refresh --query "<content from session 1 file>"`, then checks that the resulting `focus-*.md` mentions the file path written in session 1.
 
 ---
 
@@ -286,18 +291,18 @@ pnpm install && pnpm build
 pnpm check                                    # new lints + new unit tests
 
 # 1. Fresh DB: V6 runs, reports pgvector status
-DATABASE_URL=… node dist/bin/openeral.js memory stats
+DATABASE_URL=… node dist/bin/openrind-shell.js memory stats
 
 # 2. Sync a workspace, observe embeddings populated
 #    (triggered automatically via watchAndSync)
 
 # 3. Query-driven refresh
 DATABASE_URL=… VOYAGE_API_KEY=… \
-  node dist/bin/openeral.js memory refresh --query "socket credential injection"
+  node dist/bin/openrind-shell.js memory refresh --query "socket credential injection"
 
 # 4. Fallback: without a provider, --query still works via lexical
 unset VOYAGE_API_KEY OPENAI_API_KEY
-DATABASE_URL=… node dist/bin/openeral.js memory refresh --query "socket credential injection"
+DATABASE_URL=… node dist/bin/openrind-shell.js memory refresh --query "socket credential injection"
 
 # 5. E2E
 bash tests/test_claude_e2e.sh

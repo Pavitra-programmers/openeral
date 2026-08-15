@@ -1,6 +1,6 @@
 /**
  * Anthropic Usage & Cost API client
- * Fetches usage data that StringCost also uses
+ * Fetches usage data also used by the Openrind Gateway integration.
  */
 
 export interface AnthropicUsageRecord {

@@ -1,4 +1,4 @@
-# OpenEral
+# Openrind Shell
 
 Run Claude Code in an isolated OpenShell sandbox with a PostgreSQL-backed native
 filesystem. In the primary runtime, Claude's home and project files live on one FUSE
@@ -9,15 +9,23 @@ its default-deny network policy.
 
 | Runtime | Persistence | OpenShell requirement | Status |
 |---|---|---|---|
-| Primary FUSE image (`Dockerfile.openeral`) | All of `/sandbox/work` | Vendored Docker-driver build with `--fuse` | Implemented, source-build candidate |
-| Compatibility image (`Dockerfile.openeral-compat`) | `.claude`, `.claude.json`, and `.openeral` only | Stock current OpenShell | Published as `ghcr.io/sandys/openeral/sandbox:just-bash` |
+| Primary FUSE image (`Dockerfile.openrind-shell`) | All of `/sandbox/work` | Vendored Docker-driver build with `--fuse` | Implemented; source build and `:fuse` publication target |
+| Compatibility image (`Dockerfile.openrind-shell-compat`) | `.claude`, `.claude.json`, `.openrind-shell`, and legacy `.openeral` | Stock current OpenShell | GHCR `:just-bash` target; registry pull access currently required |
 
 The FUSE capability is a default-off OpenShell patch pinned under
 [`vendor/openshell`](./vendor/openshell). It is not in a released upstream OpenShell
-version yet. Do not present the published `:just-bash` image as the FUSE runtime.
+version yet. Do not present the `:just-bash` publication target as the FUSE runtime.
 
-The primary image inherits NVIDIA's published Community base directly. OpenEral does
+The primary image inherits NVIDIA's published Community base directly. Openrind Shell does
 not rebuild that base image.
+
+The source tree and PostgreSQL schema retain some `openeral` names for upgrade
+compatibility. In particular, `_openeral` is the stable on-disk database namespace;
+renaming public commands does not abandon existing workspaces. Migration V8 also
+imports newer compatibility rows from the short-lived `_openrind.workspace_*`
+namespace without overwriting rows whose `_openeral` mtime is newer. When that
+workspace creates its first FUSE volume, all valid just-bash home paths are imported;
+older scoped `_openeral` workspaces retain their narrower state-only import.
 
 ## Architecture At A Glance
 
@@ -41,8 +49,8 @@ flowchart LR
     ssh["SSH sessions<br/>init, shell, Claude"]
     claude["Claude Code<br/>HOME=/sandbox/work"]
     vfs["Linux VFS<br/>/sandbox/work"]
-    fused["openeral-fused<br/>critical sandbox child"]
-    runtime["/var/lib/openeral/runtime<br/>same-UID coordination"]
+    fused["openrind-shell-fused<br/>critical sandbox child"]
+    runtime["/var/lib/openrind-shell/runtime<br/>same-UID coordination"]
     proxy["OpenShell egress proxy<br/>binary-attributed policy"]
   end
 
@@ -60,7 +68,7 @@ flowchart LR
 ```
 
 The supervisor mounts before applying its TSYNC mount-denying seccomp prelude, then
-starts `openeral-fused` through the normal unprivileged `ProcessHandle` path. The
+starts `openrind-shell-fused` through the normal unprivileged `ProcessHandle` path. The
 daemon inherits Landlock, child seccomp, the network namespace, proxy variables, TLS
 roots, and two supervisor-selected descriptors: the FUSE channel and a readiness
 channel. The compatibility image does not use this path.
@@ -77,14 +85,14 @@ channel. The compatibility image does not use this path.
 
 Build instructions for the patched OpenShell components are in [BUILD.md](./BUILD.md).
 
-### Build The OpenEral Image
+### Build The Openrind Shell Image
 
 ```bash
 docker pull ghcr.io/nvidia/openshell-community/sandboxes/base:latest
-docker build --pull=false -f Dockerfile.openeral -t openeral-fuse:local .
+docker build --pull=false -f Dockerfile.openrind-shell -t openrind-shell-fuse:local .
 ```
 
-This builds only the OpenEral child image and its Rust daemon. It reuses the published
+This builds only the Openrind Shell child image and its Rust daemon. It reuses the published
 NVIDIA base.
 
 ### Create And Initialize
@@ -94,14 +102,14 @@ Point the patched CLI at the patched Docker gateway:
 ```bash
 export OPENSHELL_BIN="$PWD/vendor/openshell/target/debug/openshell"
 export OPENSHELL_GATEWAY_ENDPOINT="http://127.0.0.1:18770"
-export OPENERAL_WORKSPACE="${OPENERAL_WORKSPACE:-openeral-demo}"
+export OPENRIND_SHELL_WORKSPACE_ID="${OPENRIND_SHELL_WORKSPACE_ID:-openrind-shell-demo}"
 export DATABASE_URL="${DATABASE_URL:-${POSTGRES_URL:-}}"
 ```
 
 Create a temporary database upload and initialize the sandbox:
 
 ```bash
-db_file="$(mktemp /tmp/openeral-db-url-XXXXXX)"
+db_file="$(mktemp /tmp/openrind-shell-db-url-XXXXXX)"
 trap 'rm -f "$db_file"' EXIT
 printf '%s' "$DATABASE_URL" > "$db_file"
 chmod 600 "$db_file"
@@ -109,21 +117,21 @@ chmod 600 "$db_file"
 "$OPENSHELL_BIN" \
   --gateway-endpoint "$OPENSHELL_GATEWAY_ENDPOINT" \
   sandbox create \
-  --name "$OPENERAL_WORKSPACE" \
-  --from openeral-fuse:local \
+  --name "$OPENRIND_SHELL_WORKSPACE_ID" \
+  --from openrind-shell-fuse:local \
   --fuse \
   --upload "$db_file:/sandbox/db-url" \
   --provider claude \
   --auto-providers \
-  --env "WORKSPACE_ID=$OPENERAL_WORKSPACE" \
+  --env "OPENRIND_SHELL_WORKSPACE_ID=$OPENRIND_SHELL_WORKSPACE_ID" \
   --no-tty \
-  -- openeral-init
+  -- openrind-shell-init
 
 rm -f "$db_file"
 trap - EXIT
 ```
 
-`openeral-init` runs after OpenShell reports the sandbox Ready. It is a one-shot SSH
+`openrind-shell-init` runs after OpenShell reports the sandbox Ready. It is a one-shot SSH
 command that migrates PostgreSQL, prepares the normalized volume, verifies the writer
 lease, performs an fsync/read-back canary through the mounted filesystem, configures
 Claude, removes the uploaded URL, and exits.
@@ -135,12 +143,12 @@ sequenceDiagram
   participant CLI as OpenShell CLI
   participant Driver as Docker driver
   participant Supervisor as openshell-sandbox PID 1
-  participant FUSE as openeral-fused
+  participant FUSE as openrind-shell-fused
   participant PG as PostgreSQL
-  participant Init as openeral-init over SSH
+  participant Init as openrind-shell-init over SSH
   participant Claude as Claude session over SSH
 
-  User->>CLI: sandbox create --fuse --upload ... -- openeral-init
+  User->>CLI: sandbox create --fuse --upload ... -- openrind-shell-init
   CLI->>Driver: Provision FUSE sandbox
   Driver->>Supervisor: Start with /dev/fuse and request marker
   Supervisor->>Supervisor: Validate policy, binary, and mountpoint
@@ -151,7 +159,7 @@ sequenceDiagram
   Driver-->>CLI: Sandbox Ready
   CLI->>Supervisor: Upload mode-0600 database URL
   CLI->>Init: SSH-exec trailing one-shot command
-  Init->>PG: Migrate V1-V7, prepare volume, verify writer lease
+  Init->>PG: Migrate V1-V8, bridge renamed rows, prepare volume, verify writer lease
   Init->>FUSE: Check health and run fsync/read-back canary
   Init-->>CLI: Delete upload, mark initialized, exit 0
   CLI-->>User: sandbox create returns
@@ -186,7 +194,7 @@ Connect from the host:
 ```bash
 "$OPENSHELL_BIN" \
   --gateway-endpoint "$OPENSHELL_GATEWAY_ENDPOINT" \
-  sandbox connect "$OPENERAL_WORKSPACE"
+  sandbox connect "$OPENRIND_SHELL_WORKSPACE_ID"
 ```
 
 Inside the sandbox, start Claude:
@@ -219,51 +227,64 @@ FUSE daemon remain sandbox services; they are not tied to the SSH session.
   container, reconstructs the mount, and advances the PostgreSQL writer epoch.
 - Open file descriptors do not survive a container restart.
 
-Use the same `WORKSPACE_ID` in a replacement sandbox to mount the same volume. Before
+Use the same `OPENRIND_SHELL_WORKSPACE_ID` in a replacement sandbox to mount the same
+volume. Before
 deleting a sandbox, exit Claude cleanly:
 
 ```bash
 "$OPENSHELL_BIN" \
   --gateway-endpoint "$OPENSHELL_GATEWAY_ENDPOINT" \
-  sandbox delete "$OPENERAL_WORKSPACE"
+  sandbox delete "$OPENRIND_SHELL_WORKSPACE_ID"
 ```
 
-### StringCost
+### Openrind Gateway
 
-Create or update a generic `stringcost` provider, then add
-`--provider stringcost` to `sandbox create`. Initialization calls the presign endpoint
-inside the sandbox. OpenShell resolves provider placeholders in the constrained HTTPS
-request; raw Anthropic and StringCost keys are not written to the upload or session
-environment.
+Create or update a generic `openrind-gateway` provider with
+`OPENRIND_GATEWAY_API_KEY`, then add `--provider openrind-gateway` to `sandbox create`.
+Initialization calls the presign endpoint inside the sandbox. OpenShell resolves the
+provider placeholder only in that constrained HTTPS request; raw Anthropic and gateway
+keys are not written to the upload or session environment. The old `stringcost`
+provider and `STRINGCOST_API_KEY` remain migration aliases. When the gateway is active,
+unset Claude model defaults use `openrouter/free`; explicit user model settings are
+preserved.
 
-## Published Compatibility Runtime
+## Compatibility Runtime
 
-Use this when you need the published image, stock OpenShell, optional PostgreSQL, or
-PGlite. It does not persist arbitrary project files.
+Use this when you need stock OpenShell, optional PostgreSQL, or PGlite. It does not
+persist arbitrary project files. The publication workflow targets
+`ghcr.io/openrind/openrind-shell/sandbox:just-bash`, but that package currently
+requires GHCR pull access. If your registry account cannot pull it, build the child
+image from the public NVIDIA base instead:
+
+```bash
+docker pull ghcr.io/nvidia/openshell-community/sandboxes/base:latest
+docker build --pull=false -f Dockerfile.openrind-shell-compat \
+  -t openrind-shell-compat:local .
+```
 
 ```mermaid
 flowchart LR
   claude["Claude Code and native tools"] --> disk["Container filesystem<br/>HOME=/sandbox"]
-  disk --> scoped["Scoped watcher<br/>.claude, .claude.json, .openeral"]
+  disk --> scoped["Scoped watcher<br/>.claude, .claude.json,<br/>.openrind-shell, legacy .openeral"]
   scoped <--> rows[("_openeral.workspace_files<br/>PostgreSQL or PGlite")]
   disk --> ephemeral["Project source and all other paths<br/>ephemeral"]
 ```
 
 This watcher is mutually exclusive with the primary FUSE runtime. It preserves only
-the three documented prefixes; it is not a native whole-home filesystem.
+the documented prefixes; it is not a native whole-home filesystem.
 
 ```bash
-export OPENERAL_WORKSPACE="${OPENERAL_WORKSPACE:-openeral-demo}"
+export OPENRIND_SHELL_WORKSPACE_ID="${OPENRIND_SHELL_WORKSPACE_ID:-openrind-shell-demo}"
 
 openshell sandbox create \
-  --name "$OPENERAL_WORKSPACE" \
-  --from ghcr.io/sandys/openeral/sandbox:just-bash \
+  --name "$OPENRIND_SHELL_WORKSPACE_ID" \
+  --from openrind-shell-compat:local \
   --provider claude \
   --auto-providers \
-  --env "WORKSPACE_ID=$OPENERAL_WORKSPACE" \
-  -- openeral-init
+  --env "OPENRIND_SHELL_WORKSPACE_ID=$OPENRIND_SHELL_WORKSPACE_ID" \
+  -- openrind-shell-init
 
-openshell sandbox connect "$OPENERAL_WORKSPACE"
+openshell sandbox connect "$OPENRIND_SHELL_WORKSPACE_ID"
 ```
 
 Inside the sandbox, run `claude`; stop with `/exit` or `Ctrl+D`; restart with
@@ -271,7 +292,8 @@ Inside the sandbox, run `claude`; stop with `/exit` or `Ctrl+D`; restart with
 
 To add compatibility-mode PostgreSQL persistence, upload the URL to
 `/sandbox/db-url` as shown in the FUSE flow, but omit `--fuse`. Only
-`/sandbox/.claude/**`, `/sandbox/.claude.json`, and `/sandbox/.openeral/**` are synced.
+`/sandbox/.claude/**`, `/sandbox/.claude.json`, `/sandbox/.openrind-shell/**`, and the
+legacy `/sandbox/.openeral/**` prefix are synced.
 
 ## Useful Commands
 
@@ -279,20 +301,20 @@ Inside either runtime:
 
 ```bash
 pg "SELECT now()"
-openeral memory refresh --query "current project"
+openrind-shell memory refresh --query "current project"
 ```
 
 From the host:
 
 ```bash
-openshell sandbox exec -n "$OPENERAL_WORKSPACE" -- pg "SELECT 1"
-openshell sandbox exec -n "$OPENERAL_WORKSPACE" -- claude -p "Reply exactly: ok"
+openshell sandbox exec -n "$OPENRIND_SHELL_WORKSPACE_ID" -- pg "SELECT 1"
+openshell sandbox exec -n "$OPENRIND_SHELL_WORKSPACE_ID" -- claude -p "Reply exactly: ok"
 ```
 
 ## Troubleshooting
 
 **`--fuse` is unknown:** the CLI is an upstream/stock build. Use the vendored build or
-the published compatibility runtime.
+the compatibility runtime.
 
 **FUSE request is rejected:** confirm the selected gateway uses the Docker driver,
 `enable_fuse = true`, and the host exposes `/dev/fuse`. Other drivers reject FUSE in
@@ -300,10 +322,10 @@ v1.
 
 **Initialization reports a CONNECT denial:** the PostgreSQL host/port is outside the
 image policy. Add an exact endpoint and include both `/usr/bin/node` and
-`/usr/local/bin/openeral-fused` as authorized binaries.
+`/usr/local/bin/openrind-shell-fused` as authorized binaries.
 
 **Initialization cannot verify the writer lease:** another live sandbox is already
-mounted with the same `WORKSPACE_ID`, or PostgreSQL became unreachable. One writable
+mounted with the same `OPENRIND_SHELL_WORKSPACE_ID`, or PostgreSQL became unreachable. One writable
 mount per workspace is enforced by advisory lock and fencing epoch.
 
 **The sandbox enters an error after repeated daemon crashes:** the Docker driver uses

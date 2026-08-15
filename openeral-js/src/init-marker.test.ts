@@ -6,6 +6,7 @@ import {
   datasourceHashForMarker,
   initMarkerMatches,
   type InitMarkerOptions,
+  workspaceIdForMarker,
   writeInitMarker,
 } from './init-marker.js';
 
@@ -74,5 +75,15 @@ describe('init marker', () => {
       ...opts,
       databaseUrl,
     }));
+  });
+
+  it('prefers the canonical workspace variable over legacy aliases', () => {
+    expect(workspaceIdForMarker({
+      env: {
+        OPENRIND_SHELL_WORKSPACE_ID: 'canonical',
+        OPENERAL_WORKSPACE_ID: 'legacy',
+        WORKSPACE_ID: 'generic',
+      },
+    })).toBe('canonical');
   });
 });

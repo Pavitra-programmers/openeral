@@ -2,13 +2,13 @@
 
 ## Runtime Split
 
-OpenEral has two intentionally separate sandbox runtimes:
+Openrind Shell has two intentionally separate sandbox runtimes:
 
 - The primary image uses one OpenShell-supervised FUSE mount backed by external
   PostgreSQL. It persists all of `/sandbox/work` and has no file watcher.
 - The compatibility image uses the existing real filesystem plus prefix-scoped
   replication. It supports optional PostgreSQL and PGlite and persists only Claude
-  and OpenEral state.
+  and Openrind Shell state.
 
 The just-bash `WorkspaceFs`/`PgFs` library path remains available to custom agents. It
 is not the filesystem used by Claude Code in either sandbox image.
@@ -20,7 +20,7 @@ after `sandbox create --` is executed over SSH after Ready; it never becomes PID
 
 ```mermaid
 flowchart TB
-  create["sandbox create --fuse<br/>--upload db-url -- openeral-init"]
+  create["sandbox create --fuse<br/>--upload db-url -- openrind-shell-init"]
   gate["Docker driver validates request<br/>enable_fuse=true and /dev/fuse"]
 
   subgraph container["Sandbox container startup"]
@@ -28,7 +28,7 @@ flowchart TB
     validate["Validate immutable fuse_mounts policy,<br/>root-owned daemon, normalized empty mountpoint"]
     mount["Open /dev/fuse and mount /sandbox/work"]
     prelude["Install TSYNC supervisor prelude<br/>mount and unmount now denied"]
-    daemon["Spawn openeral-fused as sandbox:sandbox<br/>through ProcessHandle"]
+    daemon["Spawn openrind-shell-fused as sandbox:sandbox<br/>through ProcessHandle"]
     fds["Inherited FD 0: FUSE channel<br/>Inherited FD 1: readiness pipe"]
     ready["FUSE INIT complete"]
     services["Start SSH and managed<br/>sleep infinity workload"]
@@ -36,10 +36,10 @@ flowchart TB
 
   subgraph trailing["Post-Ready trailing command over SSH"]
     upload["Upload /sandbox/db-url"]
-    init["openeral-init one-shot"]
-    database["Migrate V1-V7, prepare volume,<br/>one-time legacy import"]
+    init["openrind-shell-init one-shot"]
+    database["Migrate V1-V8, bridge renamed rows,<br/>prepare volume and one-time legacy import"]
     verify["Verify writer lease in PostgreSQL<br/>and fsync/read/unlink through mount"]
-    configure["Seed Claude skills/settings,<br/>configure StringCost, remove upload"]
+    configure["Seed Claude skills/settings,<br/>configure Openrind Gateway, remove upload"]
     marker["Write init marker and exit 0"]
   end
 
@@ -62,7 +62,7 @@ flowchart LR
   tools["Claude, git, compilers,<br/>editors, language servers"]
   vfs["Linux VFS<br/>/sandbox/work"]
   kernel["Kernel FUSE channel<br/>supervisor-owned FD"]
-  daemon["openeral-fused<br/>sandbox UID + Landlock + seccomp"]
+  daemon["openrind-shell-fused<br/>sandbox UID + Landlock + seccomp"]
   proxy["OpenShell local proxy<br/>binary-attributed endpoint policy"]
   tls["Raw CONNECT tunnel<br/>PostgreSQL TLS end to end"]
   schema[("PostgreSQL<br/>_openeral.fs_* namespace")]
@@ -97,6 +97,14 @@ TypeScript owns migrations, volume preparation, and legacy import. Rust validate
 installed schema and never migrates it. A PostgreSQL advisory lock and expiring lease
 allow only one writable daemon for a workspace.
 
+Migration V8 is an upgrade bridge for compatibility images from the renamed just-bash
+branch. If `_openrind.workspace_config` and `_openrind.workspace_files` exist, their
+rows are copied into `_openeral` once; conflicts keep the row with the newer mtime.
+It records source-workspace provenance so first-time volume preparation imports every
+valid just-bash home path. Older `_openeral` compatibility workspaces still import
+only the historical state allowlist. The normalized FUSE tables never move out of
+`_openeral`.
+
 ## Durability Contract
 
 Ordinary writes enter a shared, bounded dirty cache and are flushed in the background.
@@ -109,7 +117,7 @@ The following are durability barriers:
 - dirty-source rename, including replacement, which commits captured data and the
   namespace transaction before success;
 - close/FLUSH after rewriting a pre-existing file through `O_TRUNC`;
-- the Claude wrapper's final `openeral-fused flush-all` on clean exit.
+- the Claude wrapper's final `openrind-shell-fused flush-all` on clean exit.
 
 Namespace and metadata mutations commit synchronously. Uncertain mutation commits are
 resolved through operation IDs. On terminal lease loss, the old daemon discards dirty
@@ -156,21 +164,22 @@ fencing, and least-privilege PostgreSQL roles remain required. A separate storag
 and supervisor-mediated secret channel are future hardening work.
 
 Provider keys are different from the uploaded PostgreSQL URL. OpenShell injects
-provider placeholders and resolves them only in approved HTTPS routes. StringCost
-presign creation is constrained to `POST /v1/presign` with request-body credential
-rewriting. Raw PostgreSQL cannot use that placeholder mechanism, so its URL is a
-mode-0600 upload consumed into runtime state and removed from `/sandbox` after init.
+provider placeholders and resolves them only in approved HTTPS routes. Openrind
+Gateway presign creation is constrained to `POST /v1/presign` with request-body
+credential rewriting. Raw PostgreSQL cannot use that placeholder mechanism, so its
+URL is a mode-0600 upload consumed into runtime state and removed from `/sandbox`
+after init. Legacy StringCost routes remain temporarily for existing providers.
 
 ## Compatibility Runtime
 
-`Dockerfile.openeral-compat` retains the previous model:
+`Dockerfile.openrind-shell-compat` retains the previous model:
 
 ```mermaid
 flowchart LR
   shell["Claude with real /bin/bash"] --> disk["Kernel files under /sandbox"]
   disk --> watcher["Detached Node daemon<br/>prefix-scoped watchers"]
   watcher <--> rows[("_openeral.workspace_files<br/>PostgreSQL or PGlite")]
-  watcher --> included[".claude/**<br/>.claude.json<br/>.openeral/**"]
+  watcher --> included[".claude/**<br/>.claude.json<br/>.openrind-shell/**<br/>legacy .openeral/**"]
   disk --> excluded["All other paths<br/>ephemeral"]
 ```
 
@@ -180,11 +189,12 @@ ephemeral. The Docker-only tests under `tests/test_sandbox_e2e.sh` and
 
 ## Custom-Agent Library Path
 
-`createOpeneralShell()` remains an in-process just-bash integration:
+`createOpenrindShell()` remains an in-process just-bash integration. The legacy
+`createOpeneralShell()` export is an alias:
 
 ```mermaid
 flowchart LR
-  agent["Custom agent"] --> shell["createOpeneralShell<br/>just-bash interpreter"]
+  agent["Custom agent"] --> shell["createOpenrindShell<br/>just-bash interpreter"]
   shell --> db["/db<br/>read-only PgFs SQL browser"]
   shell --> home["/home/agent<br/>PostgreSQL-backed WorkspaceFs"]
   shell --> tmp["/tmp<br/>InMemoryFs"]

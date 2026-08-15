@@ -90,7 +90,7 @@ export interface StrategicReport {
   promptSurface: PromptSurface;
   proposals: Proposal[];
   /**
-   * null  = file-path tracking is not available (StringCost only stores token counts, not file paths)
+   * null  = file-path tracking is not available (the gateway stores tokens, not file paths)
    * []    = tracking available, no large files found
    * [...] = tracking available, large files found
    */
@@ -135,7 +135,15 @@ function detectProjectRoot(startDir: string): string {
 function detectMemoryDir(projectRoot: string, workspaceId: string): string | null {
   const encodedProject = projectRoot.replace(/\//g, '-');
   const candidates = [
-    join(process.env.OPENERAL_HOME ?? `/tmp/openeral-${workspaceId}`, '.claude', 'projects', encodedProject, 'memory'),
+    join(
+      process.env.OPENRIND_SHELL_HOME
+        ?? process.env.OPENERAL_HOME
+        ?? `/tmp/openrind-shell-${workspaceId}`,
+      '.claude',
+      'projects',
+      encodedProject,
+      'memory',
+    ),
     ...(process.env.HOME ? [join(process.env.HOME, '.claude', 'projects', encodedProject, 'memory')] : []),
   ];
   return candidates.find(c => existsSync(c)) ?? null;
@@ -381,7 +389,7 @@ async function findActualHotspots(
 
   try {
     // First: check whether any rows in the window have file_path in metadata at all.
-    // StringCost events never populate file_path — only the old proxy-based optimizer did.
+    // Gateway events never populate file_path; only the old local optimizer did.
     // If no rows have it, we don't have the data; return null to signal "unavailable"
     // rather than [] which would mean "available, nothing large found".
     const hasFilePathData = await pool.query<{ has_data: string }>(
@@ -395,7 +403,7 @@ async function findActualHotspots(
     );
 
     if (hasFilePathData.rows[0]?.has_data !== 'true') {
-      // No file-path tracking data — StringCost only logs token counts per API call,
+      // No file-path tracking data: the gateway logs token counts per API call,
       // not which files were read inside each call.
       return null;
     }
@@ -476,7 +484,7 @@ function buildProposals(
           'Opus only for complex multi-step reasoning. Routing is enforced via instructions in CLAUDE.md.',
         estimatedSavingsPct: 35,
         estimatedSavingsTokensPerSession: savings,
-        howToApply: 'Run: npx openeral optimize apply --proposal model-routing',
+        howToApply: 'Run: openrind-shell optimize apply --proposal model-routing',
         canAutoApply: true,
       });
     }
@@ -503,7 +511,7 @@ function buildProposals(
           'Next session starts with fresh context in ~200 tokens instead of reading 5-10 files.',
         estimatedSavingsPct: 28,
         estimatedSavingsTokensPerSession: savings,
-        howToApply: 'Run: npx openeral optimize apply --proposal context-file',
+        howToApply: 'Run: openrind-shell optimize apply --proposal context-file',
         canAutoApply: true,
       });
     }
@@ -529,7 +537,7 @@ function buildProposals(
           'exploring source files from scratch — saves 1-3 file reads per session.',
         estimatedSavingsPct: 15,
         estimatedSavingsTokensPerSession: savings,
-        howToApply: 'Run: npx openeral optimize apply --proposal readme-updates',
+        howToApply: 'Run: openrind-shell optimize apply --proposal readme-updates',
         canAutoApply: true,
       });
     }
@@ -553,7 +561,7 @@ function buildProposals(
         'This prevents expensive full reads of large source files.',
       estimatedSavingsPct: 20,
       estimatedSavingsTokensPerSession: savings,
-      howToApply: 'Run: npx openeral optimize apply --proposal lazy-reading',
+      howToApply: 'Run: openrind-shell optimize apply --proposal lazy-reading',
       canAutoApply: true,
     });
   }
@@ -578,7 +586,7 @@ function buildProposals(
         `Estimated reduction: ${memTokens} → ~${Math.round(memTokens * 0.5)} tokens.`,
       estimatedSavingsPct: Math.round((savings / (avgTokens || memTokens)) * 100),
       estimatedSavingsTokensPerSession: savings,
-      howToApply: 'Run: npx openeral optimize apply --proposal memory-compact',
+      howToApply: 'Run: openrind-shell optimize apply --proposal memory-compact',
       canAutoApply: true,
     });
   }
@@ -618,7 +626,10 @@ function buildProposals(
 // ---------------------------------------------------------------------------
 
 export async function analyzePromptSurface(opts: AnalyzeOptions = {}): Promise<StrategicReport> {
-  const workspaceId = opts.workspaceId ?? process.env.OPENERAL_WORKSPACE_ID ?? hostname();
+  const workspaceId = opts.workspaceId
+    ?? process.env.OPENRIND_SHELL_WORKSPACE_ID
+    ?? process.env.OPENERAL_WORKSPACE_ID
+    ?? hostname();
   const startDir = opts.projectRoot ? resolve(opts.projectRoot) : process.cwd();
   const daysBack = opts.daysBack ?? 7;
 
@@ -654,7 +665,7 @@ export function formatPromptSurfaceReport(report: StrategicReport): string {
   const lines: string[] = [];
   const { sessionStats: s, promptSurface: p } = report;
 
-  lines.push('# Openeral Token Analysis Report');
+  lines.push('# Openrind Shell Token Analysis Report');
   lines.push('');
   lines.push(`Generated: ${report.generatedAt}`);
   lines.push(`Project:   ${report.projectRoot}`);
@@ -694,7 +705,7 @@ export function formatPromptSurfaceReport(report: StrategicReport): string {
   } else {
     lines.push('## Session Summary');
     lines.push('');
-    lines.push('  No session data yet. Run a Claude Code session via `npx openeral` to collect data.');
+    lines.push('  No session data yet. Run a Claude Code session via `openrind-shell` to collect data.');
     lines.push('  Proposals below are based on project file analysis.');
     lines.push('');
   }
@@ -757,16 +768,16 @@ export function formatPromptSurfaceReport(report: StrategicReport): string {
   lines.push('## Large Files Read During Sessions');
   lines.push('');
   if (report.hotspots === null) {
-    // StringCost proxy logs token counts per API call but not which files were read.
+    // Openrind Gateway logs token counts per API call but not which files were read.
     // File-path tracking was only available in the old proxy-based optimizer.
     lines.push('  ⚠ File access data is not available with the current tracking setup.');
-    lines.push('  StringCost records token counts per API call but does not track which');
+    lines.push('  Openrind Gateway records token counts per API call but does not track which');
     lines.push('  individual files Claude read inside each call.');
     lines.push('  If your sessions are reading many large files, this section will remain empty.');
     if (s.hasData && s.avgTokensPerCall > 1000) {
       lines.push('');
       lines.push(`  ℹ Your avg ${s.avgTokensPerCall.toLocaleString()} tokens/call suggests files may be`);
-      lines.push('  read in full. Consider adding lazy-reading rules (npx openeral apply --proposal lazy-reading).');
+      lines.push('  read in full. Consider adding lazy-reading rules (openrind-shell apply --proposal lazy-reading).');
     }
   } else if (report.hotspots.length > 0) {
     lines.push('  These files were read during your sessions and are expensive (>1000 tokens each).');
@@ -851,7 +862,8 @@ async function applyProposal(
   }
 }
 
-const SECTION_FENCE = '<!-- openeral-optimizer -->';
+const SECTION_FENCE = '<!-- openrind-shell-optimizer -->';
+const LEGACY_SECTION_FENCE = '<!-- openeral-optimizer -->';
 
 function patchClaudeMd(projectRoot: string, sectionId: string, newBlock: string, dryRun: boolean): void {
   const claudePath = join(projectRoot, 'CLAUDE.md');
@@ -860,8 +872,12 @@ function patchClaudeMd(projectRoot: string, sectionId: string, newBlock: string,
   // Remove old block if present (idempotent)
   const startTag = `${SECTION_FENCE}:${sectionId}:start`;
   const endTag = `${SECTION_FENCE}:${sectionId}:end`;
-  const taggedRe = new RegExp(`\\n?${escapeRe(startTag)}[\\s\\S]*?${escapeRe(endTag)}\\n?`, 'g');
-  existing = existing.replace(taggedRe, '');
+  for (const fence of [SECTION_FENCE, LEGACY_SECTION_FENCE]) {
+    const oldStart = `${fence}:${sectionId}:start`;
+    const oldEnd = `${fence}:${sectionId}:end`;
+    const taggedRe = new RegExp(`\\n?${escapeRe(oldStart)}[\\s\\S]*?${escapeRe(oldEnd)}\\n?`, 'g');
+    existing = existing.replace(taggedRe, '');
+  }
 
   const block = `\n${startTag}\n${newBlock}\n${endTag}\n`;
   const updated = existing.trimEnd() + '\n' + block;

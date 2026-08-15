@@ -25,7 +25,7 @@ function summarizeChunk(chunk: RankedMemoryChunk): string {
 
 function extractCommands(chunks: RankedMemoryChunk[]): string[] {
   const commands = new Set<string>();
-  const matcher = /^(?:\$ )?(?:pnpm\b|npm\b|npx\b|node(?:\s|$)|docker\b|git\b|openshell\b|psql\b|claude(?:\s|$)|DATABASE_URL=|OPENERAL_)[^\r\n]*$/;
+  const matcher = /^(?:\$ )?(?:pnpm\b|npm\b|npx\b|node(?:\s|$)|docker\b|git\b|openshell\b|psql\b|claude(?:\s|$)|DATABASE_URL=|OPENRIND_SHELL_|OPENERAL_)[^\r\n]*$/;
 
   for (const chunk of chunks) {
     for (const line of chunk.content.split(/\r?\n/)) {
@@ -150,7 +150,7 @@ export function renderMemoryIndex(
   if (opts?.query) {
     lines.push(`- Focus query: \`${opts.query}\``);
   } else {
-    lines.push('- Curated memory index refreshed by OpenEral');
+    lines.push('- Curated memory index refreshed by Openrind Shell');
   }
 
   for (const file of files) {

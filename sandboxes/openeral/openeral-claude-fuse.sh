@@ -1,13 +1,19 @@
 #!/bin/sh
 set -eu
 
-RUNTIME_DIR="${OPENERAL_RUNTIME_DIR:-/var/lib/openeral/runtime}"
+RUNTIME_DIR="${OPENRIND_SHELL_RUNTIME_DIR:-${OPENERAL_RUNTIME_DIR:-/var/lib/openrind-shell/runtime}}"
 if [ -f "$RUNTIME_DIR/session.env" ]; then
   # shellcheck disable=SC1090
   . "$RUNTIME_DIR/session.env"
 fi
 
 export HOME=/sandbox/work
+export OPENRIND_SHELL_HOME=/sandbox/work
+export OPENRIND_SHELL_RUNTIME_DIR="$RUNTIME_DIR"
+export OPENRIND_SHELL_STATE_DIR="$RUNTIME_DIR"
+export OPENRIND_SHELL_DB_URL_FILE="$RUNTIME_DIR/database-url"
+export OPENRIND_SHELL_INIT_MARKER="$RUNTIME_DIR/init.done"
+export OPENRIND_SHELL_REQUIRE_POSTGRES_TLS=1
 export OPENERAL_HOME=/sandbox/work
 export OPENERAL_RUNTIME_DIR="$RUNTIME_DIR"
 export OPENERAL_STATE_DIR="$RUNTIME_DIR"
@@ -18,19 +24,20 @@ export SHELL="${SHELL:-/bin/bash}"
 export NODE_NO_WARNINGS="${NODE_NO_WARNINGS:-1}"
 
 unset STRINGCOST_API_KEY
+unset OPENRIND_GATEWAY_API_KEY
 unset ANTHROPIC_AUTH_TOKEN
 
 if [ ! -x /usr/local/bin/claude-real ]; then
-  echo "openeral: claude-real is missing from the sandbox image" >&2
+  echo "openrind-shell: claude-real is missing from the sandbox image" >&2
   exit 127
 fi
 
-openeral init --ensure
+openrind-shell init --ensure
 
-HEALTH="$(openeral-fused health 2>/dev/null || true)"
+HEALTH="$(openrind-shell-fused health 2>/dev/null || true)"
 STATE="$(node -e 'try { process.stdout.write(JSON.parse(process.argv[1]).state || "") } catch {}' "$HEALTH")"
 if [ "$STATE" != writable ]; then
-  echo "openeral: FUSE storage is not writable (state: ${STATE:-unavailable})" >&2
+  echo "openrind-shell: FUSE storage is not writable (state: ${STATE:-unavailable})" >&2
   exit 1
 fi
 
@@ -57,8 +64,8 @@ done
 set -e
 trap - INT TERM HUP
 
-if ! openeral-fused flush-all >/dev/null 2>&1; then
-  echo "openeral: final FUSE flush failed; check 'openeral-fused health' before deleting the sandbox" >&2
+if ! openrind-shell-fused flush-all >/dev/null 2>&1; then
+  echo "openrind-shell: final FUSE flush failed; check 'openrind-shell-fused health' before deleting the sandbox" >&2
   [ "$STATUS" -ne 0 ] || STATUS=1
 fi
 exit "$STATUS"

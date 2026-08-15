@@ -15,10 +15,10 @@ async function main() {
 
   if (!command || command === 'help') {
     console.log(`
-Openeral Commands
+Openrind Shell Commands
 
 Usage:
-  npx openeral <command> [options]
+  openrind-shell <command> [options]
 
 Commands:
   stats                Show API usage statistics (costs, tokens, cache hits)
@@ -49,22 +49,25 @@ Proposal IDs:
 Note:
   Database is embedded PGlite (auto-starts, no Docker needed).
   Set DATABASE_URL to use an external PostgreSQL instead.
-  Set STRINGCOST_API_KEY to sync live usage data from StringCost before showing stats.
-  Run sessions via 'npx openeral' first so analyze has usage data.
+  Set OPENRIND_GATEWAY_API_KEY to sync live usage data from Openrind Gateway.
+  STRINGCOST_API_KEY remains a legacy alias for existing accounts.
+  Run sessions via 'openrind-shell' first so analyze has usage data.
 
 Examples:
-  npx openeral stats
-  npx openeral analyze
-  npx openeral apply
-  npx openeral apply --dry-run
-  npx openeral apply --proposal model-routing
-  npx openeral apply --proposal context-file
+  openrind-shell stats
+  openrind-shell analyze
+  openrind-shell apply
+  openrind-shell apply --dry-run
+  openrind-shell apply --proposal model-routing
+  openrind-shell apply --proposal context-file
 `);
     process.exit(0);
   }
 
   // Parse options
-  let workspaceId = process.env.OPENERAL_WORKSPACE_ID || hostname();
+  let workspaceId = process.env.OPENRIND_SHELL_WORKSPACE_ID
+    || process.env.OPENERAL_WORKSPACE_ID
+    || hostname();
   let days = 7;
   let jsonOutput = false;
   let dryRun = false;
@@ -105,7 +108,7 @@ Examples:
       if (process.env.DATABASE_URL) {
         console.error('   Check DATABASE_URL and ensure PostgreSQL is running.');
       } else {
-        console.error('   Embedded PGlite failed to start. Try setting OPENERAL_DATA_DIR.');
+        console.error('   Embedded PGlite failed to start. Try setting OPENRIND_SHELL_DATA_DIR.');
       }
       process.exit(1);
     }
@@ -129,7 +132,7 @@ Examples:
     if (process.env.DATABASE_URL) {
       console.error('   Check DATABASE_URL and ensure PostgreSQL is running.');
     } else {
-      console.error('   Embedded PGlite failed. Try setting OPENERAL_DATA_DIR.');
+      console.error('   Embedded PGlite failed. Try setting OPENRIND_SHELL_DATA_DIR.');
     }
     process.exit(1);
   }
@@ -138,25 +141,40 @@ Examples:
     await runMigrations(pool);
 
     if (command === 'stats') {
-      // Sync from StringCost first if we have a presign URL and API key
-      const presignUrl = process.env.OPENERAL_PRESIGN_URL;
-      const stringcostKey = process.env.STRINGCOST_API_KEY;
-      if (presignUrl && stringcostKey) {
-        console.log('Syncing usage data from StringCost...');
+      // Sync from the current gateway, while retaining the legacy endpoint.
+      const presignUrl = process.env.OPENRIND_SHELL_PRESIGN_URL
+        || process.env.OPENERAL_PRESIGN_URL;
+      const openrindGatewayKey = process.env.OPENRIND_GATEWAY_API_KEY;
+      const legacyGatewayKey = process.env.STRINGCOST_API_KEY;
+      const gatewayKey = openrindGatewayKey || legacyGatewayKey;
+      if (presignUrl && gatewayKey) {
+        const useLegacyGateway = !openrindGatewayKey
+          || presignUrl.includes('/stringcost-proxy/');
+        console.log(`Syncing usage data from ${useLegacyGateway ? 'legacy StringCost' : 'Openrind Gateway'}...`);
         try {
-          const { decodePresignUrl, syncStringCostData } = await import('./stringcost-api.js');
-          const decoded = decodePresignUrl(presignUrl);
-          const result = await syncStringCostData(pool, workspaceId, stringcostKey, {
-            sessionId: decoded.sessionId,
-            daysBack: days,
-          });
+          let result: { fetched: number; stored: number };
+          if (useLegacyGateway) {
+            const gateway = await import('./stringcost-api.js');
+            const decoded = gateway.decodePresignUrl(presignUrl);
+            result = await gateway.syncStringCostData(pool, workspaceId, gatewayKey, {
+              sessionId: decoded.sessionId,
+              daysBack: days,
+            });
+          } else {
+            const gateway = await import('./openrind-gateway-api.js');
+            const decoded = gateway.decodePresignUrl(presignUrl);
+            result = await gateway.syncOpenrindGatewayData(pool, workspaceId, gatewayKey, {
+              sessionId: decoded.sessionId,
+              daysBack: days,
+            });
+          }
           if (result.stored > 0) {
-            console.log(`  Synced ${result.stored} new events from StringCost`);
+            console.log(`  Synced ${result.stored} new gateway events`);
           } else {
             console.log('  No new events to sync');
           }
         } catch (err: any) {
-          console.warn(`  Warning: could not sync from StringCost: ${err.message}`);
+          console.warn(`  Warning: could not sync gateway usage: ${err.message}`);
         }
         console.log('');
       }
@@ -191,7 +209,7 @@ Examples:
       });
     } else {
       console.error(`Unknown command: ${command}`);
-      console.error('Run "npx openeral optimize help" for usage');
+      console.error('Run "openrind-shell optimize help" for usage');
       process.exit(1);
     }
   } catch (err: any) {

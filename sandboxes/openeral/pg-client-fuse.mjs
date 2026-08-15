@@ -10,11 +10,14 @@ if (!sql.trim()) {
 
 try {
   if (!process.env.DATABASE_URL) {
-    const runtimeDir = process.env.OPENERAL_RUNTIME_DIR || '/var/lib/openeral/runtime';
+    const runtimeDir = process.env.OPENRIND_SHELL_RUNTIME_DIR
+      || process.env.OPENERAL_RUNTIME_DIR
+      || '/var/lib/openrind-shell/runtime';
     process.env.DATABASE_URL = readFileSync(`${runtimeDir}/database-url`, 'utf8').trim();
   }
+  process.env.OPENRIND_SHELL_REQUIRE_POSTGRES_TLS = '1';
   process.env.OPENERAL_REQUIRE_POSTGRES_TLS = '1';
-  const { getDatabaseConnection } = await import('/opt/openeral/dist/db/embedded.js');
+  const { getDatabaseConnection } = await import('/opt/openrind-shell/dist/db/embedded.js');
   const { pool, isEmbedded } = await getDatabaseConnection();
   if (isEmbedded) throw new Error('the FUSE runtime does not support PGlite');
   try {

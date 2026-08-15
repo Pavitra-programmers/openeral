@@ -25,7 +25,7 @@ async fn main() {
         )
         .init();
     if let Err(error) = run().await {
-        tracing::error!(error = %error, "openeral-fused failed");
+        tracing::error!(error = %error, "openrind-shell-fused failed");
         std::process::exit(1);
     }
 }
@@ -37,7 +37,7 @@ async fn run() -> Result<()> {
         Some("health") => management_command("health").await,
         Some("flush-all") => management_command("flush-all").await,
         _ => Err(Error::Invalid(
-            "usage: openeral-fused <serve|health|flush-all>".into(),
+            "usage: openrind-shell-fused <serve|health|flush-all>".into(),
         )),
     }
 }
@@ -66,8 +66,8 @@ async fn serve() -> Result<()> {
 
     let mut config = Config::default();
     config.mount_options = vec![
-        MountOption::FSName("openeral".into()),
-        MountOption::Subtype("openeral".into()),
+        MountOption::FSName("openrind-shell".into()),
+        MountOption::Subtype("openrind-shell".into()),
         MountOption::DefaultPermissions,
     ];
     config.acl = SessionACL::Owner;
@@ -127,7 +127,8 @@ fn terminate_fuse_process(code: i32, reason: &str) -> ! {
 }
 
 fn management_socket() -> PathBuf {
-    std::env::var_os("OPENERAL_FUSED_SOCKET")
+    std::env::var_os("OPENRIND_SHELL_FUSED_SOCKET")
+        .or_else(|| std::env::var_os("OPENERAL_FUSED_SOCKET"))
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(DEFAULT_RUNTIME_DIR).join("fused.sock"))
 }

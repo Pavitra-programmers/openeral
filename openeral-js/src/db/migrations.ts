@@ -1,28 +1,116 @@
+import type pg from 'pg';
 import type { DbPool } from './pool.js';
 
 /**
- * Run all database migrations (V1-V5) in order.
- *
- * Uses an advisory lock to serialize concurrent callers — two shells
- * starting at the same time on a fresh database won't race on CREATE SCHEMA.
- *
- * Uses IF NOT EXISTS / CREATE TABLE IF NOT EXISTS for idempotency.
- * Safe to call multiple times -- already-existing objects are skipped.
+ * Highest migration version this build knows how to apply. The storage schema
+ * deliberately remains `_openeral`: public tool renames must not strand
+ * existing compatibility rows or normalized FUSE volumes.
  */
-export async function runMigrations(pool: DbPool): Promise<void> {
-  const client = await pool.connect();
+export const SCHEMA_VERSION = 8;
+
+const MIGRATION_LOCK_KEY = 1330795854;
+const LOCK_WAIT_MS = 20_000;
+const LOCK_POLL_MS = 500;
+const DDL_LOCK_TIMEOUT_MS = 5_000;
+
+async function currentSchemaVersion(client: pg.PoolClient): Promise<number> {
   try {
-    // Set a statement timeout to prevent indefinite hangs
-    await client.query('SET statement_timeout = 30000'); // 30 seconds
+    const result = await client.query(
+      `SELECT COALESCE(MAX(version), 0)::int AS version FROM _openeral.schema_version`,
+    );
+    return result.rows[0]?.version ?? 0;
+  } catch (err) {
+    if ((err as { code?: string }).code === '42P01') return 0;
+    throw err;
+  }
+}
 
-    // Acquire an advisory lock (key 0x4F50454E = 'OPEN' in hex) to serialize
-    // concurrent migration attempts. Without this, two shells hitting a fresh
-    // database race on CREATE SCHEMA and one fails with duplicate key.
-    // pg_advisory_lock blocks until the lock is free; the 30-second
-    // statement_timeout set above caps the wait so we never hang forever.
-    await client.query(`SELECT pg_advisory_lock(1330795854)`);
+async function acquireMigrationLock(client: pg.PoolClient): Promise<boolean> {
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    const result = await client.query(
+      `SELECT pg_try_advisory_lock($1::bigint) AS acquired`,
+      [MIGRATION_LOCK_KEY],
+    );
+    if (result.rows[0]?.acquired) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, LOCK_POLL_MS));
+  }
+}
 
-    try {
+async function ensureIndex(
+  client: pg.PoolClient,
+  qualifiedIndexName: string,
+  ddl: string,
+): Promise<void> {
+  const result = await client.query(`SELECT to_regclass($1) IS NOT NULL AS present`, [
+    qualifiedIndexName,
+  ]);
+  if (!result.rows[0]?.present) await client.query(ddl);
+}
+
+/**
+ * Import compatibility rows written after the public Openrind rename.
+ *
+ * The primary FUSE branch deliberately retains `_openeral` as its stable
+ * storage namespace. The just-bash branch briefly wrote its compatibility
+ * workspace into `_openrind`, so copy those rows once without allowing stale
+ * compatibility state to overwrite newer data already present here.
+ */
+async function importRenamedCompatibilitySchema(client: pg.PoolClient): Promise<void> {
+  const source = await client.query(
+    `SELECT
+       to_regclass('_openrind.workspace_config') IS NOT NULL AS config_present,
+       to_regclass('_openrind.workspace_files') IS NOT NULL AS files_present`,
+  );
+  if (!source.rows[0]?.config_present) return;
+
+  await client.query(`
+    INSERT INTO _openeral.workspace_config AS target
+      (id, display_name, config, created_at, updated_at)
+    SELECT id, display_name, config, created_at, updated_at
+      FROM _openrind.workspace_config
+    ON CONFLICT (id) DO UPDATE SET
+      display_name = EXCLUDED.display_name,
+      config = EXCLUDED.config,
+      created_at = LEAST(target.created_at, EXCLUDED.created_at),
+      updated_at = EXCLUDED.updated_at
+    WHERE EXCLUDED.updated_at > target.updated_at
+  `);
+
+  if (!source.rows[0]?.files_present) return;
+
+  await client.query(`
+    INSERT INTO _openeral.workspace_files AS target
+      (workspace_id, path, parent_path, name, is_dir, content, mode, size,
+       mtime_ns, ctime_ns, atime_ns, nlink, uid, gid)
+    SELECT workspace_id, path, parent_path, name, is_dir, content, mode, size,
+           mtime_ns, ctime_ns, atime_ns, nlink, uid, gid
+      FROM _openrind.workspace_files
+    ON CONFLICT (workspace_id, path) DO UPDATE SET
+      parent_path = EXCLUDED.parent_path,
+      name = EXCLUDED.name,
+      is_dir = EXCLUDED.is_dir,
+      content = EXCLUDED.content,
+      mode = EXCLUDED.mode,
+      size = EXCLUDED.size,
+      mtime_ns = EXCLUDED.mtime_ns,
+      ctime_ns = EXCLUDED.ctime_ns,
+      atime_ns = EXCLUDED.atime_ns,
+      nlink = EXCLUDED.nlink,
+      uid = EXCLUDED.uid,
+      gid = EXCLUDED.gid
+    WHERE EXCLUDED.mtime_ns > target.mtime_ns
+  `);
+
+  await client.query(`
+    INSERT INTO _openeral.renamed_workspace_imports (workspace_id)
+    SELECT id FROM _openrind.workspace_config
+    ON CONFLICT (workspace_id) DO NOTHING
+  `);
+}
+
+async function applyMigrations(client: pg.PoolClient): Promise<void> {
       // V1: Create _openeral schema and schema_version table
       await client.query(`CREATE SCHEMA IF NOT EXISTS _openeral`);
       
@@ -89,10 +177,12 @@ export async function runMigrations(pool: DbPool): Promise<void> {
         )
       `);
 
-      await client.query(`
-        CREATE INDEX IF NOT EXISTS idx_ws_files_parent
-            ON _openeral.workspace_files (workspace_id, parent_path)
-      `);
+      await ensureIndex(
+        client,
+        '_openeral.idx_ws_files_parent',
+        `CREATE INDEX IF NOT EXISTS idx_ws_files_parent
+            ON _openeral.workspace_files (workspace_id, parent_path)`,
+      );
 
       // V5: Create optimization tables
       await client.query(`
@@ -116,15 +206,19 @@ export async function runMigrations(pool: DbPool): Promise<void> {
         )
       `);
 
-      await client.query(`
-        CREATE INDEX IF NOT EXISTS idx_optimization_metrics_workspace
-            ON _openeral.optimization_metrics (workspace_id, timestamp DESC)
-      `);
+      await ensureIndex(
+        client,
+        '_openeral.idx_optimization_metrics_workspace',
+        `CREATE INDEX IF NOT EXISTS idx_optimization_metrics_workspace
+            ON _openeral.optimization_metrics (workspace_id, timestamp DESC)`,
+      );
 
-      await client.query(`
-        CREATE INDEX IF NOT EXISTS idx_optimization_metrics_model
-            ON _openeral.optimization_metrics (optimized_model, timestamp DESC)
-      `);
+      await ensureIndex(
+        client,
+        '_openeral.idx_optimization_metrics_model',
+        `CREATE INDEX IF NOT EXISTS idx_optimization_metrics_model
+            ON _openeral.optimization_metrics (optimized_model, timestamp DESC)`,
+      );
 
       await client.query(`
         CREATE TABLE IF NOT EXISTS _openeral.api_cache (
@@ -134,10 +228,12 @@ export async function runMigrations(pool: DbPool): Promise<void> {
         )
       `);
 
-      await client.query(`
-        CREATE INDEX IF NOT EXISTS idx_api_cache_created
-            ON _openeral.api_cache (created_at)
-      `);
+      await ensureIndex(
+        client,
+        '_openeral.idx_api_cache_created',
+        `CREATE INDEX IF NOT EXISTS idx_api_cache_created
+            ON _openeral.api_cache (created_at)`,
+      );
 
       // V6: grant read access to Supabase's built-in dashboard/API roles so
       // `_openeral.*` rows are visible in the Table Editor and via PostgREST.
@@ -249,10 +345,12 @@ export async function runMigrations(pool: DbPool): Promise<void> {
         )
       `);
 
-      await client.query(`
-        CREATE INDEX IF NOT EXISTS idx_fs_dirents_child
-          ON _openeral.fs_dirents (volume_id, child_node_id)
-      `);
+      await ensureIndex(
+        client,
+        '_openeral.idx_fs_dirents_child',
+        `CREATE INDEX IF NOT EXISTS idx_fs_dirents_child
+          ON _openeral.fs_dirents (volume_id, child_node_id)`,
+      );
 
       await client.query(`
         CREATE TABLE IF NOT EXISTS _openeral.fs_chunks (
@@ -278,10 +376,12 @@ export async function runMigrations(pool: DbPool): Promise<void> {
         )
       `);
 
-      await client.query(`
-        CREATE INDEX IF NOT EXISTS idx_fs_mount_epochs_expiry
-          ON _openeral.fs_mount_epochs (lease_expires_at)
-      `);
+      await ensureIndex(
+        client,
+        '_openeral.idx_fs_mount_epochs_expiry',
+        `CREATE INDEX IF NOT EXISTS idx_fs_mount_epochs_expiry
+          ON _openeral.fs_mount_epochs (lease_expires_at)`,
+      );
 
       await client.query(`
         CREATE TABLE IF NOT EXISTS _openeral.fs_operations (
@@ -295,10 +395,12 @@ export async function runMigrations(pool: DbPool): Promise<void> {
         )
       `);
 
-      await client.query(`
-        CREATE INDEX IF NOT EXISTS idx_fs_operations_gc
-          ON _openeral.fs_operations (committed_at)
-      `);
+      await ensureIndex(
+        client,
+        '_openeral.idx_fs_operations_gc',
+        `CREATE INDEX IF NOT EXISTS idx_fs_operations_gc
+          ON _openeral.fs_operations (committed_at)`,
+      );
 
       await client.query(`
         CREATE TABLE IF NOT EXISTS _openeral.fs_legacy_imports (
@@ -308,13 +410,66 @@ export async function runMigrations(pool: DbPool): Promise<void> {
         )
       `);
 
+      // V8: bridge compatibility data from the renamed just-bash branch.
+      // Provenance lets first-time FUSE initialization import that branch's
+      // full-home snapshot while older scoped workspaces retain their narrow
+      // allowlist. The normalized FUSE schema remains `_openeral.fs_*`.
       await client.query(`
-        INSERT INTO _openeral.schema_version (version)
-        VALUES (7)
-        ON CONFLICT (version) DO NOTHING
+        CREATE TABLE IF NOT EXISTS _openeral.renamed_workspace_imports (
+            workspace_id TEXT PRIMARY KEY
+              REFERENCES _openeral.workspace_config(id) ON DELETE CASCADE,
+            imported_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
       `);
+      await importRenamedCompatibilitySchema(client);
+
+}
+
+/**
+ * Run all database migrations (V1-V8) in order.
+ *
+ * The common path is one version query. Fresh or stale databases use a
+ * bounded, polled advisory lock; catalog checks avoid taking table locks for
+ * indexes that already exist. This matters when several FUSE sandboxes start
+ * concurrently against the same PostgreSQL service.
+ */
+export async function runMigrations(pool: DbPool): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query('SET statement_timeout = 30000');
+
+    if ((await currentSchemaVersion(client)) >= SCHEMA_VERSION) return;
+
+    if (!(await acquireMigrationLock(client))) {
+      if ((await currentSchemaVersion(client)) >= SCHEMA_VERSION) return;
+      throw new Error(
+        `Timed out after ${Math.round(LOCK_WAIT_MS / 1000)}s waiting for the migration `
+        + `lock; the schema is still below v${SCHEMA_VERSION}.`,
+      );
+    }
+
+    try {
+      if ((await currentSchemaVersion(client)) >= SCHEMA_VERSION) return;
+
+      await client.query(`SET lock_timeout = ${DDL_LOCK_TIMEOUT_MS}`);
+      await applyMigrations(client);
+      await client.query(
+        `INSERT INTO _openeral.schema_version (version)
+         SELECT generate_series(1, $1::int)
+         ON CONFLICT (version) DO NOTHING`,
+        [SCHEMA_VERSION],
+      );
     } finally {
-      await client.query(`SELECT pg_advisory_unlock(1330795854)`);
+      try {
+        await client.query('SET lock_timeout = 0');
+      } catch {
+        // The connection is released below even if session cleanup fails.
+      }
+      try {
+        await client.query(`SELECT pg_advisory_unlock($1::bigint)`, [MIGRATION_LOCK_KEY]);
+      } catch {
+        // Advisory locks are session scoped and disappear with the session.
+      }
     }
   } finally {
     client.release();
