@@ -23,13 +23,13 @@ describe('proxy policy (PROXY-PLAN compliance)', () => {
     expect(policy).not.toMatch(/egress_profile:/);
   });
 
-  it('Anthropic endpoint has protocol: rest + tls: terminate', () => {
+  it('keeps the Anthropic endpoint inspectable instead of bypassing TLS', () => {
     const anthropicSection = policy.slice(
       policy.indexOf('api.anthropic.com'),
       policy.indexOf('binaries:', policy.indexOf('api.anthropic.com')),
     );
     expect(anthropicSection).toContain('protocol: rest');
-    expect(anthropicSection).toContain('tls: terminate');
+    expect(anthropicSection).not.toContain('tls: skip');
   });
 
   it('Claude policy allows the wrapper and the real native Claude binary', () => {
@@ -40,14 +40,48 @@ describe('proxy policy (PROXY-PLAN compliance)', () => {
     expect(claudeBlock).toContain('/usr/local/bin/claude-real');
   });
 
-  it('Socket.dev endpoint has protocol: rest + tls: terminate', () => {
+  it('keeps the writable filesystem rooted at current OpenShell paths', () => {
+    expect(policy).toContain('- /sandbox');
+    expect(policy).toContain('- /tmp');
+    expect(policy).not.toMatch(/- \/home(?:\/|\*|$)/m);
+    expect(policy).not.toMatch(/- \/mnt(?:\/|\*|$)/m);
+  });
+
+  it('restricts StringCost presigning and enables JSON credential rewrite', () => {
+    const start = policy.indexOf('stringcost_presign:');
+    const end = policy.indexOf('\n  #', start + 1);
+    const block = policy.slice(start, end > 0 ? end : undefined);
+    expect(block).toContain('host: app.stringcost.com');
+    expect(block).toContain('request_body_credential_rewrite: true');
+    expect(block).toContain('method: POST');
+    expect(block).toContain('path: /v1/presign');
+    expect(block).toContain('/usr/bin/node');
+    expect(block).not.toContain('access: full');
+  });
+
+  it('limits StringCost proxy traffic to native Claude', () => {
+    const start = policy.indexOf('stringcost_proxy:');
+    const end = policy.indexOf('\n  #', start + 1);
+    const block = policy.slice(start, end > 0 ? end : undefined);
+    expect(block).toContain('host: proxy.stringcost.com');
+    expect(block).toContain('/usr/local/bin/claude-real');
+    expect(block).not.toContain('/usr/bin/node');
+  });
+
+  it('uses the constrained Supabase pooler wildcard', () => {
+    expect(policy).toContain('host: "*.pooler.supabase.com", port: 5432, tls: skip');
+    expect(policy).toContain('host: "*.pooler.supabase.com", port: 6543, tls: skip');
+    expect(policy).not.toContain('aws-0-ap-south-1.pooler.supabase.com');
+  });
+
+  it('keeps Socket.dev inspectable instead of bypassing TLS', () => {
     expect(policy).toContain('registry.socket.dev');
     const socketSection = policy.slice(
       policy.indexOf('registry.socket.dev'),
       policy.indexOf('binaries:', policy.indexOf('registry.socket.dev')),
     );
     expect(socketSection).toContain('protocol: rest');
-    expect(socketSection).toContain('tls: terminate');
+    expect(socketSection).not.toContain('tls: skip');
   });
 
   it('Socket.dev endpoint is read-only (not access: full)', () => {
@@ -76,16 +110,16 @@ describe('setup.sh Socket.dev integration', () => {
   });
 
   it('uses a separate openeral-managed file, not the user .npmrc', () => {
-    // Must NOT write to /home/agent/.npmrc (user's file)
-    expect(setup).not.toContain('/home/agent/.npmrc');
+    // Must NOT write to the user's .npmrc.
+    expect(setup).not.toContain('/sandbox/.npmrc');
     // Must use a temp/openeral-owned file
     expect(setup).toMatch(/openeral-npmrc|OPENERAL_NPMRC/);
     // Must set NPM_CONFIG_USERCONFIG to point npm at the openeral file
     expect(setup).toContain('NPM_CONFIG_USERCONFIG');
   });
 
-  it('does not delete any file in /home/agent', () => {
-    expect(setup).not.toMatch(/rm.*\/home\/agent/);
+  it('does not delete any user file under /sandbox', () => {
+    expect(setup).not.toMatch(/rm.*\/sandbox\/\.(?:npmrc|claude|openeral)/);
   });
 
   it('does not hardcode the SOCKET_TOKEN value', () => {
@@ -120,13 +154,13 @@ describe('setup.sh StringCost integration', () => {
     expect(setup).toContain('setup.sh: ignoring invalid StringCost proxy URL from');
   });
 
-  it('supports uploaded StringCost presigns for OpenShell placeholder-safe launches', () => {
+  it('keeps uploaded StringCost presigns as a compatibility path', () => {
     expect(setup).toContain('/sandbox/openeral-input/presign.json');
     expect(setup).toContain('setup.sh: using uploaded StringCost presign');
-    expect(setup).toContain('skipping StringCost presign creation because ANTHROPIC_API_KEY is an OpenShell placeholder');
+    expect(setup).not.toContain('skipping StringCost presign creation because ANTHROPIC_API_KEY is an OpenShell placeholder');
   });
 
-  it('supports bundled upload inputs for OpenShell single-upload launches', () => {
+  it('supports legacy bundled upload inputs', () => {
     expect(setup).toContain('/sandbox/openeral-input/db-url');
     expect(setup).toContain('find /sandbox/openeral-input -type f -name db-url');
   });
@@ -147,22 +181,23 @@ describe('setup.sh StringCost integration', () => {
     expect(setup).toContain('delete s.env.ANTHROPIC_API_KEY');
     expect(setup).toContain('delete s.env.ANTHROPIC_AUTH_TOKEN');
     expect(claudeWrapper).not.toMatch(/write.*ANTHROPIC_API_KEY/);
+    expect(setup).not.toContain('write_export ANTHROPIC_API_KEY');
   });
 
-  it('preserves ANTHROPIC_API_KEY in direct-auth launches', () => {
-    expect(setup).toContain('write_export ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY"');
+  it('leaves direct-auth credentials to per-process OpenShell injection', () => {
+    expect(setup).not.toContain('write_export ANTHROPIC_API_KEY');
     expect(claudeWrapper).not.toMatch(/unset ANTHROPIC_API_KEY/);
   });
 
-  it('writes an OpenShell Anthropic placeholder into session env when provider env is absent', () => {
-    expect(setup).toContain('openshell:resolve:env:ANTHROPIC_API_KEY');
-    expect(setup).toContain('write_export ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY"');
-    expect(setup).toContain('write_export ANTHROPIC_API_KEY "openshell:resolve:env:ANTHROPIC_API_KEY"');
+  it('does not fabricate or persist an Anthropic placeholder', () => {
+    expect(setup).not.toContain('write_export ANTHROPIC_API_KEY');
+    expect(setup).not.toContain('write_export ANTHROPIC_AUTH_TOKEN');
   });
 
-  it('CLI inline launch delegates auth handling to the sandbox wrapper', () => {
+  it('CLI starts the sandbox wrapper through sandbox exec', () => {
     expect(cli).toContain('openeral-init');
-    expect(cli).toContain('exec claude "$@"');
+    expect(cli).toMatch(/'sandbox',\s*'exec'/);
+    expect(cli).toContain("'claude', ...claudeArgs");
     expect(cli).not.toMatch(/-u ANTHROPIC_API_KEY/);
   });
 });

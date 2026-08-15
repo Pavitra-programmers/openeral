@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# test_sandbox_e2e.sh — Docker-based image verification for the openeral sandbox.
+# test_sandbox_e2e.sh — Docker-based verification for the compatibility image.
 #
 # Builds the image, runs individual checks inside it as the sandbox user.
 # Validates image shape, permissions, npm config, migrations, and lazy daemon startup.
 #
-# NOTE: This does NOT exercise OpenShell's proxy, policy enforcement, or
-# SecretResolver — those require a running OpenShell gateway. This test
-# verifies the image is correctly built for use IN OpenShell.
+# NOTE: This does not exercise the primary FUSE image. That requires the
+# patched OpenShell supervisor and is covered by tests/fuse/test_openshell_e2e.sh.
 #
 # Requires: docker, a reachable PostgreSQL
 #
@@ -18,7 +17,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
 
-IMAGE="${OPENERAL_E2E_IMAGE:-openeral-e2e:local}"
+IMAGE="${OPENERAL_E2E_IMAGE:-openeral-compat-e2e:local}"
 DB_URL="${DATABASE_URL:?DATABASE_URL required}"
 PASSED=0
 FAILED=0
@@ -27,7 +26,7 @@ pass() { echo "  ✓ $1"; PASSED=$((PASSED + 1)); }
 fail() { echo "  ✗ $1"; FAILED=$((FAILED + 1)); }
 
 run_in_image() {
-  # Run as sandbox user (uid 1000) like the real OpenShell supervisor does
+  # Resolve the image's sandbox account by name, as the real supervisor does.
   docker run --rm --network host \
     -e DATABASE_URL="$DB_URL" \
     -e WORKSPACE_ID="e2e-sandbox-$$" \
@@ -45,25 +44,25 @@ run_in_image_root() {
 }
 
 echo ""
-echo "=== Building image ==="
-docker build -f sandboxes/openeral/Dockerfile -t "$IMAGE" . 2>&1 | tail -3
+echo "=== Building compatibility image ==="
+docker build -f Dockerfile.openeral-compat -t "$IMAGE" . 2>&1 | tail -3
 
 echo ""
-echo "=== Test 1: /home/agent ownership ==="
-out=$(run_in_image_root 'stat -c "%U:%G %a" /home/agent')
+echo "=== Test 1: /sandbox ownership ==="
+out=$(run_in_image_root 'stat -c "%U:%G %a" /sandbox')
 if echo "$out" | grep -q 'sandbox:sandbox'; then
-  pass "/home/agent owned by sandbox:sandbox ($out)"
+  pass "/sandbox owned by sandbox:sandbox ($out)"
 else
-  fail "/home/agent wrong ownership: $out"
+  fail "/sandbox wrong ownership: $out"
 fi
 
 echo ""
-echo "=== Test 2: sandbox user can write to /home/agent ==="
-out=$(run_in_image 'touch /home/agent/.permcheck && echo ok || echo FAIL')
+echo "=== Test 2: sandbox user can write to /sandbox ==="
+out=$(run_in_image 'touch /sandbox/.permcheck && echo ok || echo FAIL')
 if echo "$out" | grep -q 'ok'; then
-  pass "sandbox user can write to /home/agent"
+  pass "sandbox user can write to /sandbox"
 else
-  fail "sandbox user cannot write to /home/agent: $out"
+  fail "sandbox user cannot write to /sandbox: $out"
 fi
 
 echo ""
@@ -202,23 +201,24 @@ else
 fi
 
 echo ""
-echo "=== Test 10: PGlite data dir is outside /home/agent and writable ==="
+echo "=== Test 10: runtime user can create the PGlite data dir ==="
 out=$(run_in_image '
-  [ -d /tmp/openeral/data ] && echo "data-dir-ok" || echo "data-dir-missing"
+  [ ! -e /tmp/openeral ] && echo "data-not-precreated" || echo "data-precreated"
+  mkdir -p /tmp/openeral/data
   touch /tmp/openeral/data/.permcheck && echo "data-write-ok" || echo "data-write-fail"
 ')
-if echo "$out" | grep -q 'data-dir-ok' && echo "$out" | grep -q 'data-write-ok'; then
-  pass "PGlite data dir writable"
+if echo "$out" | grep -q 'data-not-precreated' && echo "$out" | grep -q 'data-write-ok'; then
+  pass "PGlite data dir is runtime-created and writable"
 else
-  fail "PGlite data dir not writable: $out"
+  fail "PGlite data dir ownership model is wrong: $out"
 fi
 
 echo ""
 echo "=== Test 11: user .npmrc is never touched ==="
 out=$(run_in_image '
   # Create a user .npmrc
-  echo "user-config=true" > /home/agent/.npmrc
-  # Simulate openeral Socket.dev config (writes to /tmp, not /home/agent)
+  echo "user-config=true" > /sandbox/.npmrc
+  # Simulate openeral Socket.dev config (writes to /tmp, not /sandbox)
   OPENERAL_NPMRC=/tmp/openeral-npmrc
   rm -f "$OPENERAL_NPMRC"
   if [ -n "${SOCKET_TOKEN:-}" ]; then
@@ -227,7 +227,7 @@ registry=https://registry.socket.dev/npm/
 NPMRC
   fi
   # User .npmrc must be untouched
-  cat /home/agent/.npmrc
+  cat /sandbox/.npmrc
 ')
 if echo "$out" | grep -q 'user-config=true'; then
   pass "user .npmrc preserved (not clobbered or deleted)"

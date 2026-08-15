@@ -1,288 +1,302 @@
-# BUILD.md — Local development for OpenEral
+# Building And Developing OpenEral
 
-This file is for **contributors and developers** who want to modify OpenEral, build the sandbox image locally, or run the test suite. End users should follow [README.md](./README.md) — the published GHCR image is the supported path.
+This guide covers source builds. The currently published compatibility image requires
+none of these tools; use [README.md](./README.md) for that flow.
 
----
+## Source Layout
+
+```text
+crates/openeral-fused/       PostgreSQL-backed FUSE daemon
+openeral-js/                 migrations, init/import, CLI, and compatibility library
+sandboxes/openeral/          primary and compatibility image runtime files
+vendor/openshell/            pinned, patched OpenShell source snapshot
+tests/fuse/                  FUSE conformance and real OpenShell E2E
+Dockerfile.openeral          primary FUSE image
+Dockerfile.openeral-compat   scoped-sync/PGlite compatibility image
+```
+
+The OpenShell snapshot is pinned in [`vendor/openshell/UPSTREAM`](./vendor/openshell/UPSTREAM):
+
+```text
+repository=https://github.com/NVIDIA/OpenShell.git
+commit=c4b500a7de64d0b66e3ee8098f58d14299092162
+tree=30d1825d5be2a631823d941188803e29f09aedd5
+```
+
+`vendor/openshell` has no nested `.git`; it contains the pristine snapshot plus the
+default-off OpenEral FUSE patch.
 
 ## Prerequisites
 
-- Node.js 18 or later
-- pnpm (`npm install -g pnpm`)
-- Docker (for building the sandbox image and running E2E tests)
-- A reachable PostgreSQL instance (for integration tests — Supabase, local postgres container, or any other)
+- Linux Docker host with `/dev/fuse`.
+- Rust 1.95 toolchain.
+- Node.js 22 and pnpm for `openeral-js` development.
+- OpenShell build dependencies, including Protobuf and Z3.
+- External PostgreSQL with TLS for primary-runtime tests.
+- Optional Anthropic, AWS, and StringCost providers for live agent tests.
 
----
-
-## Clone and build
-
-```bash
-git clone https://github.com/sandys/openeral.git
-cd openeral/openeral-js
-pnpm install
-pnpm build
-```
-
-This compiles TypeScript into `openeral-js/dist/`. The `dist/bin/openeral.js` script is what `npx openeral` resolves to when the package is published, and what the sandbox image runs internally.
-
----
-
-## Run the CLI without a sandbox
-
-The `openeral-js` package exposes a CLI that launches Claude Code locally, starts the OpenShell gateway, and creates a sandbox — all wrapped into one command. For day-to-day development this is quicker than invoking `openshell` by hand each time.
+The primary image pulls this existing base and does not rebuild it:
 
 ```bash
-export ANTHROPIC_API_KEY='sk-ant-...'
-npx openeral
+docker pull ghcr.io/nvidia/openshell-community/sandboxes/base:latest
 ```
 
-By default this **pulls the published GHCR image** `ghcr.io/sandys/openeral/sandbox:just-bash`. To use a locally-built image instead, add `--dev`:
+If an anonymous GHCR pull is denied, remove stale registry credentials with
+`docker logout ghcr.io` and retry before changing the image source.
+
+## Build OpenEral
+
+Rust daemon and historical Rust workspace:
 
 ```bash
-npx openeral --dev        # uses openeral-sandbox:dev (you must build it first)
-npx openeral -d           # shorthand
+cargo build --locked -p openeral-fused
+cargo test -p openeral-fused
+cargo clippy -p openeral-fused --all-targets -- -D warnings
+cargo fmt --all --check
 ```
 
-**Build the dev image locally:**
-
-```bash
-# From the repo root
-docker build -f sandboxes/openeral/Dockerfile -t openeral-sandbox:dev .
-```
-
-Override the dev image name via env var (if you tagged it differently):
-
-```bash
-OPENERAL_DEV_IMAGE=my-image:tag npx openeral --dev
-```
-
-### Run a local OpenShell build directly
-
-OpenShell can build a local sandbox image and push it into the gateway when `--from` points at a Dockerfile or a directory containing one. Use the repo-root Dockerfile so the build context includes `openeral-js/` and `.claude/skills/`:
-
-```bash
-openshell gateway start
-
-openshell sandbox create \
-  --name openeral-local-dev \
-  --from Dockerfile.openeral \
-  --provider claude --auto-providers \
-  -- env WORKSPACE_ID=openeral-local-dev openeral-init
-
-openshell sandbox connect openeral-local-dev
-claude
-```
-
-Do not pass a plain local Docker tag such as `openeral-sandbox:dev` directly to raw `openshell sandbox create --from`. OpenShell treats tag-shaped values as image references for the sandbox pod. Use `--from Dockerfile.openeral`, or use `npx openeral --dev`, which performs its own local-image import before creating the sandbox.
-
----
-
-## CLI subcommands (local development)
-
-All subcommands accept `--dev`/`-d` to target the local dev image.
-
-| Command | Description |
-|---|---|
-| `npx openeral` | Launch Claude Code (published image) |
-| `npx openeral --dev` | Launch Claude Code (local dev image) |
-| `npx openeral presign` | Show the currently stored StringCost presign |
-| `npx openeral presign renew` | Create a new permanent StringCost presign and store it |
-| `npx openeral stats` | API usage statistics (cost, tokens, model distribution, cache hit rate) |
-| `npx openeral analyze` | Analyze session history and produce ranked optimization proposals |
-| `npx openeral apply` | Auto-apply proposals from `analyze` — patches `CLAUDE.md`, creates `CONTEXT.md`, compacts memory |
-| `npx openeral apply --dry-run` | Preview `apply` changes without writing |
-| `npx openeral apply --proposal <id>` | Apply a single proposal (`model-routing`, `context-file`, `lazy-reading`, `readme-updates`, `memory-compact`) |
-| `npx openeral memory refresh` | Rewrite Claude's native project memory files |
-| `npx openeral memory refresh --query "..."` | Focus memory refresh on a specific topic |
-| `npx openeral -- <args>` | Pass arguments straight to Claude (e.g. `npx openeral -- -p 'hello'`) |
-
-**Options shared by `stats`, `analyze`, `apply`:**
-
-```
---workspace <id>    Workspace ID (default: hostname)
---days <n>          Days of history to look back (default: 7)
---project-root <p>  Project root for analyze/apply (default: cwd)
---json              Output as JSON (analyze only)
-```
-
----
-
-## Environment variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | (required) | Anthropic API key |
-| `STRINGCOST_API_KEY` | (optional) | StringCost key — enables cost tracking |
-| `DATABASE_URL` | (optional) | PostgreSQL connection string — enables persistence and `pg` |
-| `OPENERAL_WORKSPACE_ID` | hostname | Workspace identifier |
-| `OPENERAL_HOME` | `/tmp/openeral-<id>` | Local workspace directory |
-| `OPENERAL_SANDBOX_IMAGE` | `ghcr.io/sandys/openeral/sandbox:just-bash` | Override the production sandbox image |
-| `OPENERAL_DEV_IMAGE` | `openeral-sandbox:dev` | Override the dev sandbox image (used with `--dev`/`-d`) |
-
----
-
-## Test suite
+TypeScript library and initializer:
 
 ```bash
 cd openeral-js
-pnpm check                    # typecheck + lints + unit tests
+pnpm install
+pnpm build
+pnpm check
 ```
 
-### Integration tests (require PostgreSQL)
+`pnpm check` runs type checking, structural lints, and unit tests, including PGlite
+behavioral tests for prefix-scoped compatibility sync.
+
+## Build Patched OpenShell
+
+```bash
+cd vendor/openshell
+cargo build -p openshell-cli -p openshell-sandbox -p openshell-server
+cargo test -p openshell-cli
+cargo test -p openshell-driver-docker
+cargo test -p openshell-policy
+cargo test -p openshell-supervisor-process
+```
+
+The relevant binaries are:
+
+```text
+vendor/openshell/target/debug/openshell
+vendor/openshell/target/debug/openshell-gateway
+vendor/openshell/target/debug/openshell-sandbox
+```
+
+The patch adds a public `--fuse` resource request, immutable `fuse_mounts` policy,
+Docker operator/device gates, explicit inherited descriptors, FUSE INIT readiness,
+critical-child supervision, bounded `on-failure:5` restart, and transient gateway
+lifecycle handling. No-FUSE requests preserve the upstream path.
+
+## Configure A Local Docker Gateway
+
+The gateway must run the patched supervisor and explicitly enable FUSE. Generate a
+temporary development identity outside the repository:
+
+```bash
+export OPENERAL_GATEWAY_DIR="$(mktemp -d /tmp/openeral-fuse-gateway-XXXXXX)"
+mkdir -p "$OPENERAL_GATEWAY_DIR/jwt" "$OPENERAL_GATEWAY_DIR/state"
+openssl genpkey -algorithm ED25519 -out "$OPENERAL_GATEWAY_DIR/jwt/signing.pem"
+openssl pkey \
+  -in "$OPENERAL_GATEWAY_DIR/jwt/signing.pem" \
+  -pubout \
+  -out "$OPENERAL_GATEWAY_DIR/jwt/public.pem"
+printf '%s\n' openeral-fuse-dev > "$OPENERAL_GATEWAY_DIR/jwt/kid"
+```
+
+Create `$OPENERAL_GATEWAY_DIR/gateway.toml`, replacing `/absolute/repo` with this
+checkout's absolute path:
+
+```toml
+[openshell]
+version = 1
+
+[openshell.gateway]
+bind_address = "127.0.0.1:18770"
+log_level = "info"
+compute_drivers = ["docker"]
+disable_tls = true
+
+[openshell.gateway.auth]
+allow_unauthenticated_users = true
+
+[openshell.gateway.gateway_jwt]
+signing_key_path = "/tmp/replace/jwt/signing.pem"
+public_key_path = "/tmp/replace/jwt/public.pem"
+kid_path = "/tmp/replace/jwt/kid"
+gateway_id = "openeral-fuse-dev"
+ttl_secs = 0
+
+[openshell.drivers.docker]
+default_image = "openeral-fuse:local"
+image_pull_policy = "Never"
+sandbox_namespace = "openeral-fuse-dev"
+grpc_endpoint = "http://host.openshell.internal:18770"
+supervisor_bin = "/absolute/repo/vendor/openshell/target/debug/openshell-sandbox"
+enable_fuse = true
+```
+
+Use the actual temporary JWT paths rather than the illustrative `/tmp/replace`
+values. Start the gateway in a dedicated terminal:
+
+```bash
+vendor/openshell/target/debug/openshell-gateway \
+  --config "$OPENERAL_GATEWAY_DIR/gateway.toml" \
+  --db-url "sqlite:$OPENERAL_GATEWAY_DIR/state/gateway.db?mode=rwc"
+```
+
+This repository does not install, start, or mutate a gateway automatically. The
+operator owns the gateway and Docker `enable_fuse` decision.
+
+In another terminal:
+
+```bash
+export OPENSHELL_BIN="$PWD/vendor/openshell/target/debug/openshell"
+export OPENSHELL_GATEWAY_ENDPOINT="http://127.0.0.1:18770"
+
+"$OPENSHELL_BIN" \
+  --gateway-endpoint "$OPENSHELL_GATEWAY_ENDPOINT" \
+  gateway info
+```
+
+## Build The Sandbox Images
+
+Primary FUSE image:
+
+```bash
+docker build --pull=false -f Dockerfile.openeral -t openeral-fuse:local .
+```
+
+Compatibility image:
+
+```bash
+docker build --pull=false -f Dockerfile.openeral-compat -t openeral-compat:local .
+```
+
+The root Dockerfiles are canonical for local builds because their context includes
+the Rust crates, `openeral-js`, and skills. Keep their equivalents under
+`sandboxes/openeral/` synchronized.
+
+`build-image.sh` automates primary sandbox creation against an already running patched
+gateway:
 
 ```bash
 export DATABASE_URL='postgresql://...'
-node test-integration.mjs
-node test-memory-refresh.mjs
+export OPENSHELL_BIN="$PWD/vendor/openshell/target/debug/openshell"
+export OPENSHELL_GATEWAY_ENDPOINT='http://127.0.0.1:18770'
+bash build-image.sh
 ```
 
-### Docker image verification (requires Docker + PostgreSQL)
+It invokes OpenShell's public build/create flow and never imports images through
+containerd, changes Docker networking, or rebuilds NVIDIA's base.
+
+## Real FUSE E2E
+
+The Docker-driver harness requires a running patched gateway and an image whose policy
+allows the supplied database host:
 
 ```bash
-DATABASE_URL='...' bash ../tests/test_sandbox_e2e.sh
+export DATABASE_URL='postgresql://...'
+export OPENSHELL_GATEWAY_ENDPOINT='http://127.0.0.1:18770'
+export OPENSHELL_XDG_CONFIG_HOME="$HOME/.config"
+export OPENERAL_FUSE_E2E_IMAGE='openeral-fuse:local'
+
+tests/fuse/test_openshell_e2e.sh
 ```
 
-Builds the image, runs checks inside it as the sandbox user: permissions, migrations, daemon, dist/ artifacts, user .npmrc preservation.
+It verifies:
 
-### Setup.sh flow inside container (requires Docker + PostgreSQL)
+1. supervisor-owned mount at `/sandbox/work`;
+2. eight filesystem conformance cases;
+3. fsynced sentinel durability;
+4. critical daemon exit causing container restart and lease-epoch advance;
+5. persistence after sandbox delete/recreate with the same workspace ID.
+
+The crash-restart assertion uses Docker inspection and therefore intentionally targets
+the v1 Docker driver.
+
+To include a real Claude write, attach a configured provider:
 
 ```bash
-DATABASE_URL='...' bash ../tests/test_setup_e2e.sh
+export OPENERAL_FUSE_REAL_CLAUDE=1
+export OPENERAL_FUSE_E2E_PROVIDER=claude
+tests/fuse/test_openshell_e2e.sh
 ```
 
-Exercises the actual `setup.sh` code path end-to-end inside the container.
+For AWS Bedrock, build `tests/fuse/Dockerfile.bedrock`, attach an `aws` provider, and
+set `CLAUDE_CODE_USE_BEDROCK`, `AWS_REGION`, and `ANTHROPIC_MODEL`. Raw provider
+credentials must never be passed with `--env`.
 
-### Real Claude Code persistence (requires PostgreSQL + ANTHROPIC_API_KEY)
+### Local TLS PostgreSQL Fixture
+
+The production policy permits Supabase poolers. A private fixture needs a derived
+test image with its exact host and port:
 
 ```bash
-DATABASE_URL='...' ANTHROPIC_API_KEY='...' bash ../tests/test_claude_e2e.sh
+docker build \
+  -f tests/fuse/Dockerfile.local-postgres \
+  --build-arg OPENERAL_TEST_DB_HOST=172.17.0.1 \
+  --build-arg OPENERAL_TEST_DB_PORT=55432 \
+  -t openeral-fuse-localdb:test \
+  /path/to/context-containing-ca.crt
 ```
 
-Launches Claude Code through the built binary, has it write a file, deletes the home directory, relaunches, and verifies the file is restored from PostgreSQL.
+The fixture PostgreSQL server must present a TLS certificate chaining to `ca.crt`.
+The overlay adds that CA and an exact raw-tunnel policy route; it does not disable
+PostgreSQL TLS.
 
----
+## Compatibility And Library Tests
 
-## Custom agents (library usage)
-
-For agents with a single bash tool (not the Claude Code CLI), you can use the just-bash virtual filesystem directly from a cloned repo after `pnpm build`:
-
-```typescript
-import { createOpeneralShell, createToolHandler } from './openeral-js/dist/index.js'
-
-const shell = await createOpeneralShell({
-  connectionString: process.env.DATABASE_URL,
-  workspaceId: 'my-session',
-})
-
-const handleBash = createToolHandler(shell)
-await shell.exec('cat /db/public/users/.info/count')
-await shell.exec('echo hello > /home/agent/notes.txt')
-```
-
-This path uses [just-bash](https://github.com/vercel-labs/just-bash) with PostgreSQL-backed virtual mounts at `/db` (read-only) and `/home/agent` (read-write).
-
----
-
-## Project structure
-
-```
-openeral-js/                  # TypeScript package
-  src/bin/openeral.ts         # executable wrapper for npm/npx
-  src/cli.ts                  # CLI parsing and command dispatch
-  src/sync.ts                 # PostgreSQL ↔ filesystem sync
-  src/shell.ts                # createOpeneralShell() for custom agents
-  src/pg-fs/                  # Read-only /db filesystem
-  src/workspace-fs/           # Read-write /home/agent filesystem
-  src/memory/                 # Claude project-memory refresh
-  src/optimize/               # analyze / apply / stats subcommands
-  src/db/                     # SQL queries, migrations
-  src/safety.ts               # Command safety analysis
-  lint.mjs                    # structural lint rules
-
-sandboxes/openeral/           # OpenShell sandbox image
-  Dockerfile                  # Stock base + Node.js + openeral-js
-  setup.sh                    # one-shot openeral-init sandbox entry point
-  openeral-bash.mjs           # daemon for pg, scoped sync, custom agents
-  openeral-daemon-ensure.sh   # lazy detached daemon starter
-  openeral-claude.sh          # Claude wrapper that flushes on exit
-  pg-client.mjs               # pg helper for real-bash sessions
-  policy.yaml                 # Network policy
-
-tests/                        # End-to-end test scripts
-  test_sandbox_e2e.sh         # Docker image verification
-  test_setup_e2e.sh           # setup.sh flow inside container
-  test_claude_e2e.sh          # Real Claude Code persistence
-```
-
----
-
-## Publishing a new image
-
-Images are built and pushed by GitHub Actions on push to the `just-bash` branch (see `.github/workflows/publish-images.yml`). The tag `ghcr.io/sandys/openeral/sandbox:just-bash` always tracks the latest successful build on that branch.
-
-To test before pushing:
+The old Docker-only scripts now build the compatibility image explicitly:
 
 ```bash
-docker build -f sandboxes/openeral/Dockerfile -t openeral-sandbox:dev .
-bash tests/test_sandbox_e2e.sh
-bash tests/test_setup_e2e.sh
-ANTHROPIC_API_KEY='...' DATABASE_URL='...' bash tests/test_claude_e2e.sh
+DATABASE_URL='postgresql://...' tests/test_sandbox_e2e.sh
+DATABASE_URL='postgresql://...' tests/test_setup_e2e.sh
 ```
 
----
+Host-side custom-agent and memory tests remain under `openeral-js`:
 
-## Architecture
-
-```
-  ┌─────────────────────── Sandbox ─────────────────────────┐
-  │  openeral-init hydrates state and exits                    │
-  │                      │                                     │
-  │  user connects and runs `claude` with real /bin/bash       │
-  │                      │                                     │
-  │  claude/pg lazily start detached scoped watcher ────────┐  │
-  │  PGlite (default)  OR  pg.Pool wrapped in a CONNECT-    │  │
-  │                         tunneled Duplex (with --upload) │  │
-  │  ───────────────────────────────────────────────────────┘  │
-  └────────────────────────┬───────────────────────────────────┘
-                           │  (all egress via OpenShell HTTP CONNECT proxy)
-          ┌────────────────┼────────────────┐
-          ▼                ▼                ▼
-   api.anthropic.com   StringCost      Supabase pg wire protocol
-   (x-api-key          (cost tracking  (CONNECT tunnel; pg negotiates
-    placeholder         proxy)          its own TLS end-to-end)
-    resolved at proxy)
+```bash
+cd openeral-js
+DATABASE_URL='postgresql://...' node test-integration.mjs
+DATABASE_URL='postgresql://...' node test-memory-refresh.mjs
 ```
 
-Every outbound connection from the sandbox goes through OpenShell's HTTP CONNECT proxy at `10.200.0.1:3128` — kernel-level iptables reject any other TCP. The just-bash virtual `/db` and virtual `/home/agent` path remains available for custom agents through `createOpeneralShell()`, but Claude Code runtime uses real bash plus the `pg` helper.
+`createOpeneralShell()` exposes `/db`, `/home/agent`, and `/tmp` through just-bash for
+custom agents. That path is independent of the primary kernel FUSE mount.
 
-### How pg reaches Supabase
+## Custom PostgreSQL Hosts
 
-pg doesn't speak HTTP CONNECT. `openeral-js/src/db/http-connect-socket.ts` wraps a raw `net.Socket` in a `Duplex`: when pg calls `.connect(port, host)`, the Duplex dials the proxy, writes `CONNECT host:port HTTP/1.1`, waits for `200 Connection Established`, and only then emits `'connect'` upward. pg's own TLS handshake runs end-to-end inside the tunnel, so Supabase credentials never reach the proxy.
-
-### Why credentials come through `--upload`, not `--provider`
-
-OpenShell's `SecretResolver` unconditionally wraps every provider credential as an `openshell:resolve:env:*` placeholder that is only rewritten when the HTTP proxy terminates TLS and inspects request headers. pg uses raw TCP, so it can't resolve placeholders — it would try to literally connect to a host named `openshell:resolve:env:DATABASE_URL`.
-
-`openshell sandbox create --upload <path>` is the one channel that delivers bytes verbatim. For PostgreSQL-only launches, `setup.sh` reads `/sandbox/db-url`; for combined PostgreSQL + StringCost launches, it reads `/sandbox/openeral-input/db-url`. It stores the URL at `/tmp/openeral/database-url` so later `claude`, `pg`, and memory refresh sessions can start the detached daemon without keeping the uploaded secret file around.
-
-`createPool()` does not set pg's `ssl` option. The tested Supabase pooler flow works with the current connection string and CONNECT tunnel; PostgreSQL deployments that require explicit pg TLS settings need future pool configuration support.
-
-### Custom PostgreSQL hosts
-
-The shipped `policy.yaml` allowlists common Supabase pooler regions under the `postgres` network policy. To add a host (different region, Neon, RDS, self-hosted), append its `host:port` entry and rebuild:
+Add a raw tunnel route and both migration/daemon binaries:
 
 ```yaml
-# sandboxes/openeral/policy.yaml
 network_policies:
   postgres:
     endpoints:
-      - { host: your-host.example.com, port: 5432 }
-      - { host: your-host.example.com, port: 6543 }
+      - { host: db.example.com, port: 5432, tls: skip }
     binaries:
       - { path: /usr/bin/node }
+      - { path: /usr/local/bin/openeral-fused }
 ```
 
-Then rebuild and push the image (or use `--dev` with a locally-tagged image).
+`tls: skip` applies to OpenShell inspection, not PostgreSQL. It tells OpenShell to
+relay the tunnel; Node/Rust then require and verify PostgreSQL TLS end to end.
 
-### `_openeral` schema on Supabase
+## Source And Rollout Rules
 
-Migration V6 grants `USAGE` on the schema to `service_role, dashboard_user, authenticated, anon` and `SELECT` on all tables to `service_role, dashboard_user`. Without these, the Supabase Table Editor shows the schema but none of its rows — the tables are owned by `postgres` and only readable there. The V6 grants wrap each role in a try/catch on `42704` (undefined role) so the migration still succeeds on non-Supabase databases where those roles don't exist.
+- Never grant mount syscalls or `/dev/fuse` to Claude.
+- Never start `openeral-fused` outside the normal hardened `ProcessHandle` path.
+- Never make Rust own schema migration.
+- Never run a watcher beside FUSE in the primary image.
+- Never selectively omit generated/vendor changes from commits; ignore artifacts only
+  through `.gitignore`.
+- Rebase the pristine OpenShell pin before carrying the patch to materially different
+  upstream mount, process, or lifecycle code.
+- Keep the published scoped-sync image stable until FUSE correctness, fault,
+  performance, and upstream/release gates are complete.
+
+The detailed contract and rejected alternatives are in
+[FUSE-DESIGN.md](./FUSE-DESIGN.md) and [FUSE.md](./FUSE.md).

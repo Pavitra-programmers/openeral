@@ -101,11 +101,12 @@ describe('openeral-shell skill shape', () => {
   const skillPath = join(__dirname, '../../.claude/skills/openeral-shell/SKILL.md');
   const skill = readFileSync(skillPath, 'utf8');
 
-  it('launches from the published GHCR image, not a local build', () => {
+  it('distinguishes the published compatibility image from the source FUSE runtime', () => {
     expect(skill).toContain('ghcr.io/sandys/openeral/sandbox:just-bash');
-    // No `docker build` or local-image references in the main flow
-    expect(skill).not.toMatch(/--dev\b/);
-    expect(skill).not.toMatch(/openeral-sandbox:dev/);
+    expect(skill).toContain('Dockerfile.openeral');
+    expect(skill).toContain('--fuse');
+    expect(skill).toContain('all `/sandbox/work`');
+    expect(skill).toContain('published compatibility runtime');
   });
 
   it('uses openshell-only commands (no npx, no pnpm)', () => {
@@ -116,14 +117,20 @@ describe('openeral-shell skill shape', () => {
   it('uses gateway info (not the nonexistent gateway list)', () => {
     expect(skill).not.toMatch(/openshell gateway list\b/);
     expect(skill).toContain('openshell gateway info');
+    expect(skill).not.toMatch(/^\s*openshell gateway start\b/m);
+    expect(skill).toContain('OPENSHELL_GATEWAY_ENDPOINT');
+    expect(skill).toContain('sandbox create --help | grep -- --fuse');
   });
 
-  it('creates generic providers explicitly with KEY=VALUE (not by env lookup)', () => {
-    // External DATABASE_URL is not supported (see FLAG #9 in the architecture —
-    // OpenShell's HTTP-only proxy cannot route raw-TCP PostgreSQL). The only
-    // generic provider we still wire is `stringcost`.
-    expect(skill).toMatch(/openshell provider create --name stringcost[\s\S]*STRINGCOST_API_KEY=/);
+  it('creates StringCost from an env lookup without exposing its value in argv', () => {
+    expect(skill).toMatch(/openshell provider create[\s\S]*--name stringcost[\s\S]*--credential STRINGCOST_API_KEY/);
+    expect(skill).not.toMatch(/--credential ["']?STRINGCOST_API_KEY=/);
     expect(skill).not.toMatch(/openshell provider create --name db\b/);
+  });
+
+  it('lets OpenShell create the StringCost presign inside the sandbox', () => {
+    expect(skill).not.toContain('curl -fsS https://app.stringcost.com/v1/presign');
+    expect(skill).toContain('presign creation happens inside the sandbox');
   });
 
   it('documents openshell sandbox exec for one-off commands', () => {
@@ -139,6 +146,19 @@ describe('CLI launch database handling', () => {
     expect(cliSource).toContain('POSTGRES_URL');
     expect(cliSource).not.toMatch(/sandboxArgs\.push\('--provider', 'db'\)/);
     expect(cliSource).not.toMatch(/'provider', 'create', '--name', 'db'/);
+  });
+
+  it('uses current OpenShell orchestration instead of driver internals', () => {
+    expect(cliSource).toMatch(/'sandbox',\s*'exec'/);
+    expect(cliSource).toContain("'--env'");
+    expect(cliSource).toContain('WORKSPACE_ID=');
+    expect(cliSource).toContain('MIN_OPENSHELL_VERSION');
+    expect(cliSource).toContain('OPENSHELL_BIN');
+    expect(cliSource).toContain('OPENSHELL_GATEWAY_ENDPOINT');
+    expect(cliSource).not.toContain("['gateway', 'start']");
+    expect(cliSource).not.toContain('openshell-cluster-openshell');
+    expect(cliSource).not.toContain("'kubectl'");
+    expect(cliSource).not.toContain("'ctr'");
   });
 });
 
@@ -174,6 +194,12 @@ describe('OpenShell runtime architecture', () => {
   it('does not rehydrate destructively once the init marker matches', () => {
     expect(daemon).toContain('initMarkerMatches');
     expect(daemon).toContain('hydrateOnStart');
+  });
+
+  it('uses the canonical OpenShell sandbox home and does not persist provider keys', () => {
+    expect(setup).toContain('OPENERAL_HOME="${OPENERAL_HOME:-/sandbox}"');
+    expect(setup).not.toContain('write_export ANTHROPIC_API_KEY');
+    expect(daemon).toContain("process.env.OPENERAL_HOME || '/sandbox'");
   });
 });
 

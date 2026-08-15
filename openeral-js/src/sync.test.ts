@@ -158,8 +158,9 @@ describe('sync.ts structural checks', () => {
   it('watchAndSync passes pathPrefix through to syncFromFs', () => {
     const watchBody = syncSrc.slice(syncSrc.indexOf('export function watchAndSync'));
     expect(watchBody).toContain('const pathPrefix = normalizePathPrefix(opts?.pathPrefix)');
+    expect(watchBody).toContain('const pathPrefixKind = opts?.pathPrefixKind ?? \'dir\'');
     expect(watchBody).toContain('watchDir');
-    expect(watchBody).toContain('syncFromFs(pool, workspaceId, dir, { excludeDirs, pathPrefix })');
+    expect(watchBody).toContain('syncFromFs(pool, workspaceId, dir, { excludeDirs, pathPrefix, pathPrefixKind })');
   });
 });
 
@@ -186,7 +187,7 @@ describe('sync.ts behavior', () => {
     expect(paths).not.toContain('/.claude/old.md');
     expect(paths).toContain('/.claude/keep.md');
     expect(paths).toContain('/src/code.ts');
-  });
+  }, 15000);
 
   it('confines syncToFs hydration to the requested pathPrefix', async () => {
     const pool = await createTestPool();
@@ -201,5 +202,47 @@ describe('sync.ts behavior', () => {
 
     expect(readFileSync(join(root, '.claude', 'x.md'), 'utf8')).toBe('x');
     expect(existsSync(join(root, 'unrelated'))).toBe(false);
-  });
+  }, 15000);
+
+  it('persists an exact file pathPrefix without syncing the whole parent directory', async () => {
+    const pool = await createTestPool();
+    const workspaceId = 'sync-exact-file-from-fs';
+    const root = makeTempDir();
+    writeFileSync(join(root, '.claude.json'), '{"ok":true}');
+    writeFileSync(join(root, 'unrelated.txt'), 'do not sync');
+
+    await seedWorkspace(pool, workspaceId);
+
+    await syncFromFs(pool as any, workspaceId, root, {
+      pathPrefix: '/.claude.json',
+      pathPrefixKind: 'file',
+    });
+
+    const { rows } = await pool.query(
+      `SELECT path, content FROM _openeral.workspace_files WHERE workspace_id = $1 ORDER BY path`,
+      [workspaceId],
+    );
+    const paths = rows.map((row: any) => row.path);
+    expect(paths).toContain('/.claude.json');
+    expect(paths).not.toContain('/unrelated.txt');
+    expect(Buffer.from(rows.find((row: any) => row.path === '/.claude.json').content).toString()).toBe('{"ok":true}');
+  }, 15000);
+
+  it('hydrates an exact file pathPrefix without creating unrelated rows on disk', async () => {
+    const pool = await createTestPool();
+    const workspaceId = 'sync-exact-file-to-fs';
+    const root = makeTempDir();
+
+    await seedWorkspace(pool, workspaceId);
+    await seedFile(pool, workspaceId, '/.claude.json', '{"persisted":true}');
+    await seedFile(pool, workspaceId, '/.claude/x.md', 'x');
+
+    await syncToFs(pool as any, workspaceId, root, {
+      pathPrefix: '/.claude.json',
+      pathPrefixKind: 'file',
+    });
+
+    expect(readFileSync(join(root, '.claude.json'), 'utf8')).toBe('{"persisted":true}');
+    expect(existsSync(join(root, '.claude'))).toBe(false);
+  }, 15000);
 });

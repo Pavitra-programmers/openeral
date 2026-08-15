@@ -6,7 +6,7 @@ if [ -f /tmp/openeral-session.env ]; then
   . /tmp/openeral-session.env
 fi
 
-export HOME="${HOME:-/home/agent}"
+export HOME="${HOME:-/sandbox}"
 export SHELL="${SHELL:-/bin/bash}"
 export NODE_NO_WARNINGS="${NODE_NO_WARNINGS:-1}"
 

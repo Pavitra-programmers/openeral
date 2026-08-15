@@ -7,16 +7,16 @@ spawnSync('/usr/local/bin/openeral-daemon-ensure', [], {
   stdio: 'ignore',
   env: {
     ...process.env,
-    HOME: '/home/agent',
-    OPENERAL_HOME: '/home/agent',
+    HOME: process.env.HOME || '/sandbox',
+    OPENERAL_HOME: process.env.OPENERAL_HOME || '/sandbox',
   },
 });
 const result = spawnSync('/usr/local/bin/openeral-bash', ['--pg', sql], {
   stdio: 'inherit',
   env: {
     ...process.env,
-    HOME: '/home/agent',
-    OPENERAL_HOME: '/home/agent',
+    HOME: process.env.HOME || '/sandbox',
+    OPENERAL_HOME: process.env.OPENERAL_HOME || '/sandbox',
   },
 });
 

@@ -25,6 +25,8 @@ import { URL } from 'node:url';
 export interface TunneledSocketOptions {
   /** Proxy URL — e.g. "http://10.200.0.1:3128". Must be http, not https. */
   proxyUrl: string;
+  /** Timeout for connecting to the proxy TCP socket (ms). */
+  proxyConnectTimeoutMs?: number;
   /** CONNECT handshake timeout (ms) after the proxy TCP connection is up. */
   handshakeTimeoutMs?: number;
 }
@@ -44,7 +46,11 @@ export interface TunneledSocketOptions {
  * Established` is parsed and stripped.
  */
 export function createTunneledSocket(opts: TunneledSocketOptions): Socket {
-  const { proxyUrl, handshakeTimeoutMs = 15_000 } = opts;
+  const {
+    proxyUrl,
+    handshakeTimeoutMs = 15_000,
+    proxyConnectTimeoutMs = handshakeTimeoutMs,
+  } = opts;
 
   const proxyU = new URL(proxyUrl);
   if (proxyU.protocol !== 'http:') {
@@ -62,6 +68,7 @@ export function createTunneledSocket(opts: TunneledSocketOptions): Socket {
   return new TunneledSocket({
     proxyHost,
     proxyPort,
+    proxyConnectTimeoutMs,
     handshakeTimeoutMs,
   }) as unknown as Socket;
 }
@@ -70,17 +77,25 @@ class TunneledSocket extends Duplex {
   private readonly raw: Socket;
   private readonly proxyHost: string;
   private readonly proxyPort: number;
+  private readonly proxyConnectTimeoutMs: number;
   private readonly handshakeTimeoutMs: number;
   private targetHost = '';
   private targetPort = 0;
   private handshakeComplete = false;
   private buf = '';
+  private proxyConnectTimer: NodeJS.Timeout | null = null;
   private handshakeTimer: NodeJS.Timeout | null = null;
 
-  constructor(opts: { proxyHost: string; proxyPort: number; handshakeTimeoutMs: number }) {
+  constructor(opts: {
+    proxyHost: string;
+    proxyPort: number;
+    proxyConnectTimeoutMs: number;
+    handshakeTimeoutMs: number;
+  }) {
     super();
     this.proxyHost = opts.proxyHost;
     this.proxyPort = opts.proxyPort;
+    this.proxyConnectTimeoutMs = opts.proxyConnectTimeoutMs;
     this.handshakeTimeoutMs = opts.handshakeTimeoutMs;
     this.raw = new Socket();
 
@@ -134,6 +149,15 @@ class TunneledSocket extends Duplex {
     } else {
       throw new Error(`http-connect-socket: unsupported connect() arguments`);
     }
+    this.proxyConnectTimer = setTimeout(() => {
+      this.destroy(
+        new Error(
+          `http-connect-socket: proxy TCP connection to ${this.proxyHost}:${this.proxyPort} timed out after ${this.proxyConnectTimeoutMs}ms`,
+        ),
+      );
+    }, this.proxyConnectTimeoutMs);
+    this.proxyConnectTimer.unref();
+
     this.raw.connect(this.proxyPort, this.proxyHost);
     return this;
   }
@@ -156,12 +180,17 @@ class TunneledSocket extends Duplex {
   }
 
   override _destroy(err: Error | null, cb: (err: Error | null) => void): void {
+    if (this.proxyConnectTimer) clearTimeout(this.proxyConnectTimer);
     if (this.handshakeTimer) clearTimeout(this.handshakeTimer);
     this.raw.destroy(err ?? undefined);
     cb(err);
   }
 
   private onProxyConnect(): void {
+    if (this.proxyConnectTimer) {
+      clearTimeout(this.proxyConnectTimer);
+      this.proxyConnectTimer = null;
+    }
     this.handshakeTimer = setTimeout(() => {
       if (!this.handshakeComplete) {
         this.destroy(

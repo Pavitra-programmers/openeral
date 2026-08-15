@@ -1,185 +1,242 @@
 ---
 name: openeral-shell
-description: Launch Claude Code in an OpenShell sandbox from the published OpenEral image. Optional PostgreSQL persistence and StringCost cost tracking.
+description: Launch Claude Code in OpenShell using either the published compatibility image or the source-built PostgreSQL FUSE runtime.
 disable-model-invocation: false
 user-invocable: true
 allowed-tools: Read, Bash, Grep, Glob
-argument-hint: [optional: workspace ID]
+argument-hint: [optional: workspace ID or "fuse"]
 ---
 
 # OpenEral Shell
 
-Launch Claude Code inside an OpenShell sandbox, from the published image `ghcr.io/sandys/openeral/sandbox:just-bash`. No local clone or source build required.
+Execute the requested flow rather than only printing commands. Never rebuild NVIDIA's
+Community base. Never pass provider API keys through `--env` or print database URLs.
 
-## Instructions
+## Choose The Runtime
 
-When this skill is invoked, execute the steps below. Do not just show documentation — run the commands.
+Use the published compatibility runtime unless the user explicitly requests FUSE,
+full project persistence, or source validation.
 
-### Step 1: Check prerequisites
+| Runtime | Image/source | Database | Persisted files |
+|---|---|---|---|
+| Published compatibility | `ghcr.io/sandys/openeral/sandbox:just-bash` | Optional | `.claude`, `.claude.json`, `.openeral` |
+| Primary FUSE | local `Dockerfile.openeral` or built tag | Required | all `/sandbox/work` |
 
-```bash
-which docker    || echo "MISSING docker"
-which openshell || echo "MISSING openshell — install: https://github.com/NVIDIA/OpenShell-Community"
-which curl      || echo "MISSING curl"
-echo "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:+(set)}"
-echo "STRINGCOST_API_KEY=${STRINGCOST_API_KEY:+(set)}"
-echo "DATABASE_URL=${DATABASE_URL:+(set)}"
-echo "POSTGRES_URL=${POSTGRES_URL:+(set)}"
+The primary path requires the vendored patched OpenShell Docker gateway. Stock
+OpenShell does not yet implement this repository's `--fuse` capability.
+
+```mermaid
+flowchart TD
+  request["Launch request"] --> full{"FUSE, full project persistence,<br/>or source validation requested?"}
+  full -->|"No"| compat["Published compatibility runtime"]
+  compat --> compatDb{"DATABASE_URL available?"}
+  compatDb -->|"Yes"| scopedPg["PostgreSQL scoped sync"]
+  compatDb -->|"No"| pglite["Sandbox-local PGlite"]
+  full -->|"Yes"| prerequisites{"Patched CLI and gateway,<br/>Docker enable_fuse,<br/>/dev/fuse, DATABASE_URL?"}
+  prerequisites -->|"Missing"| stop["Stop and report the exact prerequisite"]
+  prerequisites -->|"Present"| primary["Primary FUSE runtime<br/>all /sandbox/work persisted"]
 ```
 
-- `ANTHROPIC_API_KEY` is required; if missing, stop and ask the user to `export ANTHROPIC_API_KEY='sk-ant-...'`.
-- `STRINGCOST_API_KEY` is optional — enables cost tracking.
-- `DATABASE_URL` or `POSTGRES_URL` (Supabase / Neon / RDS) is optional — enables cross-sandbox persistence. It must be delivered via `openshell sandbox create --upload` (plaintext file); the provider framework wraps credentials as placeholders that pg cannot resolve.
+## Validate OpenShell
 
-### Step 2: Start the OpenShell gateway if it's not running
+For compatibility mode:
 
 ```bash
-# openshell gateway info exits 0 when a gateway is active, non-zero otherwise.
-openshell gateway info >/dev/null 2>&1 || openshell gateway start
+command -v openshell
+openshell --version
+openshell gateway info
 ```
 
-### Step 3: Create providers
-
-`--auto-providers` creates the `claude` provider from the local `ANTHROPIC_API_KEY`. The optional generic `stringcost` provider must be created explicitly so the StringCost policy is attached. Create the StringCost presign on the host and upload it; inside OpenShell, provider secrets are placeholders and cannot be used as JSON body values for StringCost's `client_api_key`. Do not create a generic database provider; upload the connection string file instead.
+For FUSE mode, prefer the explicit binary and gateway endpoint:
 
 ```bash
-PROVIDERS="--provider claude"   # claude is auto-created from ANTHROPIC_API_KEY
-OPENERAL_INPUT=""
-UPLOAD_ARGS=""
-OPENERAL_WORKSPACE="${OPENERAL_WORKSPACE:-openeral-claude}"
+OPENSHELL_BIN="${OPENSHELL_BIN:-$PWD/vendor/openshell/target/debug/openshell}"
+OPENSHELL_GATEWAY_ENDPOINT="${OPENSHELL_GATEWAY_ENDPOINT:?patched gateway endpoint required}"
+test -x "$OPENSHELL_BIN"
+"$OPENSHELL_BIN" --gateway-endpoint "$OPENSHELL_GATEWAY_ENDPOINT" gateway info
+"$OPENSHELL_BIN" --gateway-endpoint "$OPENSHELL_GATEWAY_ENDPOINT" \
+  sandbox create --help | grep -- --fuse
+test -e /dev/fuse
+```
+
+If the FUSE check fails, stop and report the missing patched CLI, Docker operator gate,
+or host device. Do not work around it by granting mount capability to the workload.
+
+## Providers
+
+Attach an existing `claude` provider or let OpenShell create it from the host
+environment:
+
+```bash
+providers=(--provider claude --auto-providers)
+```
+
+When `STRINGCOST_API_KEY` is set, create/update a generic provider and attach it:
+
+```bash
+if openshell provider get stringcost >/dev/null 2>&1; then
+  openshell provider update stringcost --credential STRINGCOST_API_KEY
+else
+  openshell provider create \
+    --name stringcost \
+    --type generic \
+    --credential STRINGCOST_API_KEY
+fi
+providers+=(--provider stringcost)
+```
+
+StringCost presign creation happens inside the sandbox through constrained HTTPS
+credential rewriting. Do not create the presign on the host.
+
+## Database Upload
+
+Use a mode-0600 temporary file. PostgreSQL's native protocol cannot consume an
+OpenShell provider placeholder.
+
+```bash
+DATABASE_URL="${DATABASE_URL:-${POSTGRES_URL:-}}"
+db_file=""
+uploads=()
 
 cleanup_openeral_input() {
-  [ -z "$OPENERAL_INPUT" ] || rm -rf "$OPENERAL_INPUT"
+  [ -z "$db_file" ] || rm -f "$db_file"
 }
 trap cleanup_openeral_input EXIT
 
-ensure_input_dir() {
-  if [ -z "$OPENERAL_INPUT" ]; then
-    OPENERAL_INPUT="$(mktemp -d)"
-  fi
-}
-
-if [ -n "${STRINGCOST_API_KEY:-}" ]; then
-  ensure_input_dir
-  curl -fsS https://app.stringcost.com/v1/presign \
-    -H "Authorization: Bearer $STRINGCOST_API_KEY" \
-    -H "Content-Type: application/json" \
-    -d '{
-      "provider": "anthropic",
-      "client_api_key": "'"$ANTHROPIC_API_KEY"'",
-      "path": ["/v1/messages"],
-      "expires_in": -1,
-      "max_uses": -1,
-      "cost_limit": 10000000,
-      "tags": ["openeral"]
-    }' \
-    > "$OPENERAL_INPUT/presign.json"
-
-  openshell provider create --name stringcost --type generic \
-    --credential "STRINGCOST_API_KEY=$STRINGCOST_API_KEY" \
-    || openshell provider update stringcost \
-      --credential "STRINGCOST_API_KEY=$STRINGCOST_API_KEY"
-  PROVIDERS="$PROVIDERS --provider stringcost"
-fi
-
-DATABASE_URL="${DATABASE_URL:-${POSTGRES_URL:-}}"
-if [ -n "${DATABASE_URL:-}" ]; then
-  ensure_input_dir
-  printf '%s' "$DATABASE_URL" > "$OPENERAL_INPUT/db-url"
-  chmod 600 "$OPENERAL_INPUT/db-url"
-fi
-
-if [ -n "$OPENERAL_INPUT" ]; then
-  chmod -R go-rwx "$OPENERAL_INPUT"
-  UPLOAD_ARGS="--upload $OPENERAL_INPUT:/sandbox/openeral-input"
+if [ -n "$DATABASE_URL" ]; then
+  db_file="$(mktemp /tmp/openeral-db-url-XXXXXX)"
+  printf '%s' "$DATABASE_URL" > "$db_file"
+  chmod 600 "$db_file"
+  uploads+=(--upload "$db_file:/sandbox/db-url")
 fi
 ```
 
-### Step 4: Create the sandbox from the published image
+FUSE mode must fail if `DATABASE_URL` is empty. Compatibility mode may use PGlite.
+
+## Published Compatibility Flow
 
 ```bash
+OPENERAL_WORKSPACE="${OPENERAL_WORKSPACE:-openeral-demo}"
+
 openshell sandbox create \
   --name "$OPENERAL_WORKSPACE" \
   --from ghcr.io/sandys/openeral/sandbox:just-bash \
-  $UPLOAD_ARGS \
-  $PROVIDERS --auto-providers \
-  -- env WORKSPACE_ID="$OPENERAL_WORKSPACE" openeral-init
+  "${uploads[@]}" \
+  "${providers[@]}" \
+  --env "WORKSPACE_ID=$OPENERAL_WORKSPACE" \
+  -- openeral-init
 
 cleanup_openeral_input
 trap - EXIT
-```
-
-The `stringcost` provider from Step 3 is attached only when `STRINGCOST_API_KEY` is set. The upload directory is used because OpenShell accepts one `--upload` flag; `setup.sh` reads `/sandbox/openeral-input/db-url` and `/sandbox/openeral-input/presign.json` when present. `openeral-init` initializes and exits; it does not start Claude.
-
-### Step 5: Connect and run Claude
-
-```bash
 openshell sandbox connect "$OPENERAL_WORKSPACE"
 ```
 
-Inside the connected sandbox shell:
+## Primary FUSE Flow
+
+Build only the OpenEral child image when no current local tag exists:
+
+```bash
+docker pull ghcr.io/nvidia/openshell-community/sandboxes/base:latest
+docker build --pull=false -f Dockerfile.openeral -t openeral-fuse:local .
+```
+
+Then create with the patched CLI:
+
+```bash
+[ -n "$DATABASE_URL" ] || { echo "DATABASE_URL is required" >&2; exit 1; }
+OPENERAL_WORKSPACE="${OPENERAL_WORKSPACE:-openeral-demo}"
+
+"$OPENSHELL_BIN" \
+  --gateway-endpoint "$OPENSHELL_GATEWAY_ENDPOINT" \
+  sandbox create \
+  --name "$OPENERAL_WORKSPACE" \
+  --from openeral-fuse:local \
+  --fuse \
+  "${uploads[@]}" \
+  "${providers[@]}" \
+  --env "WORKSPACE_ID=$OPENERAL_WORKSPACE" \
+  --no-tty \
+  -- openeral-init
+
+cleanup_openeral_input
+trap - EXIT
+"$OPENSHELL_BIN" \
+  --gateway-endpoint "$OPENSHELL_GATEWAY_ENDPOINT" \
+  sandbox connect "$OPENERAL_WORKSPACE"
+```
+
+The local tag works when the selected patched gateway uses the same Docker daemon.
+Use `--from Dockerfile.openeral` instead when OpenShell should perform the child-image
+build from the repository context.
+
+## Start, Stop, And Resume Claude
+
+Inside the connected sandbox:
 
 ```bash
 claude
 ```
 
-To stop Claude but keep the sandbox alive, type `/exit` at the Claude prompt or press `Ctrl+D`. You will return to the sandbox shell. Clean Claude exit runs an explicit persistence flush. Start Claude again with `claude`, or continue the most recent conversation with `claude -c`.
-
-## What happens after launch
-
-- Claude Code starts only when the user runs `claude` inside the connected sandbox shell.
-- `claude`, `pg`, and `openeral memory refresh` lazily start the detached OpenEral daemon if it is not already running.
-- Claude Code starts with `HOME` pointing to the isolated sandbox workspace.
-- **Workspace persistence**:
-  - Without `DATABASE_URL`: embedded PGlite runs under `/tmp/openeral/data`. Files survive restarts/reconnects within the running sandbox's lifetime; lost when the sandbox is deleted.
-  - With `DATABASE_URL` or `POSTGRES_URL` delivered via `/sandbox/openeral-input/db-url`: pg tunnels through OpenShell's HTTP CONNECT proxy (via `openeral-js/src/db/http-connect-socket.ts`) to Supabase / Neon / RDS. Claude state under `/home/agent/.claude/**` and OpenEral state under `/home/agent/.openeral/**` survive sandbox delete when the same `WORKSPACE_ID` is reused. Arbitrary checked-out source code remains sandbox-local. The host must be allowlisted in the image's `postgres` network policy — common Supabase poolers are pre-allowlisted.
-- **With `STRINGCOST_API_KEY`**: Claude's API calls route through the uploaded StringCost presign for billing and usage metering.
-- **First Claude launch**: Claude Code may ask for theme, security acknowledgement, trust for `/sandbox`, and API usage billing. This is expected first-run setup.
-
-## Managing a running sandbox
+Use `/exit` or `Ctrl+D` to stop Claude and return to the shell. Then:
 
 ```bash
-openshell sandbox list                            # list sandboxes
-openshell sandbox connect <name>                  # open an interactive shell
-openshell sandbox exec -n <name> -- pg "SELECT 1" # run one-off command
-openshell sandbox delete <name>                   # stop and remove
+claude       # new invocation
+claude -c    # continue the latest conversation
+exit         # disconnect; sandbox remains alive
 ```
 
-Before deleting a sandbox that uses PostgreSQL persistence, exit Claude with `/exit` or `Ctrl+D`. `sandbox delete` is forced container teardown and can lose the last debounce window of writes.
+Reconnect later with `openshell sandbox connect <name>` using the same CLI/gateway
+selection used during creation.
 
-Run one-off commands with `sandbox exec`:
+```mermaid
+sequenceDiagram
+  actor User
+  participant Host as Host OpenShell CLI
+  participant Shell as Sandbox SSH shell
+  participant Wrapper as /usr/local/bin/claude
+  participant Claude as claude-real
+  participant Storage as FUSE daemon or sync daemon
+
+  User->>Host: sandbox connect name
+  Host->>Shell: Open SSH session
+  User->>Wrapper: claude
+  Wrapper->>Wrapper: Validate initialized and writable state
+  Wrapper->>Claude: Start as child and forward signals
+  User->>Claude: Work normally
+  User->>Claude: /exit or Ctrl-D
+  Claude-->>Wrapper: Exit status
+  Wrapper->>Storage: flush-all or scoped-sync flush
+  Wrapper-->>Shell: Return with Claude exit status
+  User->>Shell: claude -c
+  Shell->>Wrapper: Start another child in the same sandbox
+  User->>Shell: exit
+  Shell-->>Host: Disconnect, sandbox services remain alive
+```
+
+In FUSE mode, clean Claude exit performs `openeral-fused flush-all`. In compatibility
+mode it performs the scoped-sync flush. Exit Claude cleanly before sandbox deletion.
+
+## One-Off Commands
 
 ```bash
 openshell sandbox exec -n <name> -- pg "SELECT 1"
-openshell sandbox exec -n <name> -- claude -p "say ok"
-```
-
-Use `sandbox connect` for interactive Claude sessions; use `sandbox exec` for non-interactive maintenance and smoke checks.
-
-### Refresh Claude's memory files
-
-From outside the sandbox:
-
-```bash
+openshell sandbox exec -n <name> -- claude -p "Reply exactly: ok"
 openshell sandbox exec -n <name> -- \
-  openeral memory refresh
-
-# focus on a topic
-openshell sandbox exec -n <name> -- \
-  openeral memory refresh --query "openshell policy"
+  openeral memory refresh --query "current project"
 ```
 
-This rewrites `/home/agent/.claude/projects/<project>/memory/*.md` inside the workspace with a backup in `.openeral-memory-backups/` unless `--no-backup` is set.
+For FUSE mode, prepend the configured `"$OPENSHELL_BIN" --gateway-endpoint
+"$OPENSHELL_GATEWAY_ENDPOINT"` instead of the stock `openshell` command.
 
-## Prompting note
+## Runtime Facts
 
-Claude's Write/Edit tools don't reliably expand `$HOME` or `~` to the sandbox's isolated home. When a prompt needs to touch files under `$HOME`, prefer `Run:` Bash commands so the shell expands the variable:
+- Primary FUSE: `HOME=/sandbox/work`; all mounted files persist; PostgreSQL/TLS is
+  mandatory; only one writable sandbox may mount a workspace.
+- Compatibility: `HOME=/sandbox`; only scoped Claude/OpenEral state persists with
+  PostgreSQL; PGlite is sandbox-lifetime state.
+- `/db` is not a Claude Code mount. It exists only in the custom-agent just-bash
+  library path.
+- Provider credentials remain OpenShell placeholders. The PostgreSQL URL is same-UID
+  runtime state in v1 and is not isolated from Claude.
 
-```
-Run: printf "%s" "hello" > "$HOME/notes.txt" && echo WRITTEN
-Run: cat "$HOME/notes.txt"
-```
-
-## Developer path (not for end users)
-
-If the user explicitly asks to run openeral without OpenShell (e.g. for local development), point them at `BUILD.md` in the repo. The supported production path is OpenShell + the published image.
+Use `BUILD.md` and the `openeral-dev` skill for source changes and fault tests.

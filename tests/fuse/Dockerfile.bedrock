@@ -1,0 +1,7 @@
+ARG BASE_IMAGE=openeral-fuse-localdb:test
+FROM ${BASE_IMAGE}
+
+USER root
+COPY tests/fuse/aws-bedrock-policy.fragment.yaml /tmp/aws-bedrock-policy.fragment.yaml
+RUN cat /tmp/aws-bedrock-policy.fragment.yaml >> /etc/openshell/policy.yaml \
+    && rm /tmp/aws-bedrock-policy.fragment.yaml

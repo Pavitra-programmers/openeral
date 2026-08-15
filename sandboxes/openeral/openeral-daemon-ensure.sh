@@ -6,8 +6,8 @@ if [ -f /tmp/openeral-session.env ]; then
   . /tmp/openeral-session.env
 fi
 
-export HOME="${HOME:-/home/agent}"
-export OPENERAL_HOME="${OPENERAL_HOME:-/home/agent}"
+export HOME="${HOME:-/sandbox}"
+export OPENERAL_HOME="${OPENERAL_HOME:-/sandbox}"
 export OPENERAL_DIR="${OPENERAL_DIR:-/opt/openeral}"
 export OPENERAL_STATE_DIR="${OPENERAL_STATE_DIR:-/tmp/openeral}"
 export OPENERAL_DATA_DIR="${OPENERAL_DATA_DIR:-/tmp/openeral/data}"

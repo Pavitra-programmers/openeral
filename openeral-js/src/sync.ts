@@ -10,6 +10,8 @@ import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, chmodSyn
 import { join, dirname } from 'node:path';
 import type pg from 'pg';
 
+type PathPrefixKind = 'dir' | 'file';
+
 function nowNs(): bigint {
   return BigInt(Date.now()) * 1_000_000n;
 }
@@ -38,6 +40,18 @@ function nameOf(path: string): string {
   return path.slice(path.lastIndexOf('/') + 1);
 }
 
+function pathPrefixQuery(pathPrefix: string, kind: PathPrefixKind): string {
+  if (pathPrefix === '/') return 'workspace_id = $1';
+  if (kind === 'file') return 'workspace_id = $1 AND path = $2';
+  return 'workspace_id = $1 AND (path = $2 OR path LIKE $3)';
+}
+
+function pathPrefixParams(workspaceId: string, pathPrefix: string, kind: PathPrefixKind): string[] {
+  if (pathPrefix === '/') return [workspaceId];
+  if (kind === 'file') return [workspaceId, pathPrefix];
+  return [workspaceId, pathPrefix, `${pathPrefix}/%`];
+}
+
 async function ensureDirRow(pool: pg.Pool, workspaceId: string, path: string, mode = 0o40755): Promise<void> {
   const now = nowNs();
   await pool.query(
@@ -49,6 +63,19 @@ async function ensureDirRow(pool: pg.Pool, workspaceId: string, path: string, mo
   );
 }
 
+async function ensureParentDirRows(pool: pg.Pool, workspaceId: string, path: string): Promise<void> {
+  await ensureDirRow(pool, workspaceId, '/');
+  const parent = parentPathOf(path);
+  if (!parent || parent === '/') return;
+
+  const parts = parent.split('/').filter(Boolean);
+  let current = '';
+  for (const part of parts) {
+    current += `/${part}`;
+    await ensureDirRow(pool, workspaceId, current);
+  }
+}
+
 /**
  * Dump all workspace_files rows to a real directory.
  * Creates directories and writes file content, preserving stored modes.
@@ -58,18 +85,17 @@ export async function syncToFs(
   pool: pg.Pool,
   workspaceId: string,
   targetDir: string,
-  opts?: { excludeDirs?: Set<string>; pathPrefix?: string },
+  opts?: { excludeDirs?: Set<string>; pathPrefix?: string; pathPrefixKind?: PathPrefixKind },
 ): Promise<number> {
   const excludeDirs = opts?.excludeDirs ?? DEFAULT_EXCLUDE_DIRS;
   const pathPrefix = normalizePathPrefix(opts?.pathPrefix);
+  const pathPrefixKind = opts?.pathPrefixKind ?? 'dir';
   const query = pathPrefix === '/'
     ? `SELECT path, is_dir, content, mode FROM _openeral.workspace_files
        WHERE workspace_id = $1 ORDER BY path`
     : `SELECT path, is_dir, content, mode FROM _openeral.workspace_files
-       WHERE workspace_id = $1 AND (path = $2 OR path LIKE $3) ORDER BY path`;
-  const params = pathPrefix === '/'
-    ? [workspaceId]
-    : [workspaceId, pathPrefix, `${pathPrefix}/%`];
+       WHERE ${pathPrefixQuery(pathPrefix, pathPrefixKind)} ORDER BY path`;
+  const params = pathPrefixParams(workspaceId, pathPrefix, pathPrefixKind);
 
   const { rows } = await pool.query(query, params);
 
@@ -120,6 +146,22 @@ function pruneLocal(
   excludeDirs: Set<string>,
 ): void {
   const fullDir = join(baseDir, dbParent);
+  let rootSt;
+  try {
+    rootSt = statSync(fullDir);
+  } catch {
+    return;
+  }
+
+  if (!rootSt.isDirectory()) {
+    const inDb = dbPaths.has(dbParent);
+    const dbIsDir = dbTypes.get(dbParent);
+    if (!inDb || dbIsDir === true) {
+      try { unlinkSync(fullDir); } catch {}
+    }
+    return;
+  }
+
   let entries: string[];
   try {
     entries = readdirSync(fullDir);
@@ -164,6 +206,14 @@ function pruneLocal(
       }
     }
   }
+
+  if (dbParent !== '/') {
+    const inDb = dbPaths.has(dbParent);
+    const dbIsDir = dbTypes.get(dbParent);
+    if (!inDb || dbIsDir === false) {
+      try { rmSync(fullDir, { recursive: true }); } catch {}
+    }
+  }
 }
 
 /**
@@ -174,12 +224,17 @@ export async function syncFromFs(
   pool: pg.Pool,
   workspaceId: string,
   sourceDir: string,
-  opts?: { excludeDirs?: Set<string>; pathPrefix?: string },
+  opts?: { excludeDirs?: Set<string>; pathPrefix?: string; pathPrefixKind?: PathPrefixKind },
 ): Promise<number> {
   const excludeDirs = opts?.excludeDirs ?? DEFAULT_EXCLUDE_DIRS;
   const pathPrefix = normalizePathPrefix(opts?.pathPrefix);
-  const seenPaths = new Set<string>(['/', pathPrefix]);
+  const pathPrefixKind = opts?.pathPrefixKind ?? 'dir';
+  const seenPaths = new Set<string>(['/']);
   let count = 0;
+
+  if (pathPrefixKind === 'dir') {
+    seenPaths.add(pathPrefix);
+  }
 
   async function walkDir(dirPath: string, dbParent: string): Promise<void> {
     let entries: string[];
@@ -230,22 +285,42 @@ export async function syncFromFs(
   }
 
   // Ensure root exists
-  await ensureDirRow(pool, workspaceId, '/');
-  if (pathPrefix !== '/') {
+  await ensureParentDirRows(pool, workspaceId, pathPrefix);
+  if (pathPrefix !== '/' && pathPrefixKind === 'dir') {
     await ensureDirRow(pool, workspaceId, pathPrefix);
   }
 
-  const walkRoot = pathPrefix === '/' ? sourceDir : join(sourceDir, pathPrefix);
-  await walkDir(walkRoot, pathPrefix);
+  if (pathPrefixKind === 'file') {
+    const fullPath = join(sourceDir, pathPrefix);
+    try {
+      const st = statSync(fullPath);
+      if (st.isFile()) {
+        const now = nowNs();
+        const content = readFileSync(fullPath);
+        seenPaths.add(pathPrefix);
+        await pool.query(
+          `INSERT INTO _openeral.workspace_files
+           (workspace_id, path, parent_path, name, is_dir, content, mode, size, mtime_ns, ctime_ns, atime_ns, nlink, uid, gid)
+           VALUES ($1, $2, $3, $4, false, $5, $6, $7, $8, $8, $8, 1, 1000, 1000)
+           ON CONFLICT (workspace_id, path) DO UPDATE SET content = $5, mode = $6, size = $7, mtime_ns = $8`,
+          [workspaceId, pathPrefix, parentPathOf(pathPrefix), nameOf(pathPrefix), content, st.mode, st.size, now.toString()],
+        );
+        count++;
+      }
+    } catch {}
+  } else {
+    const walkRoot = pathPrefix === '/' ? sourceDir : join(sourceDir, pathPrefix);
+    await walkDir(walkRoot, pathPrefix);
+  }
 
   // Delete DB rows for files that no longer exist on disk
   const dbRowsQuery = pathPrefix === '/'
     ? `SELECT path FROM _openeral.workspace_files WHERE workspace_id = $1 AND path != '/'`
-    : `SELECT path FROM _openeral.workspace_files
-       WHERE workspace_id = $1 AND path != $2 AND (path = $2 OR path LIKE $3)`;
-  const dbRowsParams = pathPrefix === '/'
-    ? [workspaceId]
-    : [workspaceId, pathPrefix, `${pathPrefix}/%`];
+    : pathPrefixKind === 'file'
+      ? `SELECT path FROM _openeral.workspace_files WHERE workspace_id = $1 AND path = $2`
+      : `SELECT path FROM _openeral.workspace_files
+         WHERE workspace_id = $1 AND path != $2 AND (path = $2 OR path LIKE $3)`;
+  const dbRowsParams = pathPrefixParams(workspaceId, pathPrefix, pathPrefixKind);
   const { rows: dbRows } = await pool.query(dbRowsQuery, dbRowsParams);
   for (const row of dbRows) {
     if (!seenPaths.has(row.path)) {
@@ -267,22 +342,26 @@ export function watchAndSync(
   pool: pg.Pool,
   workspaceId: string,
   dir: string,
-  opts?: { debounceMs?: number; excludeDirs?: Set<string>; pathPrefix?: string },
+  opts?: { debounceMs?: number; excludeDirs?: Set<string>; pathPrefix?: string; pathPrefixKind?: PathPrefixKind },
 ): () => void {
   const debounceMs = opts?.debounceMs ?? 2000;
   const excludeDirs = opts?.excludeDirs ?? DEFAULT_EXCLUDE_DIRS;
   const pathPrefix = normalizePathPrefix(opts?.pathPrefix);
+  const pathPrefixKind = opts?.pathPrefixKind ?? 'dir';
   let timer: ReturnType<typeof setTimeout> | null = null;
   let syncing = false;
 
   const ac = new AbortController();
 
   try {
-    const watchDir = pathPrefix === '/' ? dir : join(dir, pathPrefix);
-    const watcher = watch(watchDir, { recursive: true, signal: ac.signal });
+    const watchDir = pathPrefixKind === 'file'
+      ? join(dir, parentPathOf(pathPrefix))
+      : pathPrefix === '/' ? dir : join(dir, pathPrefix);
+    const watcher = watch(watchDir, { recursive: pathPrefixKind !== 'file', signal: ac.signal });
 
     watcher.on('change', (_event, filename) => {
       if (typeof filename === 'string') {
+        if (pathPrefixKind === 'file' && filename !== nameOf(pathPrefix)) return;
         // Check each path segment against excludeDirs
         const segments = filename.split('/');
         if (segments.some(s => shouldExclude(s, excludeDirs))) return;
@@ -294,7 +373,7 @@ export function watchAndSync(
         if (syncing) return;
         syncing = true;
         try {
-          await syncFromFs(pool, workspaceId, dir, { excludeDirs, pathPrefix });
+          await syncFromFs(pool, workspaceId, dir, { excludeDirs, pathPrefix, pathPrefixKind });
         } catch (err: any) {
           process.stderr.write(`openeral: sync error: ${err.message}\n`);
         } finally {

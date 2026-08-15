@@ -1,0 +1,5 @@
+node_modules/
+# Generated protobuf sources are committed in the vendored OpenShell snapshot.
+dist/
+*.tsbuildinfo
+.npmrc

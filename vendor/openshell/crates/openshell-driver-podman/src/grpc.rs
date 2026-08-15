@@ -1,0 +1,282 @@
+// SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+#![allow(clippy::result_large_err)] // gRPC handlers return Result<_, tonic::Status>
+
+use futures::{Stream, StreamExt};
+use openshell_core::proto::compute::v1::{
+    CreateSandboxRequest, CreateSandboxResponse, DeleteSandboxRequest, DeleteSandboxResponse,
+    GetCapabilitiesRequest, GetCapabilitiesResponse, GetGatewayListenerRequirementsRequest,
+    GetGatewayListenerRequirementsResponse, GetSandboxRequest, GetSandboxResponse,
+    ListSandboxesRequest, ListSandboxesResponse, StartSandboxRequest, StartSandboxResponse,
+    StopSandboxRequest, StopSandboxResponse, ValidateSandboxCreateRequest,
+    ValidateSandboxCreateResponse, WatchSandboxesEvent, WatchSandboxesRequest,
+    compute_driver_server::ComputeDriver,
+};
+use std::pin::Pin;
+use tonic::{Request, Response, Status};
+
+use crate::PodmanComputeDriver;
+
+#[derive(Debug, Clone)]
+pub struct ComputeDriverService {
+    driver: PodmanComputeDriver,
+}
+
+impl ComputeDriverService {
+    #[must_use]
+    pub fn new(driver: PodmanComputeDriver) -> Self {
+        Self { driver }
+    }
+}
+
+#[tonic::async_trait]
+impl ComputeDriver for ComputeDriverService {
+    async fn get_capabilities(
+        &self,
+        _request: Request<GetCapabilitiesRequest>,
+    ) -> Result<Response<GetCapabilitiesResponse>, Status> {
+        self.driver
+            .capabilities()
+            .map(Response::new)
+            .map_err(Status::from)
+    }
+
+    async fn get_gateway_listener_requirements(
+        &self,
+        _request: Request<GetGatewayListenerRequirementsRequest>,
+    ) -> Result<Response<GetGatewayListenerRequirementsResponse>, Status> {
+        Ok(Response::new(GetGatewayListenerRequirementsResponse {
+            requirements: self
+                .driver
+                .gateway_listener_requirements()
+                .map_err(Status::from)?,
+        }))
+    }
+
+    async fn validate_sandbox_create(
+        &self,
+        request: Request<ValidateSandboxCreateRequest>,
+    ) -> Result<Response<ValidateSandboxCreateResponse>, Status> {
+        let sandbox = request
+            .into_inner()
+            .sandbox
+            .ok_or_else(|| Status::invalid_argument("sandbox is required"))?;
+        self.driver
+            .validate_sandbox_create(&sandbox)
+            .await
+            .map_err(Status::from)?;
+        Ok(Response::new(ValidateSandboxCreateResponse {}))
+    }
+
+    async fn get_sandbox(
+        &self,
+        request: Request<GetSandboxRequest>,
+    ) -> Result<Response<GetSandboxResponse>, Status> {
+        let request = request.into_inner();
+        if request.sandbox_id.is_empty() {
+            return Err(Status::invalid_argument("sandbox_id is required"));
+        }
+
+        let sandbox = self
+            .driver
+            .get_sandbox(&request.sandbox_id)
+            .await
+            .map_err(Status::from)?
+            .ok_or_else(|| Status::not_found("sandbox not found"))?;
+
+        Ok(Response::new(GetSandboxResponse {
+            sandbox: Some(sandbox),
+        }))
+    }
+
+    async fn list_sandboxes(
+        &self,
+        _request: Request<ListSandboxesRequest>,
+    ) -> Result<Response<ListSandboxesResponse>, Status> {
+        let sandboxes = self.driver.list_sandboxes().await.map_err(Status::from)?;
+        Ok(Response::new(ListSandboxesResponse { sandboxes }))
+    }
+
+    async fn create_sandbox(
+        &self,
+        request: Request<CreateSandboxRequest>,
+    ) -> Result<Response<CreateSandboxResponse>, Status> {
+        let sandbox = request
+            .into_inner()
+            .sandbox
+            .ok_or_else(|| Status::invalid_argument("sandbox is required"))?;
+        self.driver
+            .create_sandbox(&sandbox)
+            .await
+            .map_err(Status::from)?;
+        Ok(Response::new(CreateSandboxResponse {}))
+    }
+
+    async fn stop_sandbox(
+        &self,
+        request: Request<StopSandboxRequest>,
+    ) -> Result<Response<StopSandboxResponse>, Status> {
+        let request = request.into_inner();
+        if request.sandbox_id.is_empty() {
+            return Err(Status::invalid_argument("sandbox_id is required"));
+        }
+        self.driver
+            .stop_sandbox(&request.sandbox_id)
+            .await
+            .map_err(Status::from)?;
+        Ok(Response::new(StopSandboxResponse {}))
+    }
+
+    async fn start_sandbox(
+        &self,
+        request: Request<StartSandboxRequest>,
+    ) -> Result<Response<StartSandboxResponse>, Status> {
+        let request = request.into_inner();
+        if request.sandbox_id.is_empty() {
+            return Err(Status::invalid_argument("sandbox_id is required"));
+        }
+        self.driver
+            .start_sandbox(&request.sandbox_id)
+            .await
+            .map_err(Status::from)?;
+        Ok(Response::new(StartSandboxResponse {}))
+    }
+
+    async fn delete_sandbox(
+        &self,
+        request: Request<DeleteSandboxRequest>,
+    ) -> Result<Response<DeleteSandboxResponse>, Status> {
+        let request = request.into_inner();
+        if request.sandbox_id.is_empty() {
+            return Err(Status::invalid_argument("sandbox_id is required"));
+        }
+        let deleted = self
+            .driver
+            .delete_sandbox(&request.sandbox_id)
+            .await
+            .map_err(Status::from)?;
+        Ok(Response::new(DeleteSandboxResponse { deleted }))
+    }
+
+    type WatchSandboxesStream =
+        Pin<Box<dyn Stream<Item = Result<WatchSandboxesEvent, Status>> + Send + 'static>>;
+
+    async fn watch_sandboxes(
+        &self,
+        _request: Request<WatchSandboxesRequest>,
+    ) -> Result<Response<Self::WatchSandboxesStream>, Status> {
+        let stream = self.driver.watch_sandboxes().await.map_err(Status::from)?;
+        let stream = stream.map(|item| item.map_err(|err| Status::internal(err.to_string())));
+        Ok(Response::new(Box::pin(stream)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::PodmanComputeConfig;
+    use crate::container;
+    use crate::test_utils::{StubResponse, spawn_podman_stub, unique_socket_path};
+    use hyper::StatusCode;
+    use openshell_core::ComputeDriverError;
+    use std::path::PathBuf;
+
+    #[test]
+    fn precondition_driver_errors_map_to_failed_precondition_status() {
+        let status: Status =
+            ComputeDriverError::Precondition("sandbox container is not running".to_string()).into();
+
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        assert_eq!(status.message(), "sandbox container is not running");
+    }
+
+    #[test]
+    fn already_exists_driver_errors_map_to_already_exists_status() {
+        let status: Status = ComputeDriverError::AlreadyExists.into();
+        assert_eq!(status.code(), tonic::Code::AlreadyExists);
+    }
+
+    #[test]
+    fn not_found_driver_errors_map_to_not_found_status() {
+        let status: Status = ComputeDriverError::NotFound.into();
+        assert_eq!(status.code(), tonic::Code::NotFound);
+    }
+
+    fn test_service(socket_path: PathBuf) -> ComputeDriverService {
+        let config = PodmanComputeConfig {
+            socket_path: Some(socket_path),
+            stop_timeout_secs: 10,
+            ..PodmanComputeConfig::default()
+        };
+        ComputeDriverService::new(PodmanComputeDriver::for_tests(config))
+    }
+
+    fn api_path(path: &str) -> String {
+        format!("/v5.0.0{path}")
+    }
+
+    #[tokio::test]
+    async fn delete_sandbox_rejects_missing_sandbox_id() {
+        let service = test_service(unique_socket_path("missing-id"));
+
+        let err = ComputeDriver::delete_sandbox(
+            &service,
+            Request::new(DeleteSandboxRequest {
+                sandbox_id: String::new(),
+                sandbox_name: "demo".to_string(),
+            }),
+        )
+        .await
+        .expect_err("missing sandbox_id should fail");
+
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert_eq!(err.message(), "sandbox_id is required");
+    }
+
+    #[tokio::test]
+    async fn delete_sandbox_forwards_request_sandbox_id_to_driver_cleanup() {
+        let sandbox_id = "sandbox-abc";
+        let volume_name = container::volume_name(sandbox_id);
+        let (socket_path, request_log, handle) = spawn_podman_stub(
+            "forward-id",
+            vec![
+                // list_containers returns empty (container already gone)
+                StubResponse::new(StatusCode::OK, "[]"),
+                // remove_volume
+                StubResponse::new(StatusCode::NO_CONTENT, ""),
+            ],
+        );
+        let service = test_service(socket_path.clone());
+
+        let response = ComputeDriver::delete_sandbox(
+            &service,
+            Request::new(DeleteSandboxRequest {
+                sandbox_id: sandbox_id.to_string(),
+                sandbox_name: "demo".to_string(),
+            }),
+        )
+        .await
+        .expect("delete should succeed")
+        .into_inner();
+
+        assert!(
+            !response.deleted,
+            "already-removed containers should still report deleted=false"
+        );
+        handle.await.expect("stub task should finish");
+        let requests = request_log
+            .lock()
+            .expect("request log lock should not be poisoned")
+            .clone();
+        assert!(requests[0].contains("/libpod/containers/json"));
+        assert_eq!(
+            requests[1],
+            format!(
+                "DELETE {}",
+                api_path(&format!("/libpod/volumes/{volume_name}"))
+            )
+        );
+        let _ = std::fs::remove_file(socket_path);
+    }
+}

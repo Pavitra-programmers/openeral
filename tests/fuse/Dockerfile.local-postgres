@@ -1,0 +1,13 @@
+ARG BASE_IMAGE=openeral-fuse:test
+FROM ${BASE_IMAGE}
+
+ARG OPENERAL_TEST_DB_HOST=172.17.0.1
+ARG OPENERAL_TEST_DB_PORT=55432
+
+USER root
+COPY ca.crt /usr/local/share/ca-certificates/openeral-fuse-e2e-ca.crt
+RUN cat /usr/local/share/ca-certificates/openeral-fuse-e2e-ca.crt \
+        >> /etc/ssl/certs/ca-certificates.crt \
+    && sed -i \
+        "/# Supabase pooler/a\\      - { host: \"${OPENERAL_TEST_DB_HOST}\", port: ${OPENERAL_TEST_DB_PORT}, tls: skip }" \
+        /etc/openshell/policy.yaml

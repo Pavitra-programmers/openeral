@@ -1,85 +1,110 @@
-# OpenEral Sandbox Image
+# OpenEral Sandbox Images
 
-This directory contains the OpenShell sandbox image used by the end-user command in the repository README.
+This directory contains two different runtimes. Do not mix their Dockerfiles, setup
+scripts, wrappers, or persistence claims.
 
-Published image:
+## Primary FUSE Image
+
+Files:
 
 ```text
-ghcr.io/sandys/openeral/sandbox:just-bash
+Dockerfile
+setup-fuse.sh
+openeral-claude-fuse.sh
+pg-client-fuse.mjs
+configure-stringcost.mjs
+policy.yaml
 ```
 
-## Build Locally
+The repository-root `Dockerfile.openeral` is the canonical local-build entrypoint
+because it has access to the Rust and TypeScript source trees. Keep this directory's
+Dockerfile equivalent.
+
+The primary image requires:
+
+- the patched OpenShell Docker driver and explicit `--fuse` request;
+- Docker operator config `enable_fuse = true` and host `/dev/fuse`;
+- external PostgreSQL with TLS;
+- `--upload <mode-0600-file>:/sandbox/db-url`;
+- a stable `WORKSPACE_ID`.
+
+It declares one root-owned mount policy:
+
+```yaml
+fuse_mounts:
+  - binary: /usr/local/bin/openeral-fused
+    args: ["serve"]
+    mountpoint: /sandbox/work
+    fs_name: openeral
+```
+
+OpenShell mounts before its supervisor seccomp prelude, then launches the daemon as a
+normal hardened sandbox child with inherited FUSE and readiness descriptors. Claude
+does not receive `/dev/fuse` or mount capability.
+
+`openeral-init` is the trailing one-shot command. It runs migrations/import, publishes
+database coordination, waits for the writer lease, verifies that lease in PostgreSQL,
+performs a mounted fsync canary, seeds Claude state, removes the uploaded URL, and
+exits. The FUSE daemon is already a supervisor-owned critical child; init does not
+launch or detach it.
+
+Claude runs through `openeral-claude-fuse.sh` with `HOME=/sandbox/work`. `/exit` or
+`Ctrl+D` returns to the shell after `flush-all`; `claude -c` resumes the latest session.
+
+No watcher or PGlite process participates in primary persistence.
+
+## Compatibility Image
+
+Files:
+
+```text
+Dockerfile.compat
+setup.sh
+openeral-bash.mjs
+openeral-daemon-ensure.sh
+openeral-claude.sh
+pg-client.mjs
+```
+
+The repository-root `Dockerfile.openeral-compat` builds this runtime. It strips
+`fuse_mounts` and daemon-specific policy entries from the shared policy, rewrites
+primary `/sandbox/work` tool paths back to `/sandbox`, and does not install
+`openeral-fused`.
+
+Compatibility mode supports optional PostgreSQL or sandbox-lifetime PGlite. With
+PostgreSQL, its detached Node daemon watches and syncs only `.claude`, `.claude.json`,
+and `.openeral`. It remains the implementation behind the currently published
+`ghcr.io/sandys/openeral/sandbox:just-bash` tag.
+
+## PostgreSQL Policy
+
+The shared production policy permits raw CONNECT tunnels to Supabase poolers on 5432
+and 6543. PostgreSQL negotiates TLS end to end inside the tunnel, so the OpenShell
+endpoint must use `tls: skip` rather than HTTP/TLS inspection.
+
+A custom database host needs an exact route. Primary mode must authorize both Node
+(migrations/init) and the Rust daemon:
+
+```yaml
+postgres:
+  endpoints:
+    - { host: db.example.com, port: 5432, tls: skip }
+  binaries:
+    - { path: /usr/bin/node }
+    - { path: /usr/local/bin/openeral-fused }
+```
+
+## Local Build
+
+From the repository root:
 
 ```bash
-docker build -f sandboxes/openeral/Dockerfile -t openeral-sandbox:local .
+docker build --pull=false -f Dockerfile.openeral -t openeral-fuse:local .
+docker build --pull=false -f Dockerfile.openeral-compat -t openeral-compat:local .
 ```
 
-To let OpenShell build and push a local sandbox image into the gateway, run from the repo root and use the repo-root Dockerfile:
+Both inherit `ghcr.io/nvidia/openshell-community/sandboxes/base:latest`. Do not rebuild
+that base to work around a registry or local-image configuration problem.
 
-```bash
-openshell sandbox create \
-  --name openeral-local-dev \
-  --from Dockerfile.openeral \
-  --provider claude --auto-providers \
-  -- env WORKSPACE_ID=openeral-local-dev openeral-init
-```
-
-OpenShell sets the Docker build context to the Dockerfile's parent directory. Do not use `--from sandboxes/openeral/Dockerfile` for this repo; that context is too narrow for `COPY openeral-js/` and `COPY .claude/skills/`.
-
-## Launch From The Published Image
-
-```bash
-openshell gateway start
-
-openshell sandbox create \
-  --name openeral-demo \
-  --from ghcr.io/sandys/openeral/sandbox:just-bash \
-  --provider claude --auto-providers \
-  -- env WORKSPACE_ID=openeral-demo openeral-init
-
-openshell sandbox connect openeral-demo
-claude
-```
-
-## Launch With PostgreSQL Persistence
-
-PostgreSQL credentials must be uploaded as a plaintext file. Do not use a generic OpenShell provider for `DATABASE_URL`; provider placeholders are for HTTP credential injection and are not usable by raw PostgreSQL clients.
-
-```bash
-printf '%s' "$DATABASE_URL" > /tmp/openeral-db-url
-chmod 600 /tmp/openeral-db-url
-
-openshell sandbox create \
-  --name openeral-demo \
-  --from ghcr.io/sandys/openeral/sandbox:just-bash \
-  --upload /tmp/openeral-db-url:/sandbox/db-url \
-  --provider claude --auto-providers \
-  -- env WORKSPACE_ID=openeral-demo openeral-init
-
-rm -f /tmp/openeral-db-url
-
-openshell sandbox connect openeral-demo
-claude
-```
-
-## What `setup.sh` Does
-
-1. Resolves persistence from `DATABASE_URL`, `OPENERAL_DATABASE_URL`, `POSTGRES_URL`, or uploaded `/sandbox/db-url`.
-2. Creates or loads a normalized StringCost proxy config when StringCost input is available.
-3. Runs `_openeral` schema migrations.
-4. Seeds the workspace keyed by explicit `$WORKSPACE_ID` or `$OPENSHELL_SANDBOX_ID`.
-5. Hydrates `/home/agent/.claude/**` and `/home/agent/.openeral/**` from PostgreSQL when persistence is enabled and the init marker is missing or stale.
-6. Writes `/tmp/openeral-session.env` and `/tmp/openeral/init.done`.
-7. Reapplies the current StringCost proxy after hydration so restored settings cannot point at a stale presign.
-8. Exits. `claude`, `pg`, and `openeral memory refresh` lazily start the detached daemon when needed.
-
-## Image Contents
-
-- Node.js 22 LTS.
-- OpenEral compiled into `/opt/openeral/dist/`.
-- `openeral-bash.mjs`, the daemon/client bridge for `pg`, custom agents, and scoped sync.
-- `openeral-daemon-ensure.sh`, the lazy detached daemon starter.
-- `setup.sh`, the sandbox entry point used by `openeral-init`.
-- `openeral-claude.sh`, the Claude wrapper that applies the OpenEral session environment and flushes on exit.
-- `pg-client.mjs`, the `pg` helper for real-bash Claude sessions.
-- `policy.yaml`, the OpenShell network policy at `/etc/openshell/policy.yaml`.
+Primary launch and E2E instructions are in the repository [README](../../README.md)
+and [BUILD](../../BUILD.md).

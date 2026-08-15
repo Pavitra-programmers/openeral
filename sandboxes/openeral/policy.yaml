@@ -18,12 +18,9 @@ filesystem_policy:
     - /opt
   read_write:
     - /sandbox
-    - /sandbox/project
     - /tmp
+    - /var/lib/openeral/runtime
     - /dev/null
-    - /home/agent
-    - /home/**
-    - /mnt/**
 
 landlock:
   compatibility: best_effort
@@ -32,11 +29,23 @@ process:
   run_as_user: sandbox
   run_as_group: sandbox
 
+# The OpenShell supervisor validates this immutable declaration, mounts before
+# its TSYNC seccomp prelude, then starts the daemon through the normal sandboxed
+# child path. Claude never receives /dev/fuse or mount capability.
+fuse_mounts:
+  - binary: /usr/local/bin/openeral-fused
+    args: ["serve"]
+    mountpoint: /sandbox/work
+    fs_name: openeral
+    allow_other: false
+    startup_timeout_seconds: 30
+
 # --- Network policies (queried per-CONNECT request) ---
 #
 # Credential injection: stock OpenShell's SecretResolver automatically
 # converts all provider credentials to placeholders and resolves them in
-# the HTTP proxy for endpoints with protocol: rest + tls: terminate.
+# the HTTP proxy for endpoints with `protocol: rest`. Current OpenShell
+# terminates TLS automatically for inspectable routes.
 # No secret_injection field needed — it's built into the proxy.
 
 network_policies:
@@ -48,7 +57,6 @@ network_policies:
       - host: api.anthropic.com
         port: 443
         protocol: rest
-        tls: terminate
         enforcement: enforce
         access: full
       - { host: statsig.anthropic.com, port: 443 }
@@ -63,7 +71,7 @@ network_policies:
   # --- Socket.dev package registry ---
   # When --provider socket is configured with SOCKET_TOKEN, npm traffic
   # routes to registry.socket.dev. The proxy resolves the placeholder
-  # SOCKET_TOKEN in auth headers via protocol: rest + tls: terminate.
+  # SOCKET_TOKEN in auth headers through the inspectable REST route.
   # Restricted to read-only (GET) — npm install only reads the registry.
   # /usr/bin/node is required because npm is a shebang script — OpenShell's
   # policy engine matches the actual executable (/usr/bin/node), not the
@@ -74,7 +82,6 @@ network_policies:
       - host: registry.socket.dev
         port: 443
         protocol: rest
-        tls: terminate
         enforcement: enforce
         access: read-only
     binaries:
@@ -98,7 +105,6 @@ network_policies:
       - host: github.com
         port: 443
         protocol: rest
-        tls: terminate
         enforcement: enforce
         rules:
           - allow:
@@ -117,7 +123,6 @@ network_policies:
       - host: api.github.com
         port: 443
         protocol: rest
-        tls: terminate
         enforcement: enforce
         access: read-only
     binaries:
@@ -135,14 +140,14 @@ network_policies:
       - { host: api.github.com, port: 443 }
       - { host: downloads.python.org, port: 443 }
     binaries:
-      - { path: /sandbox/.venv/bin/python }
-      - { path: /sandbox/.venv/bin/python3 }
-      - { path: /sandbox/.venv/bin/pip }
+      - { path: /sandbox/work/.venv/bin/python }
+      - { path: /sandbox/work/.venv/bin/python3 }
+      - { path: /sandbox/work/.venv/bin/pip }
       - { path: /app/.venv/bin/python }
       - { path: /app/.venv/bin/python3 }
       - { path: /app/.venv/bin/pip }
       - { path: /usr/local/bin/uv }
-      - { path: "/sandbox/.uv/python/**" }
+      - { path: "/sandbox/work/.uv/python/**" }
 
   # --- VS Code Remote ---
   vscode:
@@ -156,8 +161,8 @@ network_policies:
     binaries:
       - { path: /usr/bin/curl }
       - { path: /usr/bin/wget }
-      - { path: "/sandbox/.vscode-server/**" }
-      - { path: "/sandbox/.vscode-remote-containers/**" }
+      - { path: "/sandbox/work/.vscode-server/**" }
+      - { path: "/sandbox/work/.vscode-remote-containers/**" }
 
   # --- Cursor ---
   cursor:
@@ -171,30 +176,40 @@ network_policies:
     binaries:
       - { path: /usr/bin/curl }
       - { path: /usr/bin/wget }
-      - { path: "/sandbox/.cursor-server/**" }
+      - { path: "/sandbox/work/.cursor-server/**" }
 
-  # --- StringCost (optional cost tracking proxy for Anthropic API) ---
-  # When ANTHROPIC_BASE_URL points at StringCost, Claude's API traffic routes
-  # through StringCost for billing and usage metering.
-  # The proxy resolves the ANTHROPIC_API_KEY placeholder in x-api-key headers.
-  stringcost:
-    name: stringcost
+  # --- StringCost presign creation ---
+  # setup.sh sends both provider placeholders to this endpoint. OpenShell
+  # resolves STRINGCOST_API_KEY in the Authorization header and
+  # ANTHROPIC_API_KEY in the JSON body without exposing either raw key.
+  stringcost_presign:
+    name: stringcost-presign
+    endpoints:
+      - host: app.stringcost.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        request_body_credential_rewrite: true
+        rules:
+          - allow:
+              method: POST
+              path: /v1/presign
+    binaries:
+      - { path: /usr/bin/node }
+
+  # --- StringCost metered Anthropic proxy ---
+  # setup.sh writes the presigned URL to Claude's settings. Only the native
+  # Claude binary may call the proxy; the management API is isolated above.
+  stringcost_proxy:
+    name: stringcost-proxy
     endpoints:
       - host: proxy.stringcost.com
         port: 443
         protocol: rest
-        tls: terminate
-        enforcement: enforce
-        access: full
-      - host: app.stringcost.com
-        port: 443
-        protocol: rest
-        tls: terminate
         enforcement: enforce
         access: full
     binaries:
-      - { path: /usr/local/bin/claude }
-      - { path: /usr/bin/node }
+      - { path: /usr/local/bin/claude-real }
 
   # --- External PostgreSQL (Supabase) via HTTP CONNECT tunnel ---
   # pg traffic cannot bypass OpenShell's HTTP proxy — the sandbox netns REJECTs
@@ -202,39 +217,22 @@ network_policies:
   # (see src/db/http-connect-socket.ts) so the proxy sees `CONNECT host:port`
   # from /usr/bin/node, allows it per this policy, and then bidirectionally
   # relays bytes. pg negotiates its own end-to-end TLS with Supabase inside
-  # the tunnel; the proxy never inspects payloads (no `protocol:` field).
+  # the tunnel. Current OpenShell auto-terminates detected TLS unless the
+  # endpoint explicitly uses `tls: skip`; PostgreSQL is not HTTP and must use
+  # a raw tunnel here.
   #
-  # Host matching in OPA is literal — every Supabase region you use needs an
-  # explicit entry here. If your pooler host is not listed, rebuild the image
-  # with your host appended.
+  # Current OpenShell accepts a wildcard in the first DNS label, so one pair
+  # covers all regional Supabase pooler hosts without granting arbitrary
+  # subdomains or raw PostgreSQL access outside this domain.
   postgres:
     name: postgres
     endpoints:
       # Supabase pooler — session mode (5432) and transaction mode (6543)
-      - { host: aws-0-ap-south-1.pooler.supabase.com, port: 5432 }
-      - { host: aws-0-ap-south-1.pooler.supabase.com, port: 6543 }
-      - { host: aws-0-ap-southeast-1.pooler.supabase.com, port: 5432 }
-      - { host: aws-0-ap-southeast-1.pooler.supabase.com, port: 6543 }
-      - { host: aws-0-ap-southeast-2.pooler.supabase.com, port: 5432 }
-      - { host: aws-0-ap-southeast-2.pooler.supabase.com, port: 6543 }
-      - { host: aws-1-ap-northeast-1.pooler.supabase.com, port: 5432 }
-      - { host: aws-1-ap-northeast-1.pooler.supabase.com, port: 6543 }
-      - { host: aws-0-us-east-1.pooler.supabase.com, port: 5432 }
-      - { host: aws-0-us-east-1.pooler.supabase.com, port: 6543 }
-      - { host: aws-0-us-east-2.pooler.supabase.com, port: 5432 }
-      - { host: aws-0-us-east-2.pooler.supabase.com, port: 6543 }
-      - { host: aws-0-us-west-1.pooler.supabase.com, port: 5432 }
-      - { host: aws-0-us-west-1.pooler.supabase.com, port: 6543 }
-      - { host: aws-0-eu-west-1.pooler.supabase.com, port: 5432 }
-      - { host: aws-0-eu-west-1.pooler.supabase.com, port: 6543 }
-      - { host: aws-0-eu-west-2.pooler.supabase.com, port: 5432 }
-      - { host: aws-0-eu-west-2.pooler.supabase.com, port: 6543 }
-      - { host: aws-0-eu-central-1.pooler.supabase.com, port: 5432 }
-      - { host: aws-0-eu-central-1.pooler.supabase.com, port: 6543 }
-      - { host: aws-0-sa-east-1.pooler.supabase.com, port: 5432 }
-      - { host: aws-0-sa-east-1.pooler.supabase.com, port: 6543 }
+      - { host: "*.pooler.supabase.com", port: 5432, tls: skip }
+      - { host: "*.pooler.supabase.com", port: 6543, tls: skip }
     binaries:
       - { path: /usr/bin/node }
+      - { path: /usr/local/bin/openeral-fused }
 
   # --- Copilot ---
   copilot:

@@ -1,71 +1,56 @@
-# OpenEral sandbox — Claude runtime + optional PostgreSQL persistence
-#
-# Uses stock OpenShell (no custom cluster or gateway images needed).
-# All filesystem virtualization happens in userspace via openeral-js.
+# OpenEral primary sandbox: OpenShell-mounted, PostgreSQL-backed FUSE workspace.
+
+FROM rust:1.95-bookworm AS fused-builder
+
+WORKDIR /source
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+RUN cargo build --locked --release -p openeral-fused \
+    && strip target/release/openeral-fused
 
 FROM ghcr.io/nvidia/openshell-community/sandboxes/base:latest
 
 USER root
 
-# Node.js 22 LTS via NodeSource (apt nodejs conflicts with npm on Ubuntu Noble)
+# Refresh Node.js 22 from NodeSource. The current upstream base pins 22.22.1,
+# which its Dockerfile documents as affected by multiple known CVEs.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Install openeral-js: install all deps (including devDeps for tsc), build, then prune
+# TypeScript owns migrations and one-time legacy import. Rust never migrates.
 COPY openeral-js/ /opt/openeral/
 RUN cd /opt/openeral && npm install && npm run build && npm prune --omit=dev \
     && chmod -R a+rX /opt/openeral \
     && chown -R sandbox:sandbox /opt/openeral
 
-# Preinstall Claude Code so users do not pay npm install latency
-# after connecting. Preserve the real binary behind the OpenEral wrapper.
-RUN npm install -g @anthropic-ai/claude-code \
-    && CLAUDE_BIN="$(command -v claude)" \
-    && if [ "$CLAUDE_BIN" = "/usr/local/bin/claude" ]; then \
-         mv /usr/local/bin/claude /usr/local/bin/claude-real; \
-       else \
-         ln -sf "$CLAUDE_BIN" /usr/local/bin/claude-real; \
-       fi
+# The OpenShell Community base installs Claude with Anthropic's native
+# installer. Preserve it behind OpenEral's persistence-aware wrapper.
+RUN test -x /usr/local/bin/claude \
+    && mv /usr/local/bin/claude /usr/local/bin/claude-real
 
-# openeral-bash: daemon/client bridge for pg, scoped sync, and custom agents
-COPY --chown=sandbox:sandbox sandboxes/openeral/openeral-bash.mjs /opt/openeral/openeral-bash.mjs
-RUN chmod a+rx /opt/openeral/openeral-bash.mjs \
-    && ln -sf /opt/openeral/openeral-bash.mjs /usr/local/bin/openeral-bash
+# The supervisor validates this root-owned binary and supplies /dev/fuse and
+# readiness descriptors. No fusermount helper or workload mount capability ships.
+COPY --from=fused-builder /source/target/release/openeral-fused /usr/local/bin/openeral-fused
 
-# Runtime wrappers.
-COPY sandboxes/openeral/openeral-claude.sh /usr/local/bin/claude
-COPY sandboxes/openeral/openeral-daemon-ensure.sh /usr/local/bin/openeral-daemon-ensure
-COPY sandboxes/openeral/pg-client.mjs /usr/local/bin/pg
-RUN chmod 755 /usr/local/bin/claude /usr/local/bin/openeral-daemon-ensure /usr/local/bin/pg
-
-# Rename real bash so openeral-bash can fall back to it for interactive use
-RUN cp /bin/bash /bin/bash.real
-
-# Setup script (entry point for sandbox create).
-#
-# Users invoke this as the trailing command of `openshell sandbox create`.
-# OpenShell doesn't honour Docker ENTRYPOINT/CMD — the image's native entry is
-# overridden by openshell's own supervisor, and an empty trailing command just
-# leaves the pod asleep. Shipping a short /usr/local/bin/openeral shim lets the
-# end-user command end in `-- openeral-init` instead of
-# `-- /opt/openeral/setup.sh`.
-COPY sandboxes/openeral/setup.sh /opt/openeral/setup.sh
-RUN chmod 755 /opt/openeral/setup.sh \
-    && chown sandbox:sandbox /opt/openeral/setup.sh \
+COPY sandboxes/openeral/openeral-claude-fuse.sh /usr/local/bin/claude
+COPY sandboxes/openeral/pg-client-fuse.mjs /usr/local/bin/pg
+COPY sandboxes/openeral/setup-fuse.sh /opt/openeral/setup.sh
+COPY sandboxes/openeral/configure-stringcost.mjs /opt/openeral/configure-stringcost.mjs
+RUN chmod 755 /usr/local/bin/openeral-fused /usr/local/bin/claude /usr/local/bin/pg \
+        /opt/openeral/setup.sh /opt/openeral/configure-stringcost.mjs \
     && ln -sf /opt/openeral/setup.sh /usr/local/bin/openeral \
     && ln -sf /opt/openeral/setup.sh /usr/local/bin/openeral-init \
-    && ln -sf /opt/openeral/setup.sh /usr/local/bin/openeral-start
+    && ln -sf /opt/openeral/setup.sh /usr/local/bin/openeral-start \
+    && install -d -o sandbox -g sandbox -m 0700 /var/lib/openeral/runtime
 
 # Override the upstream base policy
 COPY sandboxes/openeral/policy.yaml /etc/openshell/policy.yaml
 
-# Skills for Claude Code
-COPY .claude/skills/ /sandbox/.skills/
+# Bundled skills are copied into the mounted home by one-shot init without
+# overwriting user-owned files.
+COPY --chown=root:root .claude/skills/ /opt/openeral/skills/
 
-# Workspace and runtime directories. OpenShell keeps /tmp writable under its
-# sandbox policy, so runtime-only DB URL/PGlite state lives there.
-RUN mkdir -p /home/agent /tmp/openeral/data \
-    && chown -R sandbox:sandbox /home/agent /tmp/openeral
+WORKDIR /sandbox

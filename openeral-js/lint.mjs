@@ -163,20 +163,35 @@ if (/dirty|flush|OpenFileHandle/i.test(wsFsContent)) {
 }
 
 // ---------------------------------------------------------------------------
-// Lint 7: No FUSE references in sandbox Dockerfile
-// Catches: accidentally reintroducing FUSE dependencies
+// Lint 7: Primary and compatibility images keep distinct persistence models
+// Catches: bypassing supervisor-owned FUSE setup or leaking FUSE into compat
 // ---------------------------------------------------------------------------
-console.log('\n--- Lint: no FUSE in sandbox ---');
+console.log('\n--- Lint: FUSE runtime split is explicit ---');
 
 try {
-  const dockerfile = readFileSync('../sandboxes/openeral/Dockerfile', 'utf8');
-  if (/fuse3|libfuse|\/dev\/fuse|fuse\.conf|\/etc\/fstab/i.test(dockerfile)) {
-    fail('sandboxes/openeral/Dockerfile', 'must not reference FUSE (fuse3, libfuse, /dev/fuse, /etc/fstab)');
-  } else {
-    pass('no FUSE in Dockerfile');
+  const primary = readFileSync('../sandboxes/openeral/Dockerfile', 'utf8');
+  const compatibility = readFileSync('../sandboxes/openeral/Dockerfile.compat', 'utf8');
+  const policy = readFileSync('../sandboxes/openeral/policy.yaml', 'utf8');
+  for (const required of ['openeral-fused', 'setup-fuse.sh', 'openeral-claude-fuse.sh']) {
+    if (!primary.includes(required)) {
+      fail('sandboxes/openeral/Dockerfile', `primary image must include ${required}`);
+    }
   }
+  if (/fuse3|libfuse|fuse\.conf|\/etc\/fstab/i.test(primary)) {
+    fail('sandboxes/openeral/Dockerfile', 'must leave the device and mount operation to the OpenShell supervisor');
+  }
+  if (!policy.includes('fuse_mounts:') || !policy.includes('binary: /usr/local/bin/openeral-fused')) {
+    fail('sandboxes/openeral/policy.yaml', 'primary policy must declare the trusted FUSE daemon');
+  }
+  if (/COPY[^\n]*(?:openeral-fused|setup-fuse|openeral-claude-fuse)|\/dev\/fuse/i.test(compatibility)) {
+    fail('sandboxes/openeral/Dockerfile.compat', 'compatibility image must not install the FUSE runtime');
+  }
+  if (!compatibility.includes("'/^fuse_mounts:/") || !compatibility.includes("/openeral-fused/d'")) {
+    fail('sandboxes/openeral/Dockerfile.compat', 'compatibility image must strip the primary policy FUSE declaration');
+  }
+  pass('primary uses supervisor-owned FUSE and compatibility stays FUSE-free');
 } catch {
-  pass('Dockerfile not found (skipped)');
+  fail('sandboxes/openeral/Dockerfile', 'primary and compatibility Dockerfiles must both exist');
 }
 
 // ---------------------------------------------------------------------------
@@ -482,22 +497,25 @@ try {
 }
 
 // ---------------------------------------------------------------------------
-// Lint 24: Socket.dev endpoint must use protocol: rest + tls: terminate
-// Catches: Socket.dev credential injection won't work without TLS termination
+// Lint 24: Socket.dev endpoint must remain inspectable REST traffic
+// Current OpenShell terminates TLS automatically; tls: skip would bypass
+// credential rewriting and access rules.
 // ---------------------------------------------------------------------------
-console.log('\n--- Lint: Socket.dev endpoint has TLS terminate ---');
+console.log('\n--- Lint: Socket.dev endpoint is inspectable REST ---');
 
 try {
   const policy = readFileSync('../sandboxes/openeral/policy.yaml', 'utf8');
   if (policy.includes('registry.socket.dev')) {
-    // Find the socket endpoint block and verify it has tls: terminate
-    const socketSection = policy.slice(policy.indexOf('registry.socket.dev'));
-    const nextPolicy = socketSection.indexOf('\n  binaries:');
-    const socketBlock = socketSection.slice(0, nextPolicy > 0 ? nextPolicy : 200);
-    if (!socketBlock.includes('tls: terminate')) {
-      fail('sandboxes/openeral/policy.yaml', 'registry.socket.dev must have tls: terminate for credential injection');
+    // Find the socket endpoint block and verify it stays inspectable.
+    const socketStart = policy.indexOf('socket_packages:');
+    const nextPolicy = policy.indexOf('\n  # ---', socketStart + 1);
+    const socketBlock = policy.slice(socketStart, nextPolicy > 0 ? nextPolicy : undefined);
+    if (!socketBlock.includes('protocol: rest')) {
+      fail('sandboxes/openeral/policy.yaml', 'registry.socket.dev must use protocol: rest for credential injection');
+    } else if (socketBlock.includes('tls: skip')) {
+      fail('sandboxes/openeral/policy.yaml', 'registry.socket.dev must not bypass OpenShell TLS inspection');
     } else {
-      pass('Socket.dev endpoint has TLS terminate');
+      pass('Socket.dev endpoint is inspectable REST');
     }
   } else {
     pass('no Socket.dev endpoint (skipped)');
@@ -532,14 +550,14 @@ try {
 
 // ---------------------------------------------------------------------------
 // Lint 26: setup.sh must not touch user's .npmrc
-// Catches: clobbering or deleting user-managed /home/agent/.npmrc
+// Catches: clobbering or deleting the sandbox user's .npmrc
 // ---------------------------------------------------------------------------
 console.log('\n--- Lint: setup.sh does not touch user .npmrc ---');
 
 try {
   const setup = readFileSync('../sandboxes/openeral/setup.sh', 'utf8');
-  if (setup.includes('/home/agent/.npmrc')) {
-    fail('sandboxes/openeral/setup.sh', 'must not write or delete /home/agent/.npmrc — use a separate openeral-managed file + NPM_CONFIG_USERCONFIG');
+  if (setup.includes('/sandbox/.npmrc')) {
+    fail('sandboxes/openeral/setup.sh', 'must not write or delete /sandbox/.npmrc — use a separate openeral-managed file + NPM_CONFIG_USERCONFIG');
   } else if (setup.includes('npm config set')) {
     fail('sandboxes/openeral/setup.sh', 'must not use npm config set (writes to user HOME)');
   } else {
@@ -631,6 +649,89 @@ try {
   }
 } catch {
   pass('policy.yaml not found (skipped)');
+}
+
+// ---------------------------------------------------------------------------
+// Lint 31: launcher must use public OpenShell orchestration only
+// Catches: reintroducing removed gateway lifecycle commands or driver internals
+// ---------------------------------------------------------------------------
+console.log('\n--- Lint: launcher uses current OpenShell CLI ---');
+
+for (const forbidden of [
+  'openshell-cluster-openshell',
+  "['gateway', 'start']",
+  "'kubectl'",
+  "'ctr'",
+  'OPENERAL_AUTO_FIX_TLS',
+]) {
+  if (cliContent.includes(forbidden)) {
+    fail('src/cli.ts', `must not orchestrate OpenShell internals (${forbidden})`);
+  }
+}
+const hasSandboxExec = cliContent.includes('openShellArgs([')
+  && /['"]sandbox['"],\s*['"]exec['"]/.test(cliContent)
+  && cliContent.includes('OPENSHELL_BIN');
+const hasCreateEnv = /sandboxArgs\.push\([\s\S]{0,250}['"]--env['"]/.test(cliContent);
+const hasFuseRequest = /if\s*\(fuseRuntime\)\s+sandboxArgs\.push\(['"]--fuse['"]\)/.test(cliContent);
+if (!hasSandboxExec || !hasCreateEnv || !hasFuseRequest) {
+  fail('src/cli.ts', 'launcher must use sandbox exec, create --env, and an explicit --fuse resource request');
+} else {
+  pass('launcher uses sandbox create/exec, --env, and explicit --fuse');
+}
+
+// ---------------------------------------------------------------------------
+// Lint 32: StringCost management endpoint must be least privilege
+// Catches: exposing raw body placeholders or allowing broad management access
+// ---------------------------------------------------------------------------
+console.log('\n--- Lint: StringCost presign policy is scoped ---');
+
+try {
+  const policy = readFileSync('../sandboxes/openeral/policy.yaml', 'utf8');
+  const start = policy.indexOf('stringcost_presign:');
+  const end = policy.indexOf('\n  #', start + 1);
+  const block = policy.slice(start, end > 0 ? end : undefined);
+  for (const required of [
+    'host: app.stringcost.com',
+    'request_body_credential_rewrite: true',
+    'method: POST',
+    'path: /v1/presign',
+    '/usr/bin/node',
+  ]) {
+    if (!block.includes(required)) {
+      fail('sandboxes/openeral/policy.yaml', `StringCost presign policy missing ${required}`);
+    }
+  }
+  if (block.includes('access: full')) {
+    fail('sandboxes/openeral/policy.yaml', 'StringCost management endpoint must not use access: full');
+  } else {
+    pass('StringCost presign policy is method/path/body-rewrite constrained');
+  }
+} catch {
+  pass('policy.yaml not found (skipped)');
+}
+
+// ---------------------------------------------------------------------------
+// Lint 33: sandbox runtime uses /sandbox without persisting provider keys
+// Catches: cross-driver UID assumptions and credentials copied to session files
+// ---------------------------------------------------------------------------
+console.log('\n--- Lint: sandbox home and session env are safe ---');
+
+try {
+  const setup = readFileSync('../sandboxes/openeral/setup.sh', 'utf8');
+  const dockerfile = readFileSync('../sandboxes/openeral/Dockerfile', 'utf8');
+  if (!setup.includes('OPENERAL_HOME="${OPENERAL_HOME:-/sandbox}"')) {
+    fail('sandboxes/openeral/setup.sh', 'must default OPENERAL_HOME to /sandbox');
+  }
+  if (setup.includes('write_export ANTHROPIC_API_KEY')) {
+    fail('sandboxes/openeral/setup.sh', 'must not persist provider credentials/placeholders in session env');
+  }
+  if (/mkdir -p \/home\/agent|mkdir -p \/tmp\/openeral/.test(dockerfile)) {
+    fail('sandboxes/openeral/Dockerfile', 'must not pre-create runtime paths with image-build ownership');
+  } else {
+    pass('sandbox home is canonical and session env contains no provider keys');
+  }
+} catch {
+  pass('sandbox runtime files not found (skipped)');
 }
 
 // ---------------------------------------------------------------------------

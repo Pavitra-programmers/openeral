@@ -15,32 +15,44 @@
  *   npx openeral --workspace myid     # custom workspace ID
  *   npx openeral optimize stats       # show optimization stats
  *
- * Auth (presign-first):
- *   If ~/.config/openeral/presign.json exists → no env vars required.
- *   If not → set ANTHROPIC_API_KEY + STRINGCOST_API_KEY to create one on first run.
- *   Run `npx openeral presign renew` to replace the stored presign.
+ * Auth:
+ *   OpenShell providers inject credential placeholders into each sandbox
+ *   process. StringCost presigns are created inside the sandbox so raw keys
+ *   remain inside OpenShell's credential boundary.
  *
  * Optional env:
- *   DATABASE_URL            Database connection string (uses PGlite if not provided)
+ *   DATABASE_URL            Required by the FUSE dev runtime; optional in compatibility mode
  *   OPENERAL_WORKSPACE_ID   Workspace ID (default: openeral-claude, normalized to lowercase)
  *   OPENERAL_SANDBOX_IMAGE  Override sandbox image (default: ghcr.io/sandys/openeral/sandbox:just-bash)
- *   OPENERAL_DEV_IMAGE      Override dev sandbox image (default: openeral-sandbox:dev, used with --dev)
+ *   OPENERAL_DEV_IMAGE      Override the Dockerfile/image used with --dev
+ *   OPENSHELL_BIN            OpenShell CLI path (use the vendored build for FUSE)
+ *   OPENSHELL_GATEWAY_ENDPOINT  Direct patched gateway endpoint
  *
- * Features:
- *   - Automatic TLS certificate generation for OpenShell gateway
- *   - Automatic Claude CLI installation if not present in sandbox
- *   - Automatic sandbox cleanup to prevent duplicate errors
- *   - Kubernetes-compliant workspace name normalization
- *   - Extended startup timeout (8 minutes) for first-time setup
- *   - PGlite support for local development (no PostgreSQL required)
+ * Requires OpenShell >= 0.0.59 and a configured, reachable gateway.
  */
 
 import { spawn, spawnSync } from 'node:child_process';
 import { homedir, tmpdir } from 'node:os';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, copyFileSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createHash } from 'node:crypto';
+import {
+  dbUrlFileForMarker,
+  dataDirForMarker,
+  initMarkerMatches,
+  stateDirForMarker,
+  workspaceIdForMarker,
+  writeInitMarker,
+} from './init-marker.js';
+
+const OPENSHELL_BIN = process.env.OPENSHELL_BIN?.trim() || 'openshell';
+const OPENSHELL_GLOBAL_ARGS = process.env.OPENSHELL_GATEWAY_ENDPOINT?.trim()
+  ? ['--gateway-endpoint', process.env.OPENSHELL_GATEWAY_ENDPOINT.trim()]
+  : [];
+
+function openShellArgs(args: string[]): string[] {
+  return [...OPENSHELL_GLOBAL_ARGS, ...args];
+}
 
 // ---------------------------------------------------------------------------
 // Presign persistence — store one permanent presign in ~/.config/openeral/
@@ -229,6 +241,8 @@ function printHelp(): void {
   openeral presign                        Show the current StringCost presign
   openeral presign renew                  Create and store a new StringCost presign
   openeral init [--ensure]                Initialize or verify sandbox state
+  openeral init --check-marker            Internal: exit 0 if sandbox init marker is current
+  openeral init --write-marker            Internal: write the current sandbox init marker
   openeral stats [options]                Show API usage statistics
   openeral analyze [options]              Analyze session history and suggest optimizations
   openeral apply [options]                Apply optimization suggestions to project files
@@ -254,33 +268,32 @@ Memory Refresh Options:
   --dry-run               Preview changes without applying
   --no-backup             Skip backup creation
 
-Auth (presign-first model):
-  If ~/.config/openeral/presign.json exists, no env vars are required.
-  If the presign file is absent, both of these are required on first run:
-    ANTHROPIC_API_KEY        Your Anthropic API key (sk-ant-...)
-    STRINGCOST_API_KEY       Your StringCost API key
-  The presign is created once and stored permanently — subsequent runs need no keys.
-  Run \`npx openeral presign renew\` to replace the stored presign at any time.
+Auth:
+  ANTHROPIC_API_KEY is resolved through the OpenShell Claude provider.
+  If STRINGCOST_API_KEY is set, OpenShell also resolves it and creates the
+  StringCost presign inside the sandbox. Raw provider keys are not uploaded.
 
 Optional env:
-  DATABASE_URL             Database connection string (uses PGlite if not provided)
+  DATABASE_URL             Required by --dev FUSE; optional for the compatibility image
   OPENERAL_WORKSPACE_ID    Default workspace ID (will be normalized to lowercase)
   OPENERAL_SANDBOX_IMAGE   Override prod sandbox image (default: ghcr.io/sandys/openeral/sandbox:just-bash)
-  OPENERAL_DEV_IMAGE       Override dev sandbox image (default: openeral-sandbox:dev, used with --dev/-d)
-  OPENERAL_AUTO_FIX_TLS    Set to 1 to suppress the TLS regeneration confirmation delay
+  OPENERAL_DEV_IMAGE       Override the Dockerfile/image used with --dev/-d
+  OPENSHELL_BIN             OpenShell CLI path (vendored patched build for FUSE)
+  OPENSHELL_GATEWAY_ENDPOINT  Direct gateway endpoint
 
 Features:
-  - Presign-first auth — no env vars needed once the presign is stored
-  - Claude has automatic access to your home directory and mounted drives
-  - Database persistence with PGlite (or external PostgreSQL)
+  - OpenShell-managed credentials and default-deny network policy
+  - OpenShell-owned /sandbox home; no host filesystem injection
+  - Full PostgreSQL-backed FUSE workspace in --dev mode
+  - Scoped PostgreSQL/PGlite persistence in the published compatibility image
   - API usage statistics and optimization suggestions
 
 Notes:
   - Presign stored in ~/.config/openeral/presign.json (mode 600, expires_in=-1, max_uses=-1, cost_limit=$10)
   - Workspace IDs are automatically normalized to be Kubernetes-compliant
-  - Claude CLI will be automatically installed in the sandbox if not present
+  - OpenShell >= 0.0.59 and a selected gateway are required
+  - Claude CLI comes from the OpenShell Community base image
   - Existing sandboxes with the same name will be cleaned up automatically
-  - On first run, the gateway will be configured to access your filesystem
 `);
 }
 
@@ -338,69 +351,11 @@ export async function downloadOrgSkills(homeDir: string, apiKey: string): Promis
   return skills.length;
 }
 
-// ---------------------------------------------------------------------------
-// In-sandbox init marker
-// ---------------------------------------------------------------------------
-
-function sandboxWorkspaceId(): string {
-  return process.env.WORKSPACE_ID || process.env.OPENSHELL_SANDBOX_ID || process.env.OPENERAL_WORKSPACE_ID || 'default';
-}
-
-function openeralStateDir(): string {
-  return process.env.OPENERAL_STATE_DIR || '/tmp/openeral';
-}
-
-function openeralDataDir(): string {
-  return process.env.OPENERAL_DATA_DIR || '/tmp/openeral/data';
-}
-
-function openeralDbUrlFile(): string {
-  return process.env.OPENERAL_DB_URL_FILE || join(openeralStateDir(), 'database-url');
-}
-
-function openeralInitMarker(): string {
-  return process.env.OPENERAL_INIT_MARKER || join(openeralStateDir(), 'init.done');
-}
-
-function storedDatabaseUrl(): string {
-  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
-  const dbFile = openeralDbUrlFile();
-  if (!existsSync(dbFile)) return '';
-  try {
-    return readFileSync(dbFile, 'utf8').trim();
-  } catch {
-    return '';
-  }
-}
-
-function currentDatasourceHash(): string {
-  const dbUrl = storedDatabaseUrl();
-  const datasource = dbUrl ? `postgres:${dbUrl}` : `pglite:${openeralDataDir()}`;
-  return createHash('sha256').update(datasource).digest('hex');
-}
-
-function initMarkerMatches(): boolean {
-  const marker = openeralInitMarker();
-  if (!existsSync(marker)) return false;
-  try {
-    const data = JSON.parse(readFileSync(marker, 'utf8')) as {
-      version?: number;
-      workspaceId?: string;
-      datasourceHash?: string;
-    };
-    return data.version === 1
-      && data.workspaceId === sandboxWorkspaceId()
-      && data.datasourceHash === currentDatasourceHash();
-  } catch {
-    return false;
-  }
-}
-
 function refreshClaudeProxySettings(): void {
   const baseUrl = process.env.ANTHROPIC_BASE_URL;
   if (!baseUrl) return;
 
-  const home = process.env.HOME || '/home/agent';
+  const home = process.env.OPENERAL_HOME || process.env.HOME || '/sandbox';
   const settingsPath = join(home, '.claude', 'settings.json');
   mkdirSync(dirname(settingsPath), { recursive: true });
 
@@ -420,6 +375,15 @@ function refreshClaudeProxySettings(): void {
 }
 
 async function cmdInit(args: string[]): Promise<void> {
+  if (args.includes('--check-marker')) {
+    process.exit(initMarkerMatches() ? 0 : 1);
+  }
+
+  if (args.includes('--write-marker')) {
+    writeInitMarker();
+    return;
+  }
+
   const ensure = args.includes('--ensure');
   if (ensure && initMarkerMatches()) {
     refreshClaudeProxySettings();
@@ -439,12 +403,12 @@ async function cmdInit(args: string[]): Promise<void> {
     stdio: 'inherit',
     env: {
       ...process.env,
-      HOME: process.env.HOME || '/home/agent',
-      OPENERAL_HOME: process.env.OPENERAL_HOME || '/home/agent',
-      OPENERAL_STATE_DIR: openeralStateDir(),
-      OPENERAL_DATA_DIR: openeralDataDir(),
-      OPENERAL_DB_URL_FILE: openeralDbUrlFile(),
-      WORKSPACE_ID: sandboxWorkspaceId(),
+      HOME: process.env.HOME || '/sandbox',
+      OPENERAL_HOME: process.env.OPENERAL_HOME || '/sandbox',
+      OPENERAL_STATE_DIR: stateDirForMarker(),
+      OPENERAL_DATA_DIR: dataDirForMarker(),
+      OPENERAL_DB_URL_FILE: dbUrlFileForMarker(),
+      WORKSPACE_ID: workspaceIdForMarker(),
     },
   });
 
@@ -457,447 +421,76 @@ async function cmdInit(args: string[]): Promise<void> {
 // OpenShell sandbox launch
 // ---------------------------------------------------------------------------
 
-/**
- * Non-destructively ensure /mnt is bind-mounted into the gateway container.
- * Does NOT recreate the container.
- */
-async function ensureGatewayHasMntMount(): Promise<void> {
-  // Check if /mnt is already a mountpoint inside the gateway container.
-  // Important: HostConfig.Binds only captures mounts configured at container
-  // creation time (-v flags). Mounts added dynamically via nsenter from a prior
-  // run never appear in HostConfig.Binds, so we must check the live mount table.
-  const mountCheck = spawnSync('docker', [
-    'exec', 'openshell-cluster-openshell',
-    'mountpoint', '-q', '/mnt'
-  ], { stdio: 'pipe', timeout: 5000 });
+const MIN_OPENSHELL_VERSION = [0, 0, 59] as const;
 
-  if (mountCheck.status === 0) {
-    process.stderr.write('\x1b[32m✓ /mnt already mounted in gateway container\x1b[0m\n');
-    return;
-  }
-
-  // Get the container PID for nsenter
-  const pidResult = spawnSync('docker', [
-    'inspect', 'openshell-cluster-openshell',
-    '--format', '{{.State.Pid}}'
-  ], { stdio: 'pipe', timeout: 5000 });
-
-  if (pidResult.status !== 0) {
-    process.stderr.write('\x1b[33mwarning: could not get gateway container PID\x1b[0m\n');
-    return;
-  }
-
-  const pid = pidResult.stdout.toString().trim();
-  const nsenterArgs = ['-t', pid, '--mount', '--', 'mount', '--rbind', '/mnt', '/mnt'];
-
-  // Attempt 1: nsenter without sudo (works when this process is already root).
-  let mounted = spawnSync('nsenter', nsenterArgs, { stdio: 'pipe', timeout: 15000 }).status === 0;
-
-  // Attempt 2: sudo -n nsenter — non-interactive, succeeds only with passwordless sudo.
-  if (!mounted) {
-    mounted = spawnSync('sudo', ['-n', 'nsenter', ...nsenterArgs], { stdio: 'pipe', timeout: 15000 }).status === 0;
-  }
-
-  // Attempt 3: interactive sudo — inherit stdio so the password prompt is visible
-  // and the user can type their password.  This is the normal path for anyone
-  // who has sudo but hasn't configured passwordless access.
-  if (!mounted) {
-    process.stderr.write('\x1b[2mopeneral: mounting host filesystem — sudo password may be required...\x1b[0m\n');
-    mounted = spawnSync('sudo', ['nsenter', ...nsenterArgs], { stdio: 'inherit', timeout: 60000 }).status === 0;
-  }
-
-  if (mounted) {
-    process.stderr.write('\x1b[32m✓ /mnt bind-mounted into gateway container\x1b[0m\n');
-  } else {
-    process.stderr.write(
-      'warning: host filesystem (/mnt) not mounted in gateway container.\n' +
-      'To avoid this prompt permanently, configure passwordless sudo for nsenter:\n' +
-      '  echo "$(whoami) ALL=(ALL) NOPASSWD: /usr/bin/nsenter" | sudo tee /etc/sudoers.d/openeral-nsenter\n' +
-      'Sandbox will have limited filesystem access.\n'
-    );
-  }
+function parseOpenShellVersion(output: string): [number, number, number] | null {
+  const match = output.match(/(?:^|\s)v?(\d+)\.(\d+)\.(\d+)(?:\s|$)/);
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
 }
 
-/**
- * Detect and fix broken TLS by regenerating certs in-place (no container recreation).
- * Returns true if TLS is working (or was successfully fixed), false on unrecoverable error.
- */
-async function fixBrokenTls(): Promise<boolean> {
-  // Quick check — if openshell sandbox list works AND all required secrets exist, TLS is fine
-  const listResult = spawnSync('openshell', ['sandbox', 'list'], { stdio: 'pipe', timeout: 10000 });
-  const listStderr = (listResult.stderr ?? '').toString();
-  const tlsOk = listResult.status === 0 || !listStderr.includes('tls handshake');
-
-  // Also check for the client-tls secret that sandbox pods need to mount
-  const secretCheck = spawnSync('docker', ['exec', 'openshell-cluster-openshell',
-    'kubectl', '--insecure-skip-tls-verify', 'get', 'secret', 'openshell-client-tls',
-    '-n', 'openshell', '--ignore-not-found'
-  ], { stdio: 'pipe', timeout: 10000 });
-  const clientTlsExists = secretCheck.status === 0 && secretCheck.stdout.toString().trim() !== '';
-
-  // Also verify host mTLS cert files exist — if they're missing the openshell CLI falls
-  // back to non-TLS connections even when the k8s secret exists, causing the
-  // "received corrupt message of type InvalidContentType" error on the server.
-  const hostMtlsDir = join(homedir(), '.config', 'openshell', 'gateways', 'openshell', 'mtls');
-  const hostCertsExist =
-    existsSync(join(hostMtlsDir, 'ca.crt')) &&
-    existsSync(join(hostMtlsDir, 'tls.crt')) &&
-    existsSync(join(hostMtlsDir, 'tls.key'));
-
-  if (tlsOk && clientTlsExists && hostCertsExist) {
-    return true;
+function versionAtLeast(
+  actual: readonly number[],
+  minimum: readonly number[],
+): boolean {
+  for (let i = 0; i < Math.max(actual.length, minimum.length); i++) {
+    const current = actual[i] ?? 0;
+    const required = minimum[i] ?? 0;
+    if (current !== required) return current > required;
   }
-
-  if (!clientTlsExists) {
-    process.stderr.write('\x1b[33mopenshell-client-tls secret missing — TLS certificates need regeneration\x1b[0m\n');
-  } else if (!hostCertsExist) {
-    process.stderr.write('\x1b[33mHost mTLS certificates missing — TLS certificates need regeneration\x1b[0m\n');
-  } else {
-    process.stderr.write('\x1b[33mTLS broken (tls handshake eof) — TLS certificates need regeneration\x1b[0m\n');
-  }
-
-  // Verify openssl is available before attempting cert generation
-  const opensslCheck = spawnSync('openssl', ['version'], { stdio: 'pipe', timeout: 5000 });
-  if (opensslCheck.error || opensslCheck.status !== 0) {
-    process.stderr.write(
-      '\x1b[31merror: openssl not found — required for TLS certificate generation.\x1b[0m\n' +
-      'Install it with your package manager:\n' +
-      '  Debian/Ubuntu:  sudo apt install openssl\n' +
-      '  RHEL/Fedora:    sudo dnf install openssl\n' +
-      '  Arch Linux:     sudo pacman -S openssl\n' +
-      '  Alpine:         sudo apk add openssl\n'
-    );
-    return false;
-  }
-
-  // Compliance: require explicit confirmation for destructive operations
-  // Skip confirmation if OPENERAL_AUTO_FIX_TLS=1 is set (for automation/CI)
-  if (process.env.OPENERAL_AUTO_FIX_TLS !== '1') {
-    process.stderr.write(
-      '\x1b[33mThis will overwrite TLS certificates in:\x1b[0m\n' +
-      `  - ~/.config/openshell/gateways/openshell/mtls/\n` +
-      `  - Kubernetes secrets in the openshell namespace\n\n` +
-      '\x1b[33mTo proceed automatically in the future, set: OPENERAL_AUTO_FIX_TLS=1\x1b[0m\n' +
-      '\x1b[33mProceeding with TLS regeneration...\x1b[0m\n\n'
-    );
-    // Note: In a fully interactive CLI, you could add a prompt here.
-    // For now, we log the warning and proceed (user can Ctrl+C to abort).
-    await new Promise(resolve => setTimeout(resolve, 2000)); // 2s delay to allow Ctrl+C
-  }
-
-  process.stderr.write('\x1b[2mRegenerating TLS certificates...\x1b[0m\n');
-
-  const tmpDir = '/tmp/openeral-tls';
-  try {
-    mkdirSync(tmpDir, { recursive: true });
-  } catch { /* already exists */ }
-
-  // ---------- CA ----------
-  const caKey = `${tmpDir}/ca.key`;
-  const caCrt = `${tmpDir}/ca.crt`;
-
-  const genCaKey = spawnSync('openssl', [
-    'ecparam', '-name', 'prime256v1', '-genkey', '-noout', '-out', caKey
-  ], { stdio: 'pipe', timeout: 15000 });
-  if (genCaKey.status !== 0) {
-    process.stderr.write(`\x1b[31merror: failed to generate CA key: ${(genCaKey.stderr ?? '').toString().trim()}\x1b[0m\n`);
-    return false;
-  }
-
-  const genCaCrt = spawnSync('openssl', [
-    'req', '-new', '-x509', '-key', caKey, '-out', caCrt,
-    '-days', '36500', '-subj', '/CN=openshell-ca/O=openshell'
-  ], { stdio: 'pipe', timeout: 15000 });
-  if (genCaCrt.status !== 0) {
-    process.stderr.write(`\x1b[31merror: failed to generate CA cert: ${(genCaCrt.stderr ?? '').toString().trim()}\x1b[0m\n`);
-    return false;
-  }
-
-  // ---------- Server cert with SAN for 127.0.0.1 ----------
-  const serverKey = `${tmpDir}/server.key`;
-  const serverCsr = `${tmpDir}/server.csr`;
-  const serverCrt = `${tmpDir}/server.crt`;
-  const serverExt = `${tmpDir}/server.ext`;
-  const clientExt = `${tmpDir}/client.ext`;
-
-  // Full v3 extensions required by rustls: SAN, keyUsage, extendedKeyUsage, SKID/AKID
-  // SAN must include both the external address (127.0.0.1) AND the k8s service DNS
-  // names so sandbox pods can connect via openshell.openshell.svc.cluster.local
-  writeFileSync(serverExt, [
-    'subjectAltName = IP:127.0.0.1,DNS:localhost,DNS:openshell,DNS:openshell.openshell,DNS:openshell.openshell.svc,DNS:openshell.openshell.svc.cluster.local',
-    'keyUsage = digitalSignature, keyEncipherment',
-    'extendedKeyUsage = serverAuth',
-    'subjectKeyIdentifier = hash',
-    'authorityKeyIdentifier = keyid:always',
-  ].join('\n') + '\n');
-
-  writeFileSync(clientExt, [
-    'extendedKeyUsage = clientAuth',
-    'subjectKeyIdentifier = hash',
-    'authorityKeyIdentifier = keyid:always',
-  ].join('\n') + '\n');
-
-  const genServerKey = spawnSync('openssl', [
-    'ecparam', '-name', 'prime256v1', '-genkey', '-noout', '-out', serverKey
-  ], { stdio: 'pipe', timeout: 15000 });
-  if (genServerKey.status !== 0) {
-    process.stderr.write(`\x1b[31merror: failed to generate server key\x1b[0m\n`);
-    return false;
-  }
-
-  const genServerCsr = spawnSync('openssl', [
-    'req', '-new', '-key', serverKey, '-out', serverCsr,
-    '-subj', '/CN=openshell-server/O=openshell'
-  ], { stdio: 'pipe', timeout: 15000 });
-  if (genServerCsr.status !== 0) {
-    process.stderr.write(`\x1b[31merror: failed to generate server CSR\x1b[0m\n`);
-    return false;
-  }
-
-  const signServer = spawnSync('openssl', [
-    'x509', '-req', '-in', serverCsr, '-CA', caCrt, '-CAkey', caKey,
-    '-CAcreateserial', '-out', serverCrt,
-    '-days', '36500', '-extfile', serverExt
-  ], { stdio: 'pipe', timeout: 15000 });
-  if (signServer.status !== 0) {
-    process.stderr.write(`\x1b[31merror: failed to sign server cert\x1b[0m\n`);
-    return false;
-  }
-
-  // ---------- Client cert ----------
-  const clientKey = `${tmpDir}/client.key`;
-  const clientCsr = `${tmpDir}/client.csr`;
-  const clientCrt = `${tmpDir}/client.crt`;
-
-  const genClientKey = spawnSync('openssl', [
-    'ecparam', '-name', 'prime256v1', '-genkey', '-noout', '-out', clientKey
-  ], { stdio: 'pipe', timeout: 15000 });
-  if (genClientKey.status !== 0) {
-    process.stderr.write(`\x1b[31merror: failed to generate client key\x1b[0m\n`);
-    return false;
-  }
-
-  const genClientCsr = spawnSync('openssl', [
-    'req', '-new', '-key', clientKey, '-out', clientCsr,
-    '-subj', '/CN=openshell-client/O=openshell'
-  ], { stdio: 'pipe', timeout: 15000 });
-  if (genClientCsr.status !== 0) {
-    process.stderr.write(`\x1b[31merror: failed to generate client CSR\x1b[0m\n`);
-    return false;
-  }
-
-  const signClient = spawnSync('openssl', [
-    'x509', '-req', '-in', clientCsr, '-CA', caCrt, '-CAkey', caKey,
-    '-CAcreateserial', '-out', clientCrt, '-days', '36500', '-extfile', clientExt
-  ], { stdio: 'pipe', timeout: 15000 });
-  if (signClient.status !== 0) {
-    process.stderr.write(`\x1b[31merror: failed to sign client cert\x1b[0m\n`);
-    return false;
-  }
-
-  // ---------- Copy certs into container ----------
-  for (const [src, dst] of [
-    [serverCrt, '/tmp/os-server.crt'],
-    [serverKey, '/tmp/os-server.key'],
-    [clientCrt, '/tmp/os-client.crt'],
-    [clientKey, '/tmp/os-client.key'],
-    [caCrt,     '/tmp/os-ca.crt'],
-  ] as [string, string][]) {
-    const cp = spawnSync('docker', ['cp', src, `openshell-cluster-openshell:${dst}`], { stdio: 'pipe', timeout: 10000 });
-    if (cp.status !== 0) {
-      process.stderr.write(`\x1b[31merror: docker cp ${src} failed\x1b[0m\n`);
-      return false;
-    }
-  }
-
-  // ---------- Update k8s secrets ----------
-  spawnSync('docker', ['exec', 'openshell-cluster-openshell',
-    'kubectl', '--insecure-skip-tls-verify', 'delete', 'secret',
-    'openshell-server-tls', 'openshell-server-client-ca', 'openshell-client-tls',
-    '-n', 'openshell', '--ignore-not-found=true'
-  ], { stdio: 'pipe', timeout: 10000 });
-
-  const createTls = spawnSync('docker', ['exec', 'openshell-cluster-openshell',
-    'kubectl', '--insecure-skip-tls-verify', 'create', 'secret', 'tls',
-    'openshell-server-tls',
-    '--cert=/tmp/os-server.crt',
-    '--key=/tmp/os-server.key',
-    '-n', 'openshell'
-  ], { stdio: 'pipe', timeout: 15000 });
-  if (createTls.status !== 0) {
-    process.stderr.write(`\x1b[31merror: failed to create openshell-server-tls: ${(createTls.stderr ?? '').toString().trim()}\x1b[0m\n`);
-    return false;
-  }
-
-  const createCa = spawnSync('docker', ['exec', 'openshell-cluster-openshell',
-    'kubectl', '--insecure-skip-tls-verify', 'create', 'secret', 'generic',
-    'openshell-server-client-ca',
-    '--from-file=ca.crt=/tmp/os-ca.crt',
-    '-n', 'openshell'
-  ], { stdio: 'pipe', timeout: 15000 });
-  if (createCa.status !== 0) {
-    process.stderr.write(`\x1b[31merror: failed to create openshell-server-client-ca: ${(createCa.stderr ?? '').toString().trim()}\x1b[0m\n`);
-    return false;
-  }
-
-  // openshell-client-tls: client cert mounted into sandbox pods so they can
-  // authenticate with the openshell server over mTLS.
-  // Must be a generic secret with ca.crt, tls.crt, and tls.key — the openshell
-  // supervisor inside the sandbox reads all three (OPENSHELL_TLS_CA/CERT/KEY).
-  const createClientTls = spawnSync('docker', ['exec', 'openshell-cluster-openshell',
-    'kubectl', '--insecure-skip-tls-verify', 'create', 'secret', 'generic',
-    'openshell-client-tls',
-    '--from-file=ca.crt=/tmp/os-ca.crt',
-    '--from-file=tls.crt=/tmp/os-client.crt',
-    '--from-file=tls.key=/tmp/os-client.key',
-    '-n', 'openshell'
-  ], { stdio: 'pipe', timeout: 15000 });
-  if (createClientTls.status !== 0) {
-    process.stderr.write(`\x1b[31merror: failed to create openshell-client-tls: ${(createClientTls.stderr ?? '').toString().trim()}\x1b[0m\n`);
-    return false;
-  }
-
-  // ---------- Update host mtls files ----------
-  const mtlsDir = `${homedir()}/.config/openshell/gateways/openshell/mtls`;
-  try {
-    mkdirSync(mtlsDir, { recursive: true, mode: 0o700 });
-    copyFileSync(caCrt,     `${mtlsDir}/ca.crt`);
-    copyFileSync(clientCrt, `${mtlsDir}/tls.crt`);
-    copyFileSync(clientKey, `${mtlsDir}/tls.key`);
-    // Ensure restrictive permissions on certificate files
-    try {
-      chmodSync(`${mtlsDir}/ca.crt`, 0o600);
-      chmodSync(`${mtlsDir}/tls.crt`, 0o600);
-      chmodSync(`${mtlsDir}/tls.key`, 0o600);
-    } catch {
-      // Ignore chmod errors on platforms that don't support it
-    }
-  } catch (err) {
-    process.stderr.write(`\x1b[33mwarning: failed to update host mtls files: ${(err as Error).message}\x1b[0m\n`);
-  }
-
-  // ---------- Delete openshell-0 pod to pick up new certs ----------
-  spawnSync('docker', ['exec', 'openshell-cluster-openshell',
-    'kubectl', '--insecure-skip-tls-verify', 'delete', 'pod', 'openshell-0',
-    '-n', 'openshell', '--ignore-not-found=true'
-  ], { stdio: 'pipe', timeout: 15000 });
-
-  process.stderr.write('\x1b[2mopeneral: waiting for pod to restart with new certs...\x1b[0m\n');
-  await waitForOpenshellPod();
-
-  // Verify the openshell API is truly accepting connections — pod Ready ≠ operator ready.
-  // Without this, sandbox create races against operator initialisation and fails with
-  // DependenciesNotReady because the provider secret isn't created in time.
-  process.stderr.write('\x1b[2mopeneral: verifying TLS connection...\x1b[0m\n');
-  const apiReady = await waitForOpenshellApiReady(120);
-  if (!apiReady) {
-    process.stderr.write('\x1b[33mwarning: openshell API not reachable after TLS fix — proceeding anyway\x1b[0m\n');
-  }
-
-  process.stderr.write('\x1b[32m✓ TLS certs regenerated and applied\x1b[0m\n');
   return true;
 }
 
-/**
- * Wait until the openshell CLI can successfully talk to the gateway API.
- *
- * "Pod ready" (Kubernetes condition) only means containers are running — it does NOT
- * mean the openshell operator inside the pod has finished initialising, loaded its
- * CRD state, or is accepting requests.  Trying to create a sandbox while the operator
- * is still warming up causes DependenciesNotReady because the operator races with pod
- * scheduling when trying to create provider secrets via --auto-providers.
- *
- * This function polls `openshell sandbox list` until it exits 0 (operator ready) or
- * returns a non-connection error (operator up, different problem — still usable).
- */
-async function waitForOpenshellApiReady(maxSeconds = 120): Promise<boolean> {
-  const deadline = Date.now() + maxSeconds * 1000;
-  const startMs = Date.now();
-  let lastProgressS = -1;
-
-  while (Date.now() < deadline) {
-    const r = spawnSync('openshell', ['sandbox', 'list'], { stdio: 'pipe', timeout: 10000 });
-    if (r.status === 0) return true;
-
-    const stderr = (r.stderr ?? Buffer.from('')).toString();
-    // Only keep retrying for transient connection/TLS errors.
-    // Any other non-zero exit (e.g., empty list, unknown flag) means the API is up.
-    const isConnectionError =
-      stderr.includes('transport error') ||
-      stderr.includes('tls handshake') ||
-      stderr.includes('connection refused') ||
-      stderr.includes('connection reset') ||
-      stderr.includes('broken pipe');
-
-    if (!isConnectionError) return true;
-
-    const elapsedS = Math.floor((Date.now() - startMs) / 1000);
-    if (elapsedS >= lastProgressS + 30) {
-      process.stderr.write(`\x1b[2m  waiting for openshell API to be ready... (${elapsedS}s)\x1b[0m\n`);
-      lastProgressS = elapsedS;
+function requireCurrentOpenShell(requireFuse = false): void {
+  const versionResult = spawnSync(OPENSHELL_BIN, ['--version'], {
+    encoding: 'utf8',
+    stdio: 'pipe',
+  });
+  if (versionResult.error) {
+    const code = (versionResult.error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') {
+      throw new Error(
+        `OpenShell is not installed or executable at ${OPENSHELL_BIN}. Install OpenShell first: https://docs.nvidia.com/openshell/latest`,
+      );
     }
-
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    throw versionResult.error;
   }
-  return false;
-}
+  if (versionResult.status !== 0) {
+    throw new Error('openshell --version failed');
+  }
 
-/**
- * Wait for the openshell-0 pod to be ready.
- * This ensures the gateway is fully operational before we try to create sandboxes.
- * Returns true if pod is ready, false if timeout.
- */
-async function waitForOpenshellPod(): Promise<boolean> {
-  const maxAttempts = 240; // 8 minutes (240 * 2 seconds) - increased for container recreation
-  
-  for (let i = 0; i < maxAttempts; i++) {
-    const checkPod = spawnSync('docker', [
-      'exec', 'openshell-cluster-openshell',
-      'kubectl', '--insecure-skip-tls-verify', 'get', 'pod', 'openshell-0',
-      '-n', 'openshell',
-      '-o', 'jsonpath={.status.conditions[?(@.type=="Ready")].status}'
-    ], { stdio: 'pipe', timeout: 10000 });
+  const versionText = `${versionResult.stdout ?? ''} ${versionResult.stderr ?? ''}`;
+  const version = parseOpenShellVersion(versionText);
+  if ((!version || !versionAtLeast(version, MIN_OPENSHELL_VERSION)) && !requireFuse) {
+    throw new Error(
+      `OpenShell >= ${MIN_OPENSHELL_VERSION.join('.')} is required; found ${versionText.trim() || 'an unknown version'}`,
+    );
+  }
 
-    if (checkPod.status === 0 && checkPod.stdout.toString().trim() === 'True') {
-      return true; // Pod is ready
+  const gateway = spawnSync(OPENSHELL_BIN, openShellArgs(['gateway', 'info']), {
+    encoding: 'utf8',
+    stdio: 'pipe',
+    timeout: 15_000,
+  });
+  if (gateway.error || gateway.status !== 0) {
+    throw new Error(
+      'no reachable OpenShell gateway is selected. Configure one or set OPENSHELL_GATEWAY_ENDPOINT.',
+    );
+  }
+
+  if (requireFuse) {
+    const help = spawnSync(OPENSHELL_BIN, openShellArgs(['sandbox', 'create', '--help']), {
+      encoding: 'utf8',
+      stdio: 'pipe',
+      timeout: 15_000,
+    });
+    const output = `${help.stdout ?? ''}\n${help.stderr ?? ''}`;
+    if (help.error || help.status !== 0 || !output.includes('--fuse')) {
+      throw new Error(
+        'this OpenEral image requires an OpenShell build with the policy-gated --fuse capability',
+      );
     }
-
-    // Show progress every 30 seconds
-    if (i > 0 && i % 15 === 0) {
-      const minutes = Math.floor(i * 2 / 60);
-      const seconds = (i * 2) % 60;
-      process.stderr.write(`\x1b[2m  still waiting for gateway pod... (${minutes}m ${seconds}s)\x1b[0m\n`);
-    }
-
-    await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds
   }
-
-  return false; // Timed out
-}
-
-/**
- * Expand a short image reference to its fully-qualified docker.io form.
- *
- * containerd always stores image refs with the full registry prefix, so
- * "openeral-sandbox:dev" becomes "docker.io/library/openeral-sandbox:dev".
- * Short names passed to `ctr images tag` are NOT expanded automatically,
- * causing silent failures when the source ref isn't found.
- *
- * Rules (same as containerd's short-name expansion):
- *   - No slash               → docker.io/library/<ref>   (e.g. "ubuntu:22.04")
- *   - First component has . or : or is "localhost" → already has registry
- *   - Otherwise              → docker.io/<ref>            (e.g. "sandys/app:v1")
- */
-function expandImageRef(ref: string): string {
-  const firstSlash = ref.indexOf('/');
-  if (firstSlash === -1) {
-    return `docker.io/library/${ref}`;
-  }
-  const firstComponent = ref.slice(0, firstSlash);
-  if (firstComponent.includes('.') || firstComponent.includes(':') || firstComponent === 'localhost') {
-    return ref; // already has explicit registry
-  }
-  return `docker.io/${ref}`;
 }
 
 /**
@@ -905,7 +498,6 @@ function expandImageRef(ref: string): string {
  *
  * Looks for `sandboxes/openeral/Dockerfile` as a landmark file so the
  * result is correct regardless of where in the build output the CLI ends up.
- * Returns `null` if the root cannot be found within `maxLevels` of traversal.
  */
 export function findRepoRoot(maxLevels = 6): string | null {
   let dir = dirname(fileURLToPath(import.meta.url));
@@ -914,403 +506,46 @@ export function findRepoRoot(maxLevels = 6): string | null {
       return dir;
     }
     const parent = dirname(dir);
-    if (parent === dir) break; // filesystem root
+    if (parent === dir) break;
     dir = parent;
   }
   return null;
 }
 
-/**
- * Ensure the sandbox image is available in the k3s cluster.
- * Pre-pulls the image on the host and imports it into k3s to avoid DNS issues.
- */
-async function ensureSandboxImage(sandboxImage: string): Promise<void> {
-  // Containerd stores all image refs with their fully-qualified registry prefix.
-  // Expand the short name once so every k3s operation uses the canonical form.
-  const expandedSandboxImage = expandImageRef(sandboxImage);
-
-  const K3S_CTR = [
-    'exec', 'openshell-cluster-openshell',
-    'ctr', '--address', '/run/k3s/containerd/containerd.sock', '-n', 'k8s.io',
-  ];
-  const K3S_CTR_IMPORT = [...K3S_CTR, 'images', 'import'];
-
-  function imageExistsInCluster(): boolean {
-    // Use ctr with the correct k3s socket — more reliable than crictl for checking refs
-    const result = spawnSync('docker', [
-      ...K3S_CTR, 'images', 'ls', '--quiet'
-    ], { stdio: 'pipe', timeout: 10000 });
-
-    if (result.status !== 0) return false;
-    const refs = result.stdout.toString();
-    // ctr ls --quiet lists fully-qualified refs like: docker.io/library/openeral-sandbox:dev
-    // Match exact expanded ref only — substring matching causes false positives
-    // (e.g. openeral-sandbox:dev-openeral-flat also contains "openeral-sandbox" and "dev").
-    return refs.split('\n').some(line => {
-      const t = line.trim();
-      return t === expandedSandboxImage || t === sandboxImage;
-    });
-  }
-
-  process.stderr.write('\x1b[2mopeneral: checking sandbox image availability...\x1b[0m\n');
-
-  if (imageExistsInCluster()) {
-    process.stderr.write('\x1b[32m✓ Sandbox image already in cluster\x1b[0m\n');
-    return;
-  }
-
-  process.stderr.write('\x1b[2m  image not found in cluster, importing...\x1b[0m\n');
-
-  // Check if the image already exists in the local Docker daemon.
-  // Local-only images (e.g. openeral-sandbox:dev built with `docker build`)
-  // are never in a registry, so `docker pull` would always fail for them.
-  const localCheck = spawnSync('docker', ['image', 'inspect', sandboxImage, '--format', '{{.Id}}'], {
-    stdio: 'pipe',
-    timeout: 10000,
+function ensureGenericProvider(name: string, credentialKey: string): void {
+  const existing = spawnSync(OPENSHELL_BIN, openShellArgs(['provider', 'get', name]), {
+    stdio: 'ignore',
+    timeout: 15_000,
   });
-  const imageExistsLocally = localCheck.status === 0 && localCheck.stdout.toString().trim().length > 0;
-
-  if (!imageExistsLocally) {
-    const devImageName = process.env.OPENERAL_DEV_IMAGE ?? 'openeral-sandbox:dev';
-    const isDevImage = sandboxImage === devImageName;
-
-    if (isDevImage) {
-      // Dev image not found locally — auto-build from the repo Dockerfile.
-      // Walk up from the compiled file's location to find the repo root
-      // (avoids fragile assumptions about the exact build output path).
-      const repoRoot = findRepoRoot();
-      const dockerfile = repoRoot ? join(repoRoot, 'sandboxes', 'openeral', 'Dockerfile') : null;
-
-      if (!dockerfile || !existsSync(dockerfile)) {
-        const location = dockerfile ?? '(repo root not found)';
-        process.stderr.write(
-          `\x1b[31merror: dev image "${sandboxImage}" not found and Dockerfile not found at:\n` +
-          `  ${location}\n` +
-          'Run from inside the openeral repo, or build the image manually:\n' +
-          `  docker build -f sandboxes/openeral/Dockerfile -t ${sandboxImage} <repo-root>\n`
-        );
-        process.exit(1);
-      }
-
-      process.stderr.write(`\x1b[2m  dev image not found — building from ${dockerfile}...\x1b[0m\n`);
-
-      // Work around broken Docker credential helpers common in WSL + Docker Desktop.
-      // docker-credential-desktop.exe is a Windows binary that can't run in WSL,
-      // so Docker fails credential lookup even for public images.
-      // Pointing DOCKER_CONFIG at a minimal config with no credsStore bypasses this
-      // while still allowing anonymous pulls of public images.
-      const dockerCfgDir = join(homedir(), '.config', 'openeral', 'docker');
-      mkdirSync(dockerCfgDir, { recursive: true });
-      writeFileSync(join(dockerCfgDir, 'config.json'), JSON.stringify({ auths: {} }));
-
-      const buildResult = spawnSync('docker', ['build', '-f', dockerfile, '-t', sandboxImage, repoRoot!], {
-        stdio: 'inherit',
-        timeout: 900000, // 15 minutes
-        env: { ...process.env, DOCKER_CONFIG: dockerCfgDir },
-      });
-
-      if (buildResult.status !== 0) {
-        process.stderr.write(`\x1b[31merror: failed to build dev image "${sandboxImage}"\x1b[0m\n`);
-        process.exit(1);
-      }
-      process.stderr.write(`\x1b[32m✓ Dev image built: ${sandboxImage}\x1b[0m\n`);
-    } else {
-      // Registry image — pull from remote
-      process.stderr.write('\x1b[2m  pulling image on host (this may take a few minutes)...\x1b[0m\n');
-      const pullResult = spawnSync('docker', ['pull', sandboxImage], {
-        stdio: 'inherit',
-        timeout: 600000,
-      });
-
-      if (pullResult.status !== 0) {
-        process.stderr.write(
-          `\x1b[31merror: image "${sandboxImage}" could not be pulled from registry.\x1b[0m\n`
-        );
-        process.exit(1);
-      }
-    }
-  } else {
-    process.stderr.write('\x1b[32m✓ Image found in local Docker daemon\x1b[0m\n');
-  }
-
-  // Flatten the image to a single layer before importing into k3s.
-  //
-  // Docker images built on top of a base that replaces system packages (e.g. apt
-  // installing nodejs over an existing npm) contain opaque whiteout files
-  // (.wh..wh..opq).  k3s's containerd extracts these by calling mknod to create
-  // whiteout char devices in the overlayfs upper dir — but mknod is restricted
-  // inside a Docker container (seccomp/AppArmor).  The result: the pod is stuck
-  // in Pending forever.
-  //
-  // Fix: docker export produces a flat filesystem tarball with no whiteouts
-  // (just the final merged file tree).  docker import turns that into a
-  // single-layer Docker image.  A single-layer image with no whiteout entries
-  // extracts cleanly on any Linux system regardless of mknod restrictions.
-  const fsTar    = '/tmp/openeral-sandbox-fs.tar';
-  const tmpTar   = '/tmp/openeral-sandbox-image.tar';
-  const containerTar = '/tmp/openeral-sandbox-image.tar';
-  const flatTag  = `${sandboxImage}-openeral-flat`;
-  // Expanded forms for k3s ctr operations — containerd stores refs with the
-  // full docker.io/library/ prefix, so `ctr images tag SHORT_NAME ...` silently
-  // fails when the source isn't found under the short name.
-  const expandedFlatTag = expandImageRef(flatTag);
-  const flatContainer = `openeral-flatten-${Date.now()}`;
-
-  process.stderr.write('\x1b[2m  flattening image (squashing layers to remove whiteouts)...\x1b[0m\n');
-  spawnSync('docker', ['rm', '-f', flatContainer], { stdio: 'pipe' });
-  spawnSync('docker', ['create', '--name', flatContainer, sandboxImage], { stdio: 'pipe', timeout: 30000 });
-  spawnSync('docker', ['export', flatContainer, '-o', fsTar], { stdio: 'pipe', timeout: 300000 });
-  spawnSync('docker', ['rm', flatContainer], { stdio: 'pipe' });
-  spawnSync('docker', ['rmi', '-f', flatTag], { stdio: 'pipe' });
-  spawnSync('docker', ['import', fsTar, flatTag], { stdio: 'pipe', timeout: 120000 });
-  spawnSync('rm', ['-f', fsTar], { stdio: 'pipe' });
-
-  process.stderr.write('\x1b[2m  saving flattened image...\x1b[0m\n');
-  const saveResult = spawnSync('docker', ['save', flatTag, '-o', tmpTar], { stdio: 'pipe', timeout: 300000 });
-  spawnSync('docker', ['rmi', '-f', flatTag], { stdio: 'pipe' });
-  if (saveResult.status !== 0) {
-    process.stderr.write(`\x1b[33mwarning: failed to save flattened image: ${(saveResult.stderr ?? '').toString().trim()}\x1b[0m\n`);
-    return;
-  }
-
-  process.stderr.write('\x1b[2m  copying image into cluster container...\x1b[0m\n');
-  const cpResult = spawnSync('docker', ['cp', tmpTar, `openshell-cluster-openshell:${containerTar}`], { stdio: 'pipe', timeout: 120000 });
-  spawnSync('rm', ['-f', tmpTar], { stdio: 'pipe' });
-  if (cpResult.status !== 0) {
-    process.stderr.write(`\x1b[33mwarning: failed to copy image into container: ${(cpResult.stderr ?? '').toString().trim()}\x1b[0m\n`);
-    return;
-  }
-
-  process.stderr.write('\x1b[2m  importing into k3s cluster...\x1b[0m\n');
-  const importResult = spawnSync('docker', [...K3S_CTR_IMPORT, containerTar], { stdio: 'pipe', timeout: 600000 });
-  spawnSync('docker', ['exec', 'openshell-cluster-openshell', 'rm', '-f', containerTar], { stdio: 'pipe' });
-
-  if (importResult.status !== 0) {
-    const errMsg = (importResult.stderr ?? '').toString().trim();
-    process.stderr.write(
-      `\x1b[33mwarning: image import failed (exit ${importResult.status})\x1b[0m\n` +
-      (errMsg ? `  ${errMsg}\n` : '')
-    );
-    return;
-  }
-
-  // The flat image was imported under expandedFlatTag — retag it as the original
-  // image name so the OpenShell operator can find it when creating the sandbox pod.
-  // Both source and target must use the expanded docker.io/library/ form because
-  // containerd does NOT expand short names in `ctr images tag`.
-  spawnSync('docker', [...K3S_CTR, 'images', 'tag', expandedFlatTag, expandedSandboxImage], { stdio: 'pipe', timeout: 10000 });
-  process.stderr.write('\x1b[32m✓ Sandbox image imported to cluster\x1b[0m\n');
-
-  if (imageExistsInCluster()) {
-    process.stderr.write('\x1b[32m✓ Image verified in cluster\x1b[0m\n');
-  } else {
-    process.stderr.write('\x1b[33mwarning: image still not found in cluster after import — sandbox may fail to start\x1b[0m\n');
+  const args = existing.status === 0
+    ? ['provider', 'update', name, '--credential', credentialKey]
+    : ['provider', 'create', '--name', name, '--type', 'generic', '--credential', credentialKey];
+  const result = spawnSync(OPENSHELL_BIN, openShellArgs(args), {
+    stdio: 'inherit',
+    timeout: 30_000,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`failed to register OpenShell provider ${name}`);
   }
 }
 
-/**
- * Cleanup existing sandbox if it exists.
- * This prevents UNIQUE constraint errors when recreating sandboxes.
- */
-async function cleanupExistingSandbox(workspaceId: string): Promise<void> {
-  // Check if sandbox exists
-  const listResult = spawnSync('openshell', ['sandbox', 'list'], {
-    stdio: 'pipe',
-    timeout: 10000,
+function removeExistingSandbox(name: string): void {
+  const existing = spawnSync(OPENSHELL_BIN, openShellArgs(['sandbox', 'get', name]), {
+    stdio: 'ignore',
+    timeout: 15_000,
   });
+  if (existing.status !== 0) return;
 
-  if (listResult.status !== 0) {
-    // Can't list sandboxes, skip cleanup
-    return;
-  }
-
-  const output = listResult.stdout.toString();
-  if (!output.includes(workspaceId)) {
-    // Sandbox doesn't exist, nothing to clean up
-    return;
-  }
-
-  process.stderr.write(`\x1b[2mopeneral: cleaning up existing sandbox '${workspaceId}'...\x1b[0m\n`);
-
-  // Delete the existing sandbox
-  const deleteResult = spawnSync('openshell', ['sandbox', 'delete', workspaceId], {
-    stdio: 'pipe',
-    timeout: 30000,
+  process.stderr.write(`\x1b[2mopeneral: replacing existing sandbox ${name}...\x1b[0m\n`);
+  const removed = spawnSync(OPENSHELL_BIN, openShellArgs(['sandbox', 'delete', name]), {
+    stdio: 'inherit',
+    timeout: 120_000,
   });
-
-  if (deleteResult.status === 0) {
-    process.stderr.write('\x1b[32m✓ Existing sandbox cleaned up\x1b[0m\n');
-  } else {
-    // Deletion failed, but continue anyway - the create might still work
-    process.stderr.write('\x1b[33mwarning: failed to delete existing sandbox, continuing anyway\x1b[0m\n');
+  if (removed.error) throw removed.error;
+  if (removed.status !== 0) {
+    throw new Error(`failed to delete existing sandbox ${name}`);
   }
-
-  // Wait a moment for cleanup to complete
-  await new Promise(resolve => setTimeout(resolve, 2000));
-}
-
-/**
- * Background task: inject /mnt into the running sandbox container via nsenter.
- *
- * Strategy: wait for the pod to reach Running state, then use `crictl` inside
- * the k3s node container to find the container PID and `nsenter` into its mount
- * namespace to bind-mount /mnt.  No pod restart is performed, so the setup
- * script continues uninterrupted and Claude Code launches normally.
- *
- * Works on any Linux-based system where the k3s node container has:
- *   - crictl (standard in k3s distributions)
- *   - nsenter (part of util-linux, available on all modern Linux distros)
- *   - /mnt accessible (ensured by ensureGatewayHasMntMount which runs first)
- */
-async function injectMntIntoSandbox(workspaceId: string): Promise<void> {
-  // Poll until the sandbox pod is Running (up to 300 s at 500 ms intervals)
-  let podName = '';
-  for (let i = 0; i < 600; i++) {
-    await new Promise(resolve => setTimeout(resolve, 500));
-    const r = spawnSync('docker', [
-      'exec', 'openshell-cluster-openshell',
-      'kubectl', '--insecure-skip-tls-verify',
-      'get', 'pods', '-n', 'openshell',
-      '-l', `agents.x-k8s.io/sandbox-name=${workspaceId}`,
-      '-o', 'jsonpath={.items[0].metadata.name}/{.items[0].status.phase}',
-    ], { stdio: 'pipe', timeout: 10000 });
-    if (r.status === 0) {
-      const out = (r.stdout ?? Buffer.from('')).toString().trim();
-      const slash = out.indexOf('/');
-      if (slash > 0 && out.slice(slash + 1) === 'Running') {
-        podName = out.slice(0, slash);
-        break;
-      }
-    }
-  }
-
-  if (!podName) {
-    process.stderr.write('\x1b[33mwarning: sandbox pod not ready after 300s — /mnt injection skipped\x1b[0m\n');
-
-    // Emit k8s events so the user can see exactly why the pod is Pending.
-    // Common causes: missing provider secret, image pull failure, resource limits.
-    const eventsResult = spawnSync('docker', [
-      'exec', 'openshell-cluster-openshell',
-      'kubectl', '--insecure-skip-tls-verify',
-      'get', 'events', '-n', 'openshell',
-      '--sort-by=.lastTimestamp',
-      '-o', 'wide',
-    ], { stdio: 'pipe', timeout: 10000 });
-
-    if (eventsResult.status === 0) {
-      const allEvents = eventsResult.stdout.toString();
-      const relevant = allEvents.split('\n')
-        .filter(line => !line.startsWith('LAST SEEN') && line.trim() !== '')
-        .join('\n');
-      if (relevant) {
-        process.stderr.write(`\x1b[2m  sandbox pod events (for diagnosis):\n${relevant}\x1b[0m\n`);
-      }
-    }
-
-    return;
-  }
-
-  // Use crictl inside the k3s node to find the container PID, then nsenter
-  // into its mount namespace and bind-mount /mnt (no-op if already mounted).
-  //
-  // grep -Eo '"pid": *[1-9][0-9]*' matches the first non-zero pid field in the
-  // crictl inspect JSON output, working across both compact and pretty-printed
-  // JSON and across all Linux grep variants (GNU and BSD).
-  const injectScript =
-    `CONTAINER_ID=$(crictl ps ` +
-      `--label 'io.kubernetes.pod.name=${podName}' ` +
-      `--label 'io.kubernetes.pod.namespace=openshell' ` +
-      `-q 2>/dev/null | head -1); ` +
-    `if [ -z "$CONTAINER_ID" ]; then ` +
-      `echo "crictl: no container for pod ${podName}" >&2; exit 1; ` +
-    `fi; ` +
-    `PID=$(crictl inspect "$CONTAINER_ID" 2>/dev/null ` +
-      `| grep -Eo '"pid": *[1-9][0-9]*' ` +
-      `| grep -Eo '[1-9][0-9]*' | head -1); ` +
-    `if [ -z "$PID" ]; then ` +
-      `echo "crictl: could not get container PID for $CONTAINER_ID" >&2; exit 1; ` +
-    `fi; ` +
-    `nsenter -t "$PID" --mount -- ` +
-      `sh -c 'mountpoint -q /mnt 2>/dev/null && exit 0; mount --rbind /mnt /mnt'`;
-
-  const injectResult = spawnSync('docker', [
-    'exec', 'openshell-cluster-openshell',
-    'sh', '-c', injectScript,
-  ], { stdio: 'pipe', timeout: 30000 });
-
-  if (injectResult.status === 0) {
-    process.stderr.write('\x1b[32m✓ Host filesystem injected into sandbox\x1b[0m\n');
-  } else {
-    const stderr = (injectResult.stderr ?? Buffer.from('')).toString().trim();
-    process.stderr.write(
-      `\x1b[33mwarning: /mnt injection failed${stderr ? ': ' + stderr : ' (crictl/nsenter unavailable?)'}\x1b[0m\n` +
-      `\x1b[2m  Sandbox will run without host filesystem access\x1b[0m\n`,
-    );
-  }
-}
-
-/**
- * Ensure iptables DNAT rules exist inside the gateway container so traffic
- * arriving at container-eth0:8080 and loopback:8080 is forwarded to the
- * openshell-0 pod IP on port 8080.
- *
- * Docker maps host:8080 → container:8080, but nothing listens on container:8080
- * directly — the openshell-server only accepts connections via its pod IP or
- * the k8s NodePort (30051). We add PREROUTING + OUTPUT DNAT so the existing
- * docker port mapping works without recreating the container.
- */
-async function ensurePortRoutingInContainer(): Promise<void> {
-  // Get the pod IP of openshell-0
-  const podIpResult = spawnSync('docker', [
-    'exec', 'openshell-cluster-openshell',
-    'kubectl', '--insecure-skip-tls-verify',
-    'get', 'pod', 'openshell-0',
-    '-n', 'openshell',
-    '-o', 'jsonpath={.status.podIP}'
-  ], { stdio: 'pipe', timeout: 10000 });
-
-  if (podIpResult.status !== 0 || !podIpResult.stdout.toString().trim()) {
-    process.stderr.write('\x1b[33mwarning: could not get openshell-0 pod IP — skipping port routing setup\x1b[0m\n');
-    return;
-  }
-
-  const podIp = podIpResult.stdout.toString().trim();
-
-  // Check if PREROUTING rule already targets this pod IP
-  const checkPrerouting = spawnSync('docker', [
-    'exec', 'openshell-cluster-openshell',
-    'iptables', '-t', 'nat', '-C', 'PREROUTING',
-    '-p', 'tcp', '--dport', '8080',
-    '-j', 'DNAT', '--to-destination', `${podIp}:8080`
-  ], { stdio: 'pipe', timeout: 5000 });
-
-  if (checkPrerouting.status !== 0) {
-    spawnSync('docker', [
-      'exec', 'openshell-cluster-openshell',
-      'iptables', '-t', 'nat', '-I', 'PREROUTING', '1',
-      '-p', 'tcp', '--dport', '8080',
-      '-j', 'DNAT', '--to-destination', `${podIp}:8080`
-    ], { stdio: 'pipe', timeout: 10000 });
-  }
-
-  // Check if OUTPUT rule already targets this pod IP
-  const checkOutput = spawnSync('docker', [
-    'exec', 'openshell-cluster-openshell',
-    'iptables', '-t', 'nat', '-C', 'OUTPUT',
-    '-p', 'tcp', '-d', '127.0.0.1', '--dport', '8080',
-    '-j', 'DNAT', '--to-destination', `${podIp}:8080`
-  ], { stdio: 'pipe', timeout: 5000 });
-
-  if (checkOutput.status !== 0) {
-    spawnSync('docker', [
-      'exec', 'openshell-cluster-openshell',
-      'iptables', '-t', 'nat', '-I', 'OUTPUT', '1',
-      '-p', 'tcp', '-d', '127.0.0.1', '--dport', '8080',
-      '-j', 'DNAT', '--to-destination', `${podIp}:8080`
-    ], { stdio: 'pipe', timeout: 10000 });
-  }
-
-  process.stderr.write(`\x1b[32m✓ Port routing: container:8080 → pod ${podIp}:8080\x1b[0m\n`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1435,485 +670,179 @@ async function cmdPresignRenew(): Promise<void> {
     process.exit(1);
   }
 }
-
 /**
- * Launch Claude Code inside an OpenShell sandbox.
+ * Launch Claude Code through the public OpenShell CLI contract.
  *
- * Flow:
- *   1. Ensure the OpenShell gateway is running (idempotent).
- *   2. Create a sandbox from the openeral image and attach to it.
- *      openeral-init runs migrations, seeds/hydrates the workspace, then
- *      the Claude wrapper lazily starts the daemon.
+ * The create-time command performs one-shot initialization and exits. Claude is
+ * then started with sandbox exec; its wrapper owns lazy daemon startup and the
+ * post-session persistence flush.
  */
 async function launchViaSandbox(workspaceId: string, claudeArgs: string[], devMode = false): Promise<void> {
-  const sandboxImage = devMode
-    ? (process.env.OPENERAL_DEV_IMAGE ?? 'openeral-sandbox:dev')
-    : (process.env.OPENERAL_SANDBOX_IMAGE ?? 'ghcr.io/sandys/openeral/sandbox:just-bash');
-
-  // Check if openshell is installed
-  const checkResult = spawnSync('openshell', ['--version'], { stdio: 'pipe' });
-  if (checkResult.error) {
-    const isNotFound = (checkResult.error as NodeJS.ErrnoException).code === 'ENOENT';
-    if (isNotFound) {
-      process.stderr.write(
-        '\x1b[31merror: `openshell` is not installed.\x1b[0m\n' +
-        'openeral runs Claude Code inside an OpenShell sandbox — install OpenShell first:\n' +
-        '  https://docs.openshell.dev/install\n',
-      );
-      process.exit(1);
-    }
+  const repoRoot = devMode ? findRepoRoot() : null;
+  const sandboxSource = devMode
+    ? (process.env.OPENERAL_DEV_IMAGE
+      ?? (repoRoot ? join(repoRoot, 'Dockerfile.openeral') : null))
+    : (process.env.OPENERAL_SANDBOX_IMAGE
+      ?? 'ghcr.io/sandys/openeral/sandbox:just-bash');
+  if (!sandboxSource) {
+    throw new Error('could not locate Dockerfile.openeral; set OPENERAL_DEV_IMAGE explicitly');
   }
+  const fuseRuntime = devMode
+    || process.env.OPENERAL_FUSE === '1'
+    || /(?:^|[:/])fuse(?:-|$)/.test(sandboxSource);
+  requireCurrentOpenShell(fuseRuntime);
 
-  // Check if Docker is running
-  const dockerCheck = spawnSync('docker', ['info'], { stdio: 'pipe', timeout: 5000 });
-  if (dockerCheck.error || dockerCheck.status !== 0) {
-    // Detect which init system is running so we can give the right command
-    const hasSystemd = spawnSync('systemctl', ['is-active', 'docker'], { stdio: 'pipe', timeout: 3000 }).status !== undefined &&
-      !spawnSync('systemctl', ['--version'], { stdio: 'pipe', timeout: 3000 }).error;
-    const dockerStartCmd = hasSystemd
-      ? 'sudo systemctl start docker'
-      : 'sudo service docker start';
+  removeExistingSandbox(workspaceId);
 
-    if (dockerCheck.error && (dockerCheck.error as NodeJS.ErrnoException).code === 'ENOENT') {
-      process.stderr.write(
-        '\x1b[31merror: Docker is not installed.\x1b[0m\n' +
-        'OpenShell requires Docker. Install it from:\n' +
-        '  https://docs.docker.com/engine/install/\n' +
-        'Quick install for most Linux distros:\n' +
-        '  curl -fsSL https://get.docker.com | sh\n',
-      );
-    } else {
-      process.stderr.write(
-        '\x1b[31merror: Docker is not running.\x1b[0m\n' +
-        'OpenShell requires Docker. Start it with one of:\n' +
-        `  ${dockerStartCmd}\n` +
-        '  sudo rc-service docker start      # OpenRC (Alpine, Gentoo)\n' +
-        '  sudo /etc/init.d/docker start     # SysV init\n' +
-        'Or enable it at boot: sudo systemctl enable --now docker\n',
-      );
-    }
-    process.exit(1);
-  }
-
-  // Check if OpenShell network exists, create if needed
-  const networkCheck = spawnSync('docker', ['network', 'inspect', 'openshell-cluster-openshell'], {
-    stdio: 'pipe',
-  });
-
-  if (networkCheck.status !== 0) {
-    process.stderr.write('\x1b[2mopeneral: creating OpenShell network...\x1b[0m\n');
-    const networkCreate = spawnSync('docker', [
-      'network', 'create',
-      '--driver', 'bridge',
-      'openshell-cluster-openshell'
-    ], { stdio: 'pipe' });
-
-    if (networkCreate.status !== 0) {
-      process.stderr.write(
-        '\x1b[31merror: failed to create Docker network.\x1b[0m\n' +
-        'Try manually:\n' +
-        '  docker network create --driver bridge openshell-cluster-openshell\n',
-      );
-      process.exit(1);
-    }
-  }
-
-  // Check gateway container state
-  const containerCheck = spawnSync('docker', ['inspect', 'openshell-cluster-openshell', '--format', '{{.State.Running}}'], {
-    stdio: 'pipe',
-  });
-
-  const isRunning = containerCheck.status === 0 && containerCheck.stdout.toString().trim() === 'true';
-  const containerExists = containerCheck.status === 0;
-
-  if (!containerExists) {
-    // Gateway does not exist — run openshell gateway start
-    process.stderr.write('\x1b[2mopeneral: starting OpenShell gateway (this may take 5-8 minutes on first run)...\x1b[0m\n');
-
-    const gatewayResult = spawnSync('openshell', ['gateway', 'start'], {
-      stdio: 'inherit',
-      timeout: 480_000,
-    });
-
-    if (gatewayResult.error) {
-      if (gatewayResult.error.message.includes('ETIMEDOUT')) {
-        process.stderr.write(
-          '\x1b[31merror: gateway startup timed out after 8 minutes.\x1b[0m\n' +
-          'This usually means Docker is slow or the gateway image is downloading.\n' +
-          'Check Docker status: docker ps\n' +
-          'Check gateway logs: docker logs openshell-cluster-openshell\n',
-        );
-      } else {
-        process.stderr.write(
-          `\x1b[31merror: failed to start gateway: ${gatewayResult.error.message}\x1b[0m\n`,
-        );
-      }
-      process.exit(1);
-    }
-
-    if (gatewayResult.status !== 0) {
-      process.stderr.write(
-        '\x1b[31merror: gateway failed to start (exit code ' + gatewayResult.status + ').\x1b[0m\n' +
-        'Check gateway logs: docker logs openshell-cluster-openshell\n',
-      );
-      process.exit(1);
-    }
-
-    // Wait for openshell namespace to be ready
-    process.stderr.write('\x1b[2mopeneral: waiting for gateway to initialize (this may take 5-8 minutes on first run)...\x1b[0m\n');
-    let namespaceReady = false;
-    for (let i = 0; i < 240; i++) {
-      const checkNs = spawnSync('docker', [
-        'exec', 'openshell-cluster-openshell',
-        'kubectl', '--insecure-skip-tls-verify', 'get', 'namespace', 'openshell'
-      ], { stdio: 'pipe', timeout: 5000 });
-      if (checkNs.status === 0) { namespaceReady = true; break; }
-      if (i > 0 && i % 30 === 0) {
-        process.stderr.write(`\x1b[2m  still waiting for k3s... (${Math.floor(i * 2 / 60)}m)\x1b[0m\n`);
-      }
-      await new Promise(resolve => setTimeout(resolve, 2000));
-    }
-    if (!namespaceReady) {
-      process.stderr.write(
-        '\x1b[31merror: openshell namespace not ready after 8 minutes.\x1b[0m\n' +
-        'Try:\n' +
-        '  docker logs openshell-cluster-openshell\n' +
-        '  docker exec openshell-cluster-openshell kubectl get nodes\n'
-      );
-      process.exit(1);
-    }
-
-    const initialPodReady = await waitForOpenshellPod();
-    if (!initialPodReady) {
-      process.stderr.write(
-        '\x1b[31merror: gateway pod not ready after 8 minutes.\x1b[0m\n' +
-        '  docker exec openshell-cluster-openshell kubectl get pods -n openshell\n'
-      );
-      process.exit(1);
-    }
-    // First-run: also wait for the openshell API to be fully ready
-    await waitForOpenshellApiReady(120);
-  } else if (!isRunning) {
-    // Container exists but is stopped — just start it
-    process.stderr.write('\x1b[2mopeneral: gateway container is stopped, starting it...\x1b[0m\n');
-    const startResult = spawnSync('docker', ['start', 'openshell-cluster-openshell'], { stdio: 'pipe' });
-    if (startResult.status !== 0) {
-      process.stderr.write(
-        '\x1b[31merror: failed to start stopped gateway container.\x1b[0m\n' +
-        'Try manually:\n' +
-        '  docker start openshell-cluster-openshell\n' +
-        'Or destroy and recreate:\n' +
-        '  openshell gateway destroy --name openshell\n' +
-        '  openshell gateway start\n',
-      );
-      process.exit(1);
-    }
-    // After docker start, k3s needs time to restart its API server and resume pods.
-    // A bare 5-second sleep is far too short — wait for the openshell namespace to
-    // reappear (proves the k3s API is up) before continuing.
-    process.stderr.write('\x1b[2mopeneral: waiting for gateway to resume...\x1b[0m\n');
-    let resumeNsReady = false;
-    for (let i = 0; i < 120; i++) { // up to 4 minutes
-      const checkNs = spawnSync('docker', [
-        'exec', 'openshell-cluster-openshell',
-        'kubectl', '--insecure-skip-tls-verify', 'get', 'namespace', 'openshell',
-      ], { stdio: 'pipe', timeout: 5000 });
-      if (checkNs.status === 0) { resumeNsReady = true; break; }
-      if (i > 0 && i % 15 === 0) {
-        process.stderr.write(`\x1b[2m  still waiting for k3s to resume... (${Math.floor(i * 2 / 60)}m ${(i * 2) % 60}s)\x1b[0m\n`);
-      }
-      await new Promise(resolve => setTimeout(resolve, 2000));
-    }
-    if (!resumeNsReady) {
-      process.stderr.write('\x1b[33mwarning: k3s namespace not ready after restart — continuing anyway\x1b[0m\n');
-    }
-  } else {
-    process.stderr.write('\x1b[2mopeneral: gateway is already running\x1b[0m\n');
-  }
-
-  // Fix TLS if broken (regenerates certs in-place, no container recreation)
-  const tlsOk = await fixBrokenTls();
-  if (!tlsOk) {
-    process.stderr.write('\x1b[33mwarning: TLS fix failed — proceeding anyway\x1b[0m\n');
-  }
-
-  // Wait for openshell-0 pod to be ready
-  const podReady = await waitForOpenshellPod();
-  if (!podReady) {
-    process.stderr.write(
-      '\x1b[31merror: gateway pod not ready.\x1b[0m\n' +
-      'Check: docker exec openshell-cluster-openshell kubectl get pods -n openshell\n'
-    );
-    process.exit(1);
-  }
-
-  // Verify the openshell API is accepting connections.
-  // "Pod ready" (Kubernetes) ≠ "operator ready" — the openshell operator inside the
-  // pod needs additional time to initialise after container start.  If we create a
-  // sandbox before it's ready, --auto-providers races with pod scheduling and the
-  // sandbox pod gets stuck in DependenciesNotReady because its provider secret doesn't
-  // exist yet when Kubernetes schedules it.
-  const apiReady = await waitForOpenshellApiReady(120);
-  if (!apiReady) {
-    process.stderr.write(
-      '\x1b[31merror: openshell API not available after 2 minutes.\x1b[0m\n' +
-      '  openshell sandbox list\n' +
-      '  docker logs openshell-cluster-openshell\n'
-    );
-    process.exit(1);
-  }
-
-  process.stderr.write('\x1b[32m✓ Gateway ready\x1b[0m\n');
-
-  // Ensure port 8080 on the container routes to the openshell pod
-  await ensurePortRoutingInContainer();
-
-  // Ensure sandbox image is available in k3s cluster
-  await ensureSandboxImage(sandboxImage);
-
-  // Non-destructively ensure /mnt is accessible in gateway container
-  await ensureGatewayHasMntMount();
-
-  // Check if sandbox already exists and delete it
-  await cleanupExistingSandbox(workspaceId);
-
-  // Presign-first auth model:
-  //   - Stored presign present → use it; ANTHROPIC_API_KEY and STRINGCOST_API_KEY are not needed.
-  //   - No stored presign       → require both keys to create one now, then store it.
-  // Run `npx openeral presign renew` to replace the stored presign at any time.
-  let stringcostUrl: string | undefined;
   const storedPresign = loadStoredPresign();
-  if (storedPresign) {
-    // Reuse the stored permanent presign — no env vars required
-    stringcostUrl = stringCostProxyBaseUrl(storedPresign.url);
-    process.stderr.write('\x1b[32m✓ Using stored StringCost presign\x1b[0m\n');
-    process.stderr.write(`\x1b[2m  Proxy URL: ${stringcostUrl}\x1b[0m\n`);
-  } else {
-    // No stored presign — both keys are required to create one
-    const anthropicKey = (process.env.ANTHROPIC_API_KEY ?? '').replace('@anthropic_api_key', '').trim();
-    const stringcostKey = (process.env.STRINGCOST_API_KEY ?? '').replace('@stringcost_api_key', '').trim();
-
-    if (!anthropicKey || !stringcostKey) {
-      process.stderr.write(
-        '\x1b[31merror: no stored presign found and required keys are missing.\x1b[0m\n' +
-        'Either run `npx openeral presign renew` once (requires both keys), or set:\n' +
-        '  ANTHROPIC_API_KEY=sk-ant-...   your Anthropic API key\n' +
-        '  STRINGCOST_API_KEY=...          your StringCost API key\n' +
-        'Once created, the presign is stored permanently and no keys are needed again.\n',
-      );
-      process.exit(1);
-    }
-
-    process.stderr.write('\x1b[2mopeneral: no stored presign — creating permanent presign...\x1b[0m\n');
-    try {
-      const fullUrl = await createPresignUrl(anthropicKey, stringcostKey);
-      saveStoredPresign(fullUrl, stringcostKey);
-      stringcostUrl = stringCostProxyBaseUrl(fullUrl);
-      process.stderr.write('\x1b[32m✓ StringCost presign created and stored (expires_in=-1, max_uses=-1, cost_limit=$10)\x1b[0m\n');
-    } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      process.stderr.write('\x1b[31merror: failed to create StringCost presign: ' + error.message + '\x1b[0m\n');
-      process.exit(1);
-    }
+  const stringcostKey = (process.env.STRINGCOST_API_KEY ?? '')
+    .replace('@stringcost_api_key', '')
+    .trim();
+  if (!storedPresign && stringcostKey) {
+    ensureGenericProvider('stringcost', 'STRINGCOST_API_KEY');
   }
 
-  // Build `openshell sandbox create` arguments.
-  // --name   maps to OPENSHELL_SANDBOX_ID inside the container, which
-  //          setup.sh uses as the workspace ID.
-  // --auto-providers creates/resolves named LLM providers automatically.
-  // PostgreSQL credentials are uploaded as a file because OpenShell generic
-  // provider placeholders are not usable by raw TCP clients like pg.
-  // When a presign is in use we do NOT include --provider claude: the sandbox
-  // authenticates via the presign URL written to ~/.claude/settings.json and
-  // must never see ANTHROPIC_API_KEY.
+  const temporaryPaths: string[] = [];
   const sandboxArgs: string[] = [
     'sandbox', 'create',
     '--name', workspaceId,
-    '--from', sandboxImage,
+    '--from', sandboxSource,
+    '--no-tty',
   ];
-
-  if (!stringcostUrl && process.env.ANTHROPIC_API_KEY) {
-    // Fallback (no presign): inject the raw API key via the claude provider
-    sandboxArgs.push('--provider', 'claude');
-  }
+  if (fuseRuntime) sandboxArgs.push('--fuse');
 
   const dbUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL || '';
-  let dbUploadPath: string | undefined;
+  if (fuseRuntime && !dbUrl) {
+    throw new Error('DATABASE_URL is required by the FUSE runtime; use the compatibility image for PGlite');
+  }
   if (dbUrl) {
-    dbUploadPath = join(tmpdir(), `openeral-db-url-${process.pid}-${Date.now()}`);
+    const dbUploadPath = join(tmpdir(), `openeral-db-url-${process.pid}-${Date.now()}`);
     writeFileSync(dbUploadPath, dbUrl, { mode: 0o600 });
-    try {
-      chmodSync(dbUploadPath, 0o600);
-    } catch {
-      // Ignore chmod errors on platforms that don't support it.
-    }
+    chmodSync(dbUploadPath, 0o600);
+    temporaryPaths.push(dbUploadPath);
     sandboxArgs.push('--upload', `${dbUploadPath}:/sandbox/db-url`);
   }
 
-  sandboxArgs.push('--auto-providers');
-
-  // Resolve the StringCost API key for org skills download.
-  // Priority: env var > key stored alongside presign.
-  // If the env var is set and differs from the stored key, update the stored copy
-  // so future launches download skills automatically without the env var.
-  const envSkillsKey = (process.env.STRINGCOST_API_KEY ?? '').replace('@stringcost_api_key', '').trim();
-  const storedSkillsKey = storedPresign?.stringcostApiKey?.trim() ?? '';
-  const stringcostKeyForSkills = envSkillsKey || storedSkillsKey;
-
-  if (envSkillsKey && storedPresign && envSkillsKey !== storedSkillsKey) {
-    saveStoredPresign(storedPresign.url, envSkillsKey);
-    process.stderr.write('\x1b[2mopeneral: stored StringCost API key updated from env\x1b[0m\n');
+  if (storedPresign) {
+    const presignUploadPath = join(tmpdir(), `openeral-presign-${process.pid}-${Date.now()}.json`);
+    writeFileSync(
+      presignUploadPath,
+      JSON.stringify({ url: storedPresign.url }, null, 2),
+      { mode: 0o600 },
+    );
+    chmodSync(presignUploadPath, 0o600);
+    temporaryPaths.push(presignUploadPath);
+    sandboxArgs.push('--upload', `${presignUploadPath}:/sandbox/stringcost-presign`);
+  } else {
+    sandboxArgs.push('--provider', 'claude');
+    if (stringcostKey) sandboxArgs.push('--provider', 'stringcost');
+    sandboxArgs.push('--auto-providers');
   }
 
-  // Fetch org skills on the host and embed them as a base64 payload in the
-  // setup script.  The sandbox never sees the API key — only the already-
-  // downloaded bundle (base64-encoded JSON) is passed in.
-  let skillsBase64 = '';
-  if (stringcostKeyForSkills) {
-    process.stderr.write('\x1b[2mopeneral: downloading org skills...\x1b[0m\n');
+  sandboxArgs.push(
+    '--env', `WORKSPACE_ID=${workspaceId}`,
+    '--',
+    'openeral-init',
+  );
+
+  let skillsRoot: string | undefined;
+  const skillsKey = stringcostKey || storedPresign?.stringcostApiKey?.trim() || '';
+  if (skillsKey) {
     try {
-      const skills = await fetchOrgSkills(stringcostKeyForSkills);
-      skillsBase64 = Buffer.from(JSON.stringify(skills)).toString('base64');
-      process.stderr.write(`\x1b[32m✓ Downloaded ${skills.length} org skill${skills.length !== 1 ? 's' : ''}\x1b[0m\n`);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`\x1b[33mwarn: org skills download failed: ${msg} — continuing without org skills\x1b[0m\n`);
-    }
-  }
-
-  const runtimeScript = `
-set -e
-export WORKSPACE_ID="${workspaceId}"
-export STRINGCOST_PROXY_URL="${stringcostUrl || ''}"
-openeral-init
-${skillsBase64 ? `node -e "
-const s=JSON.parse(Buffer.from('${skillsBase64}','base64').toString());
-const{mkdirSync,writeFileSync}=require('fs');
-s.forEach(function(x){
-  const d='/home/agent/.claude/skills/'+x.slug;
-  mkdirSync(d,{recursive:true});
-  writeFileSync(d+'/SKILL.md',x.content);
-});
-console.log('setup: wrote '+s.length+' org skill'+(s.length===1?'':'s'));
-"` : '# No org skills (STRINGCOST_API_KEY not set or bundle download skipped)'}
-exec claude "$@"
-`;
-
-  sandboxArgs.push('--', 'bash', '-c', runtimeScript, '--', ...claudeArgs);
-
-  // Pre-flight: verify DATABASE_URL is reachable from the host before launching.
-  // A bad URL causes the migration step inside the sandbox to fail, which puts
-  // the sandbox pod into a crash-restart loop that manifests as TLS errors.
-  // Catching it here gives a clear, actionable error message.
-  if (dbUrl) {
-    process.stderr.write('\x1b[2mopeneral: verifying database connection...\x1b[0m\n');
-
-    // Warn early if the URL uses localhost — that address refers to the sandbox
-    // container inside k3s, NOT the user's machine.
-    if (/[@/](localhost|127\.0\.0\.1)([:/?]|$)/.test(dbUrl)) {
-      process.stderr.write(
-        '\x1b[33mwarn: DATABASE_URL uses localhost/127.0.0.1.\x1b[0m\n' +
-        '  This address resolves to the sandbox container, not your machine.\n' +
-        '  Use your real machine IP instead:\n' +
-        '    Linux: hostname -I | awk \'{print $1}\'\n' +
-        '  Then: export DATABASE_URL=postgresql://user:pass@<your-ip>:5432/db\n'
-      );
-    }
-
-    // Quick host-side connection test (same credentials the sandbox will use)
-    const { testConnection } = await import('./db/test-connection.js');
-    const result = await testConnection(dbUrl);
-    if (!result.success) {
-      process.stderr.write(
-        `\x1b[31merror: cannot connect to database — migrations would fail inside the sandbox.\x1b[0m\n` +
-        `  Error: ${result.error}\n` +
-        `  URL:   ${dbUrl.replace(/:[^:@]+@/, ':****@')}\n\n` +
-        'Check that:\n' +
-        '  1. The PostgreSQL server is running and accepting connections\n' +
-        '  2. Host, port, user, password, and database name are correct\n' +
-        '  3. The server pg_hba.conf allows connections from this host\n' +
-        '  4. Firewall/network allows TCP to the DB port\n'
-      );
-      if (dbUploadPath) {
-        try { rmSync(dbUploadPath, { force: true }); } catch {}
+      const skills = await fetchOrgSkills(skillsKey);
+      if (skills.length > 0) {
+        skillsRoot = join(tmpdir(), `openeral-skills-${process.pid}-${Date.now()}`);
+        const skillsDir = join(skillsRoot, 'skills');
+        for (const skill of skills) {
+          const skillDir = join(skillsDir, skill.slug);
+          mkdirSync(skillDir, { recursive: true });
+          writeFileSync(join(skillDir, 'SKILL.md'), skill.content);
+        }
+        temporaryPaths.push(skillsRoot);
+        process.stderr.write(
+          `\x1b[32m✓ Downloaded ${skills.length} StringCost org skill${skills.length === 1 ? '' : 's'}\x1b[0m\n`,
+        );
       }
-      process.exit(1);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(
+        `\x1b[33mwarning: StringCost skill download failed: ${message}\x1b[0m\n`,
+      );
     }
-    process.stderr.write(`\x1b[32m✓ Database reachable (${result.latency}ms)\x1b[0m\n`);
-  }
-
-  // Pre-create providers so their k8s Secrets exist BEFORE the sandbox pod is scheduled.
-  //
-  // When `openshell sandbox create --auto-providers` is used, the operator creates
-  // provider secrets asynchronously — the pod template references secrets that may
-  // not exist yet when Kubernetes schedules the pod, causing it to stay in Pending
-  // until those secrets appear (which can take 60-300+ seconds or never complete).
-  //
-  // By creating providers HERE (synchronously, before sandbox create), we guarantee
-  // the secrets exist when the pod is scheduled.
-  process.stderr.write('\x1b[2mopeneral: registering providers...\x1b[0m\n');
-
-  // claude provider — only needed when NOT using presign (injects ANTHROPIC_API_KEY).
-  // When a presign is in use, the sandbox authenticates via the presign URL written to
-  // ~/.claude/settings.json and ANTHROPIC_API_KEY must not be injected.
-  if (!stringcostUrl && process.env.ANTHROPIC_API_KEY) {
-    const claudeProvider = spawnSync('openshell', [
-      'provider', 'create', '--name', 'claude', '--type', 'generic', '--credential', 'ANTHROPIC_API_KEY',
-    ], { stdio: 'pipe', timeout: 30000 });
-    if (claudeProvider.status === 0) {
-      process.stderr.write('\x1b[32m✓ Claude provider registered\x1b[0m\n');
-    }
-    // Non-zero exit is expected when the provider already exists — that's fine.
   }
 
   process.stderr.write(
-    `\x1b[2mopeneral: launching Claude Code in OpenShell sandbox (${workspaceId})...\x1b[0m\n` +
-    `\x1b[2m  (if startup stalls for >3 min, press Ctrl+C and retry with OPENERAL_AUTO_FIX_TLS=1)\x1b[0m\n\n`,
+    `\x1b[2mopeneral: creating OpenShell sandbox ${workspaceId} from ${sandboxSource}...\x1b[0m\n`,
   );
 
-  const child = spawn('openshell', sandboxArgs, { stdio: 'inherit' });
-
-  // Warn the user if the sandbox hasn't become interactive after 3 minutes —
-  // this is the most common symptom of a TLS handshake failure between the
-  // sandbox pod and the openshell server.
-  const STARTUP_WARN_MS = 3 * 60 * 1000;
-  const startupWarnTimer = setTimeout(() => {
-    process.stderr.write(
-      '\n\x1b[33mwarn: sandbox startup is taking longer than expected.\x1b[0m\n' +
-      'This is usually caused by a TLS handshake failure between the sandbox pod\n' +
-      'and the OpenShell gateway. Press Ctrl+C to abort, then retry with:\n' +
-      '  OPENERAL_AUTO_FIX_TLS=1 npx openeral\n' +
-      'Diagnostics:\n' +
-      '  docker logs openshell-cluster-openshell\n' +
-      '  docker exec openshell-cluster-openshell kubectl get pods -n openshell\n\n'
-    );
-  }, STARTUP_WARN_MS);
-
-  // Background: inject /mnt into the running sandbox container via nsenter
-  injectMntIntoSandbox(workspaceId).catch((err: unknown) => {
-    process.stderr.write(`\x1b[33mwarning: /mnt injection failed: ${(err instanceof Error ? err.message : String(err))}\x1b[0m\n`);
-  });
-
-  child.on('error', (err: NodeJS.ErrnoException) => {
-    clearTimeout(startupWarnTimer);
-    if (dbUploadPath) {
-      try { rmSync(dbUploadPath, { force: true }); } catch {}
+  try {
+    const created = spawnSync(OPENSHELL_BIN, openShellArgs(sandboxArgs), {
+      stdio: 'inherit',
+      timeout: 15 * 60_000,
+    });
+    if (created.error) throw created.error;
+    if (created.status !== 0) {
+      throw new Error(`openshell sandbox create failed with exit code ${created.status ?? 1}`);
     }
-    process.stderr.write(`\x1b[31merror: ${err.message}\x1b[0m\n`);
-    process.exit(1);
-  });
 
-  child.on('exit', (code) => {
-    clearTimeout(startupWarnTimer);
-    if (dbUploadPath) {
-      try { rmSync(dbUploadPath, { force: true }); } catch {}
+    if (skillsRoot) {
+      const uploaded = spawnSync(
+        OPENSHELL_BIN,
+        openShellArgs([
+          'sandbox', 'upload', workspaceId, join(skillsRoot, 'skills'),
+          fuseRuntime ? '/sandbox/work/.claude/' : '/sandbox/.claude/',
+        ]),
+        { stdio: 'inherit', timeout: 120_000 },
+      );
+      if (uploaded.error) throw uploaded.error;
+      if (uploaded.status !== 0) {
+        process.stderr.write(
+          '\x1b[33mwarning: StringCost org skills could not be uploaded\x1b[0m\n',
+        );
+      }
     }
-    process.exit(code ?? 0);
-  });
-
-  for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) {
-    process.on(sig, () => child.kill(sig));
+  } finally {
+    for (const path of temporaryPaths) {
+      try { rmSync(path, { recursive: true, force: true }); } catch {}
+    }
   }
+
+  process.stderr.write(
+    `\x1b[2mopeneral: starting Claude Code in ${workspaceId}...\x1b[0m\n`,
+  );
+  const child = spawn(
+    OPENSHELL_BIN,
+    openShellArgs([
+      'sandbox', 'exec', '--name', workspaceId,
+      '--workdir', fuseRuntime ? '/sandbox/work' : '/sandbox',
+      '--', 'claude', ...claudeArgs,
+    ]),
+    { stdio: 'inherit' },
+  );
+
+  const forwarders = new Map<NodeJS.Signals, () => void>();
+  for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) {
+    const forward = () => child.kill(signal);
+    forwarders.set(signal, forward);
+    process.on(signal, forward);
+  }
+
+  const exitCode = await new Promise<number>((resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', (code, signal) => {
+      if (code !== null) {
+        resolve(code);
+      } else {
+        resolve(signal === 'SIGINT' ? 130 : 1);
+      }
+    });
+  }).finally(() => {
+    for (const [signal, forward] of forwarders) {
+      process.off(signal, forward);
+    }
+  });
+
+  if (exitCode !== 0) process.exitCode = exitCode;
 }
 
 export async function main() {
@@ -1985,7 +914,7 @@ export async function main() {
     const { refreshClaudeMemory } = await import('./memory/refresh.js');
     try {
       const result = await refreshClaudeMemory({
-        homeDir: process.env.HOME || '/home/agent',
+        homeDir: process.env.OPENERAL_HOME || process.env.HOME || '/sandbox',
         cwd: process.cwd(),
         projectRoot: parsed.projectRoot || undefined,
         query: parsed.query || undefined,
@@ -2022,7 +951,7 @@ export async function main() {
 
   process.stderr.write(`\x1b[2mopeneral: workspace  ${workspaceId}\x1b[0m\n`);
   if (devMode) {
-    const devImage = process.env.OPENERAL_DEV_IMAGE ?? 'openeral-sandbox:dev';
+    const devImage = process.env.OPENERAL_DEV_IMAGE ?? 'Dockerfile.openeral';
     process.stderr.write(`\x1b[2mopeneral: mode       dev (${devImage})\x1b[0m\n`);
   }
   await launchViaSandbox(workspaceId, claudeArgs, devMode);

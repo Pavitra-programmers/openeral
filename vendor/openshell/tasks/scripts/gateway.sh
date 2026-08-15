@@ -1,0 +1,456 @@
+#!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Start a standalone openshell-gateway using the detected compute driver.
+#
+# Auto-detection follows the gateway's runtime order:
+#   Kubernetes -> Podman -> Docker
+#
+# VM/MicroVM is intentionally explicit-only because it requires runtime setup.
+# Use either:
+#   OPENSHELL_DRIVERS=vm mise run gateway
+#   mise run gateway:vm
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+GATEWAY_BIN="${ROOT}/target/debug/openshell-gateway"
+
+usage() {
+  cat <<'EOF'
+Usage: mise run gateway [-- --driver DRIVER]
+
+Start a local OpenShell gateway with the detected compute driver.
+
+Driver detection order:
+  kubernetes -> podman -> docker
+
+Options:
+  --driver DRIVER  Override detection. Accepted values:
+                   kubernetes, podman, docker, vm, microvm
+  -h, --help       Show this help.
+
+Environment:
+  OPENSHELL_DRIVERS       Driver override used by openshell-gateway.
+  OPENSHELL_GATEWAY_NAME  Gateway name for generic podman/kubernetes runs.
+  OPENSHELL_SERVER_PORT   Gateway port. Defaults to 8080 for Kubernetes,
+                          18080 for Podman/Docker, and 18081 for VM.
+  OPENSHELL_SUPERVISOR_IMAGE
+                          Podman supervisor sideload image. Defaults to
+                          openshell/supervisor:dev and is built on demand.
+
+Corporate proxy (Podman driver only):
+  OPENSHELL_SANDBOX_HTTPS_PROXY
+                          Corporate forward proxy URL for sandbox TLS
+                          egress, in explicit http://host:port form.
+  OPENSHELL_SANDBOX_NO_PROXY
+                          Comma-separated NO_PROXY list (hostnames, domain
+                          suffixes, IPs, CIDRs, optional :port qualifiers)
+                          dialed directly instead of through the proxy.
+  OPENSHELL_SANDBOX_PROXY_AUTH_FILE
+                          Path to a file with proxy credentials as
+                          user:pass. Requires the acknowledgement below —
+                          the gateway refuses to start with one but not
+                          the other.
+  OPENSHELL_SANDBOX_PROXY_AUTH_ALLOW_INSECURE
+                          Set to true to acknowledge that the credential
+                          is sent as cleartext Basic auth over the
+                          plain-TCP connection to the http:// proxy.
+  OPENSHELL_SANDBOX_PROXY_CONNECT_BY_HOSTNAME
+                          Set to true to send the destination hostname in
+                          CONNECT instead of a validated IP. Last resort
+                          for hostname-filtering proxy ACLs.
+
+Docker and VM runs delegate to gateway:docker and gateway:vm setup scripts.
+EOF
+}
+
+normalize_driver() {
+  local driver
+  driver="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+
+  case "${driver}" in
+    kubernetes|k8s) echo "kubernetes" ;;
+    podman) echo "podman" ;;
+    docker) echo "docker" ;;
+    vm|microvm) echo "vm" ;;
+    "")
+      echo "ERROR: empty driver value" >&2
+      exit 2
+      ;;
+    *)
+      echo "ERROR: unsupported driver '$1' (expected kubernetes, podman, docker, vm, or microvm)" >&2
+      exit 2
+      ;;
+  esac
+}
+
+command_available() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+require_mise() {
+  if ! command_available mise; then
+    echo "ERROR: mise is required to build local gateway artifacts" >&2
+    exit 1
+  fi
+}
+
+run_mise_task() {
+  require_mise
+  mise run "$@"
+}
+
+podman_available() {
+  command_available podman && podman info >/dev/null 2>&1
+}
+
+docker_available() {
+  command_available docker && docker info >/dev/null 2>&1
+}
+
+detect_driver() {
+  if [[ -n "${KUBERNETES_SERVICE_HOST:-}" ]]; then
+    echo "kubernetes"
+    return
+  fi
+
+  if podman_available; then
+    echo "podman"
+    return
+  fi
+
+  if docker_available; then
+    echo "docker"
+    return
+  fi
+
+  echo "ERROR: no compute driver detected." >&2
+  echo "       Start Podman or Docker, run inside Kubernetes, or set OPENSHELL_DRIVERS." >&2
+  exit 2
+}
+
+# Escape a value for embedding in a double-quoted TOML basic string, so
+# quotes, backslashes, or control characters in an environment value cannot
+# corrupt gateway.toml or inject extra configuration keys.
+toml_escape() {
+  local s=$1
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\n'/\\n}
+  s=${s//$'\r'/\\r}
+  s=${s//$'\t'/\\t}
+  printf '%s' "${s}"
+}
+
+port_is_in_use() {
+  local port=$1
+  if command_available lsof; then
+    lsof -nP -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1
+    return $?
+  fi
+  if command_available nc; then
+    nc -z 127.0.0.1 "${port}" >/dev/null 2>&1
+    return $?
+  fi
+  (echo >/dev/tcp/127.0.0.1/"${port}") >/dev/null 2>&1
+}
+
+register_gateway_metadata() {
+  local name=$1
+  local endpoint=$2
+  local port=$3
+  local config_home gateway_dir
+
+  config_home="${XDG_CONFIG_HOME:-${HOME}/.config}"
+  gateway_dir="${config_home}/openshell/gateways/${name}"
+
+  mkdir -p "${gateway_dir}"
+  cat >"${gateway_dir}/metadata.json" <<EOF
+{
+  "name": "${name}",
+  "gateway_endpoint": "${endpoint}",
+  "is_remote": false,
+  "gateway_port": ${port},
+  "auth_mode": "plaintext"
+}
+EOF
+  printf '%s' "${name}" >"${config_home}/openshell/active_gateway"
+}
+
+require_podman_service() {
+  if ! command_available podman; then
+    echo "ERROR: podman is not installed or not in PATH" >&2
+    exit 1
+  fi
+
+  if ! podman_available; then
+    echo "ERROR: podman service is not reachable. Start it with:" >&2
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      echo "  podman machine start" >&2
+    else
+      echo "  systemctl --user start podman.socket" >&2
+    fi
+    exit 1
+  fi
+}
+
+ensure_podman_supervisor_image() {
+  local supervisor_image=$1
+
+  if podman image exists "${supervisor_image}" >/dev/null 2>&1; then
+    return
+  fi
+
+  if [[ -n "${OPENSHELL_SUPERVISOR_IMAGE:-}" ]]; then
+    echo "ERROR: supervisor image '${supervisor_image}' not found locally." >&2
+    echo "       Build it with Podman or unset OPENSHELL_SUPERVISOR_IMAGE to build openshell/supervisor:dev." >&2
+    exit 1
+  fi
+
+  echo "Building Podman supervisor sideload image (${supervisor_image})..."
+  require_mise
+  CONTAINER_ENGINE=podman IMAGE_TAG=dev mise run build:docker:supervisor
+
+  if ! podman image exists "${supervisor_image}" >/dev/null 2>&1; then
+    echo "ERROR: expected supervisor image '${supervisor_image}' after build" >&2
+    exit 1
+  fi
+}
+
+podman_pull_policy() {
+  case "$1" in
+    Always|always) echo "always" ;;
+    IfNotPresent|ifnotpresent|missing|"") echo "missing" ;;
+    Never|never) echo "never" ;;
+    Newer|newer) echo "newer" ;;
+    *)
+      echo "ERROR: unsupported Podman image pull policy '$1'" >&2
+      exit 2
+      ;;
+  esac
+}
+
+explicit_driver=""
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --driver)
+      if [[ "$#" -lt 2 ]]; then
+        echo "ERROR: --driver requires a value" >&2
+        exit 2
+      fi
+      explicit_driver="$(normalize_driver "$2")"
+      shift 2
+      ;;
+    --driver=*)
+      explicit_driver="$(normalize_driver "${1#--driver=}")"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "ERROR: unknown gateway option '$1'" >&2
+      echo >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -n "${explicit_driver}" && -n "${OPENSHELL_DRIVERS:-}" ]]; then
+  echo "ERROR: use either --driver or OPENSHELL_DRIVERS, not both" >&2
+  exit 2
+fi
+
+if [[ -z "${explicit_driver}" && -n "${OPENSHELL_DRIVERS:-}" ]]; then
+  if [[ "${OPENSHELL_DRIVERS}" == *,* ]]; then
+    echo "ERROR: mise run gateway supports one driver; got OPENSHELL_DRIVERS=${OPENSHELL_DRIVERS}" >&2
+    exit 2
+  fi
+  explicit_driver="$(normalize_driver "${OPENSHELL_DRIVERS}")"
+fi
+
+DRIVER="${explicit_driver:-$(detect_driver)}"
+
+case "${DRIVER}" in
+  docker)
+    export OPENSHELL_DOCKER_GATEWAY_NAME="${OPENSHELL_DOCKER_GATEWAY_NAME:-${OPENSHELL_GATEWAY_NAME:-docker-dev}}"
+    exec bash "${ROOT}/tasks/scripts/gateway-docker.sh"
+    ;;
+  vm)
+    export OPENSHELL_VM_GATEWAY_NAME="${OPENSHELL_VM_GATEWAY_NAME:-${OPENSHELL_GATEWAY_NAME:-vm-dev}}"
+    exec bash "${ROOT}/tasks/scripts/gateway-vm.sh"
+    ;;
+esac
+
+DEFAULT_PORT="18080"
+if [[ "${DRIVER}" == "kubernetes" ]]; then
+  DEFAULT_PORT="8080"
+fi
+
+PORT="${OPENSHELL_SERVER_PORT:-${DEFAULT_PORT}}"
+GATEWAY_NAME="${OPENSHELL_GATEWAY_NAME:-${DRIVER}-dev}"
+STATE_DIR="${OPENSHELL_GATEWAY_STATE_DIR:-${ROOT}/.cache/gateway-${DRIVER}}"
+SANDBOX_NAMESPACE="${OPENSHELL_SANDBOX_NAMESPACE:-${DRIVER}-dev}"
+SANDBOX_IMAGE="${OPENSHELL_SANDBOX_IMAGE:-ghcr.io/nvidia/openshell-community/sandboxes/base:latest}"
+SANDBOX_IMAGE_PULL_POLICY="${OPENSHELL_SANDBOX_IMAGE_PULL_POLICY:-IfNotPresent}"
+GRPC_ENDPOINT="${OPENSHELL_GRPC_ENDPOINT:-}"
+LOG_LEVEL="${OPENSHELL_LOG_LEVEL:-info}"
+PRIMARY_BIND_IP="127.0.0.1"
+CLI_ENDPOINT_HOST="127.0.0.1"
+
+if [[ "${DRIVER}" == "podman" && "$(uname -s)" == "Darwin" ]]; then
+  # Podman Machine reserves IPv4 loopback for its callback-only listener.
+  # Keep the primary listener distinct while using a hostname that resolves
+  # to IPv6 loopback for local CLI connections.
+  PRIMARY_BIND_IP="::1"
+  CLI_ENDPOINT_HOST="localhost"
+fi
+
+if [[ "${DRIVER}" == "podman" ]]; then
+  require_podman_service
+  SUPERVISOR_IMAGE="${OPENSHELL_SUPERVISOR_IMAGE:-openshell/supervisor:dev}"
+  ensure_podman_supervisor_image "${SUPERVISOR_IMAGE}"
+  export OPENSHELL_SUPERVISOR_IMAGE="${SUPERVISOR_IMAGE}"
+fi
+
+if [[ ! "${GATEWAY_NAME}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "ERROR: OPENSHELL_GATEWAY_NAME must contain only letters, numbers, dots, underscores, or dashes" >&2
+  exit 2
+fi
+
+if port_is_in_use "${PORT}"; then
+  echo "ERROR: port ${PORT} is already in use; free it or set OPENSHELL_SERVER_PORT" >&2
+  exit 2
+fi
+
+echo "Building openshell-gateway..."
+run_mise_task build:gateway
+
+if [[ ! -x "${GATEWAY_BIN}" ]]; then
+  echo "ERROR: expected gateway binary at ${GATEWAY_BIN}" >&2
+  exit 1
+fi
+
+TLS_DIR="${STATE_DIR}/tls"
+echo "Generating local gateway credentials..."
+"${GATEWAY_BIN}" generate-certs \
+  --output-dir "${TLS_DIR}" \
+  --server-san "127.0.0.1" \
+  --server-san "localhost" \
+  --server-san "host.openshell.internal"
+
+mkdir -p "${STATE_DIR}"
+CONFIG_PATH="${STATE_DIR}/gateway.toml"
+# The config may reference credential-bearing material (e.g. proxy_auth_file);
+# keep it owner-only regardless of the ambient umask.
+install -m 600 /dev/null "${CONFIG_PATH}"
+cat >"${CONFIG_PATH}" <<EOF
+[openshell]
+version = 1
+
+[openshell.gateway]
+compute_drivers = ["${DRIVER}"]
+default_image = "${SANDBOX_IMAGE}"
+disable_tls = true
+
+[openshell.gateway.auth]
+allow_unauthenticated_users = true
+
+[openshell.gateway.gateway_jwt]
+signing_key_path = "${TLS_DIR}/jwt/signing.pem"
+public_key_path = "${TLS_DIR}/jwt/public.pem"
+kid_path = "${TLS_DIR}/jwt/kid"
+gateway_id = "${GATEWAY_NAME}"
+ttl_secs = 3600
+EOF
+
+case "${DRIVER}" in
+  kubernetes)
+    cat >>"${CONFIG_PATH}" <<EOF
+
+[openshell.drivers.kubernetes]
+namespace = "${SANDBOX_NAMESPACE}"
+image_pull_policy = "${SANDBOX_IMAGE_PULL_POLICY}"
+EOF
+    if [[ -n "${GRPC_ENDPOINT}" ]]; then
+      printf 'grpc_endpoint = "%s"\n' "${GRPC_ENDPOINT}" >>"${CONFIG_PATH}"
+    fi
+    ;;
+  podman)
+    cat >>"${CONFIG_PATH}" <<EOF
+
+[openshell.drivers.podman]
+supervisor_image = "${OPENSHELL_SUPERVISOR_IMAGE}"
+image_pull_policy = "$(podman_pull_policy "${SANDBOX_IMAGE_PULL_POLICY}")"
+EOF
+    if [[ -n "${GRPC_ENDPOINT}" ]]; then
+      printf 'grpc_endpoint = "%s"\n' "${GRPC_ENDPOINT}" >>"${CONFIG_PATH}"
+    fi
+    # ${VAR+x} distinguishes unset from set-but-empty: an unset variable
+    # writes nothing, but an explicitly empty one is written through so the
+    # gateway's fail-closed proxy validation rejects it at startup instead of
+    # this script silently dropping it.
+    if [[ -n "${OPENSHELL_SANDBOX_HTTPS_PROXY+x}" ]]; then
+      printf 'https_proxy = "%s"\n' "$(toml_escape "${OPENSHELL_SANDBOX_HTTPS_PROXY}")" >>"${CONFIG_PATH}"
+    fi
+    if [[ -n "${OPENSHELL_SANDBOX_NO_PROXY+x}" ]]; then
+      printf 'no_proxy = "%s"\n' "$(toml_escape "${OPENSHELL_SANDBOX_NO_PROXY}")" >>"${CONFIG_PATH}"
+    fi
+    if [[ -n "${OPENSHELL_SANDBOX_PROXY_AUTH_FILE+x}" ]]; then
+      printf 'proxy_auth_file = "%s"\n' "$(toml_escape "${OPENSHELL_SANDBOX_PROXY_AUTH_FILE}")" >>"${CONFIG_PATH}"
+    fi
+    if [[ -n "${OPENSHELL_SANDBOX_PROXY_AUTH_ALLOW_INSECURE+x}" ]]; then
+      case "${OPENSHELL_SANDBOX_PROXY_AUTH_ALLOW_INSECURE}" in
+        true|false)
+          printf 'proxy_auth_allow_insecure = %s\n' "${OPENSHELL_SANDBOX_PROXY_AUTH_ALLOW_INSECURE}" >>"${CONFIG_PATH}"
+          ;;
+        *)
+          # Not a TOML boolean: write it as a quoted string so the gateway's
+          # config parser rejects it at startup (fail closed, no injection).
+          printf 'proxy_auth_allow_insecure = "%s"\n' "$(toml_escape "${OPENSHELL_SANDBOX_PROXY_AUTH_ALLOW_INSECURE}")" >>"${CONFIG_PATH}"
+          ;;
+      esac
+    fi
+    if [[ -n "${OPENSHELL_SANDBOX_PROXY_CONNECT_BY_HOSTNAME+x}" ]]; then
+      case "${OPENSHELL_SANDBOX_PROXY_CONNECT_BY_HOSTNAME}" in
+        true|false)
+          printf 'proxy_connect_by_hostname = %s\n' "${OPENSHELL_SANDBOX_PROXY_CONNECT_BY_HOSTNAME}" >>"${CONFIG_PATH}"
+          ;;
+        *)
+          # Not a TOML boolean: write it as a quoted string so the gateway's
+          # config parser rejects it at startup (fail closed, no injection).
+          printf 'proxy_connect_by_hostname = "%s"\n' "$(toml_escape "${OPENSHELL_SANDBOX_PROXY_CONNECT_BY_HOSTNAME}")" >>"${CONFIG_PATH}"
+          ;;
+      esac
+    fi
+    ;;
+esac
+
+GATEWAY_ENDPOINT="http://${CLI_ENDPOINT_HOST}:${PORT}"
+register_gateway_metadata "${GATEWAY_NAME}" "${GATEWAY_ENDPOINT}" "${PORT}"
+
+echo "Starting standalone ${DRIVER} gateway..."
+echo "  gateway:   ${GATEWAY_NAME}"
+echo "  endpoint:  ${GATEWAY_ENDPOINT}"
+echo "  namespace: ${SANDBOX_NAMESPACE}"
+echo "  state dir: ${STATE_DIR}"
+if [[ "${DRIVER}" == "podman" ]]; then
+  echo "  supervisor image: ${OPENSHELL_SUPERVISOR_IMAGE}"
+fi
+echo
+echo "Active gateway set to '${GATEWAY_NAME}'. The CLI now targets this gateway by default."
+echo
+
+exec "${GATEWAY_BIN}" \
+  --config "${CONFIG_PATH}" \
+  --bind-address "${PRIMARY_BIND_IP}" \
+  --port "${PORT}" \
+  --log-level "${LOG_LEVEL}" \
+  --drivers "${DRIVER}" \
+  --disable-tls \
+  --db-url "sqlite:${STATE_DIR}/gateway.db?mode=rwc"

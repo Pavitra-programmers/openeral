@@ -1,0 +1,28 @@
+
+  # Test-only Claude Code fallback used when the direct Anthropic test key has
+  # no credits. OpenShell replaces placeholder AWS signatures at the proxy;
+  # the sandbox never receives the provider's real AWS credentials.
+  aws_bedrock_e2e:
+    name: aws-bedrock-e2e
+    endpoints:
+      - host: bedrock-runtime.us-east-1.amazonaws.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        credential_binding:
+          provider: aws
+        credential_signing: sigv4:body
+        signing_service: bedrock
+        signing_region: us-east-1
+        rules:
+          - allow:
+              method: POST
+              path: /model/*/invoke
+          - allow:
+              method: POST
+              path: /model/*/invoke-with-response-stream
+          - allow:
+              method: POST
+              path: /model/*/count-tokens
+    binaries:
+      - { path: /usr/local/bin/claude-real }

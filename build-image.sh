@@ -1,142 +1,73 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
-# Build the local dev image (openeral-sandbox:dev) and import it into k3s.
-# Use `npx openeral --dev` to launch with this image.
-# `npx openeral` (no flag) always uses the published image and is unaffected by this script.
-
-DEV_IMAGE="${OPENERAL_DEV_IMAGE:-openeral-sandbox:dev}"
-FLAT_IMAGE="${DEV_IMAGE}-openeral-flat"
-
-echo "=== Building OpenEral Dev Sandbox Image ==="
-echo "  Image: $DEV_IMAGE"
-echo ""
-
-echo "Step 0: Checking Docker setup..."
-if ! docker network inspect openshell-cluster-openshell >/dev/null 2>&1; then
-  echo "  Creating Docker network..."
-  docker network create --driver bridge openshell-cluster-openshell
+# Build and initialize a local OpenEral sandbox through OpenShell's supported
+# Dockerfile source path. OpenShell owns image transfer for the selected driver.
+SANDBOX_NAME="${OPENERAL_DEV_SANDBOX:-openeral-local-dev}"
+OPENSHELL_BIN="${OPENSHELL_BIN:-openshell}"
+gateway_args=()
+if [ -n "${OPENSHELL_GATEWAY_ENDPOINT:-}" ]; then
+  gateway_args+=(--gateway-endpoint "$OPENSHELL_GATEWAY_ENDPOINT")
 fi
-echo "✓ Docker setup verified"
-echo ""
 
-echo "Step 1: Building openeral-js..."
-cd openeral-js
-pnpm install
-pnpm build
-cd ..
-echo "✓ openeral-js built"
-echo ""
-
-echo "Step 2: Building dev Docker image (this may take 5-10 minutes)..."
-docker build -f sandboxes/openeral/Dockerfile -t "$DEV_IMAGE" .
-echo "✓ Dev image built: $DEV_IMAGE"
-echo ""
-
-echo "Step 3: Verifying image..."
-docker run --rm "$DEV_IMAGE" ls -la /opt/openeral/dist/ | head -10
-echo "✓ Image verified — dist directory exists"
-echo ""
-
-echo "Step 4: Ensuring k3s cluster is running..."
-if ! docker ps | grep -q openshell-cluster-openshell; then
-  echo "  k3s container not running, starting with OpenShell gateway..."
-  openshell gateway start
-  echo "  Waiting for k3s to be ready (60 seconds)..."
-  sleep 60
-  if ! docker ps | grep -q openshell-cluster-openshell; then
-    echo ""
-    echo "⚠️  Failed to start k3s cluster!"
-    echo "  1. Docker is running: docker ps"
-    echo "  2. OpenShell is installed: openshell --version"
-    echo "  3. Check logs: docker logs openshell-cluster-openshell"
-    exit 1
-  fi
-else
-  echo "  k3s container already running"
-fi
-echo "✓ k3s cluster is running"
-echo ""
-
-echo "Step 5: Removing old dev images from k3s..."
-K3S_CTR="ctr --address /run/k3s/containerd/containerd.sock -n k8s.io"
-
-# containerd stores images with the full docker.io/library/ prefix.
-# Expand short names before passing to ctr so rm/tag find the right ref.
-expand_ref() {
-  local ref="$1"
-  # If ref has no slash → library image (e.g. "openeral-sandbox:dev")
-  if [[ "$ref" != */* ]]; then
-    echo "docker.io/library/$ref"
-    return
-  fi
-  # If first component has a dot or colon → already has explicit registry
-  local first="${ref%%/*}"
-  if [[ "$first" == *.* || "$first" == *:* || "$first" == "localhost" ]]; then
-    echo "$ref"
-    return
-  fi
-  # Single org component (e.g. "sandys/image:tag")
-  echo "docker.io/$ref"
+run_openshell() {
+  "$OPENSHELL_BIN" "${gateway_args[@]}" "$@"
 }
 
-EXPANDED_DEV_IMAGE="$(expand_ref "$DEV_IMAGE")"
-EXPANDED_FLAT_IMAGE="$(expand_ref "$FLAT_IMAGE")"
+command -v "$OPENSHELL_BIN" >/dev/null 2>&1 || {
+  echo "error: OpenShell CLI is not executable: $OPENSHELL_BIN" >&2
+  exit 1
+}
+run_openshell gateway info >/dev/null
 
-docker exec openshell-cluster-openshell sh -c "
-  $K3S_CTR images rm '$EXPANDED_DEV_IMAGE' 2>/dev/null || true
-  $K3S_CTR images rm '$EXPANDED_FLAT_IMAGE' 2>/dev/null || true
-"
-echo "✓ Old dev images removed (or were not present)"
-echo ""
-
-echo "Step 6: Flattening and importing dev image into k3s..."
-# Docker images built on top of a base that replaces packages contain opaque
-# whiteout files that mknod can't create inside a Docker container (seccomp).
-# Fix: docker export produces a flat tarball with no whiteouts.
-
-FSTAR="$(mktemp /tmp/openeral-fs-XXXXXX.tar)"
-IMGTAR="$(mktemp /tmp/openeral-img-XXXXXX.tar)"
-
-echo "  Step 6a: Flattening image layers..."
-docker rm -f openeral-flatten-tmp 2>/dev/null || true
-docker create --name openeral-flatten-tmp "$DEV_IMAGE" >/dev/null
-docker export openeral-flatten-tmp -o "$FSTAR"
-docker rm openeral-flatten-tmp >/dev/null
-docker rmi -f "$FLAT_IMAGE" 2>/dev/null || true
-docker import "$FSTAR" "$FLAT_IMAGE" >/dev/null
-rm -f "$FSTAR"
-echo "  ✓ Image flattened (single layer, no whiteouts)"
-
-echo "  Step 6b: Saving and copying to k3s container..."
-docker save "$FLAT_IMAGE" -o "$IMGTAR"
-docker cp "$IMGTAR" openshell-cluster-openshell:/tmp/openeral-sandbox-import.tar
-rm -f "$IMGTAR"
-
-echo "  Step 6c: Importing into k3s..."
-if docker exec openshell-cluster-openshell \
-    $K3S_CTR images import /tmp/openeral-sandbox-import.tar; then
-  # Use expanded refs — containerd does NOT expand short names in `ctr images tag`
-  docker exec openshell-cluster-openshell \
-    $K3S_CTR images tag "$EXPANDED_FLAT_IMAGE" "$EXPANDED_DEV_IMAGE" 2>/dev/null || true
-  docker exec openshell-cluster-openshell rm -f /tmp/openeral-sandbox-import.tar
-  echo "✓ Dev image imported to k3s: $DEV_IMAGE"
-else
-  docker exec openshell-cluster-openshell rm -f /tmp/openeral-sandbox-import.tar
-  echo ""
-  echo "✗ Image import failed. Try:"
-  echo "  docker restart openshell-cluster-openshell"
-  echo "  bash build-image.sh"
+if ! run_openshell sandbox create --help | grep -q -- '--fuse'; then
+  echo "error: OpenShell CLI does not include the policy-gated --fuse capability" >&2
   exit 1
 fi
-echo ""
 
-echo "=== Dev Build Complete! ==="
-echo ""
-echo "Run with the dev image:"
-echo "  npx openeral --dev"
-echo "  npx openeral -d"
-echo ""
-echo "Run with the published image (unchanged):"
-echo "  npx openeral"
-echo ""
+if run_openshell sandbox get "$SANDBOX_NAME" >/dev/null 2>&1; then
+  run_openshell sandbox delete "$SANDBOX_NAME"
+fi
+
+args=(
+  sandbox create
+  --name "$SANDBOX_NAME"
+  --from Dockerfile.openeral
+  --provider claude
+  --auto-providers
+  --env "WORKSPACE_ID=$SANDBOX_NAME"
+)
+
+db_file=""
+cleanup() {
+  [ -z "$db_file" ] || rm -f "$db_file"
+}
+trap cleanup EXIT
+
+database_url="${DATABASE_URL:-${POSTGRES_URL:-}}"
+if [ -z "$database_url" ]; then
+  echo "error: DATABASE_URL is required by the primary FUSE image" >&2
+  echo "use Dockerfile.openeral-compat for the scoped-sync/PGlite runtime" >&2
+  exit 1
+fi
+db_file="$(mktemp /tmp/openeral-db-url-XXXXXX)"
+printf '%s' "$database_url" > "$db_file"
+chmod 600 "$db_file"
+args+=(--fuse --upload "$db_file:/sandbox/db-url")
+
+if [ -n "${STRINGCOST_API_KEY:-}" ]; then
+  if openshell provider get stringcost >/dev/null 2>&1; then
+    openshell provider update stringcost --credential STRINGCOST_API_KEY
+  else
+    openshell provider create       --name stringcost       --type generic       --credential STRINGCOST_API_KEY
+  fi
+  args+=(--provider stringcost)
+fi
+
+args+=(-- openeral-init)
+run_openshell "${args[@]}"
+
+echo
+echo "Local OpenEral sandbox initialized: $SANDBOX_NAME"
+echo "Connect: openshell sandbox connect $SANDBOX_NAME"
+echo "Then run: claude"

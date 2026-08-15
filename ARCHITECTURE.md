@@ -1,112 +1,194 @@
 # Architecture
 
-## Sandbox Lifecycle
+## Runtime Split
 
-OpenEral follows OpenShell's actual process model. The container entrypoint is the
-OpenShell supervisor, not the image command. The trailing command in
-`openshell sandbox create ... -- openeral-init` is executed later over SSH, after
-the sandbox is Ready.
+OpenEral has two intentionally separate sandbox runtimes:
 
-```
-openshell sandbox create ... -- openeral-init
-  |
-  |-- OpenShell supervisor starts the sandbox workload (`sleep infinity`)
-  |-- OpenShell uploads `/sandbox/db-url` or `/sandbox/openeral-input/*`
-  `-- SSH session runs `openeral-init`
-        |
-        |-- resolve PostgreSQL and StringCost inputs
-        |-- run migrations and seed `_openeral`
-        |-- hydrate `/home/agent/.claude/**` and `/home/agent/.openeral/**`
-        |   only when the init marker is missing or stale
-        |-- reapply StringCost settings after hydration
-        |-- write `/tmp/openeral/init.done`
-        `-- exit
-```
+- The primary image uses one OpenShell-supervised FUSE mount backed by external
+  PostgreSQL. It persists all of `/sandbox/work` and has no file watcher.
+- The compatibility image uses the existing real filesystem plus prefix-scoped
+  replication. It supports optional PostgreSQL and PGlite and persists only Claude
+  and OpenEral state.
 
-`openeral-init` is intentionally one-shot. It does not start Claude and does not
-own long-running processes.
+The just-bash `WorkspaceFs`/`PgFs` library path remains available to custom agents. It
+is not the filesystem used by Claude Code in either sandbox image.
 
-## Runtime Path
+## Primary Sandbox Lifecycle
 
-Users start Claude from a normal connected OpenShell shell:
+OpenShell replaces the image entrypoint with `openshell-sandbox`. The trailing command
+after `sandbox create --` is executed over SSH after Ready; it never becomes PID 1.
 
-```
-openshell sandbox connect <name>
-claude
-```
+```mermaid
+flowchart TB
+  create["sandbox create --fuse<br/>--upload db-url -- openeral-init"]
+  gate["Docker driver validates request<br/>enable_fuse=true and /dev/fuse"]
 
-`/usr/local/bin/claude` is an OpenEral wrapper around `claude-real`:
+  subgraph container["Sandbox container startup"]
+    supervisor["openshell-sandbox PID 1"]
+    validate["Validate immutable fuse_mounts policy,<br/>root-owned daemon, normalized empty mountpoint"]
+    mount["Open /dev/fuse and mount /sandbox/work"]
+    prelude["Install TSYNC supervisor prelude<br/>mount and unmount now denied"]
+    daemon["Spawn openeral-fused as sandbox:sandbox<br/>through ProcessHandle"]
+    fds["Inherited FD 0: FUSE channel<br/>Inherited FD 1: readiness pipe"]
+    ready["FUSE INIT complete"]
+    services["Start SSH and managed<br/>sleep infinity workload"]
+  end
 
-```
-claude wrapper
-  |
-  |-- source `/tmp/openeral-session.env`
-  |-- run `openeral init --ensure`
-  |-- run `openeral-daemon-ensure`
-  |-- start `claude-real` as a child process
-  `-- flush pending sync with `openeral-bash --flush` after Claude exits
-```
+  subgraph trailing["Post-Ready trailing command over SSH"]
+    upload["Upload /sandbox/db-url"]
+    init["openeral-init one-shot"]
+    database["Migrate V1-V7, prepare volume,<br/>one-time legacy import"]
+    verify["Verify writer lease in PostgreSQL<br/>and fsync/read/unlink through mount"]
+    configure["Seed Claude skills/settings,<br/>configure StringCost, remove upload"]
+    marker["Write init marker and exit 0"]
+  end
 
-`openeral-daemon-ensure` lazily starts a detached daemon when needed by `claude`,
-`pg`, or `openeral memory refresh`.
-
-```
-/usr/bin/node /opt/openeral/openeral-bash.mjs --daemon
-  |
-  |-- owns the warm PostgreSQL or PGlite connection
-  |-- serves `/tmp/openeral-bash.sock`
-  |-- executes the `pg` helper
-  |-- runs scoped file watchers in external PostgreSQL mode
-  `-- performs best-effort final sync on daemon shutdown
+  create --> gate --> supervisor --> validate --> mount --> prelude --> daemon
+  daemon --> fds --> ready --> services
+  services -->|"OpenShell reports Ready"| upload --> init
+  init --> database --> verify --> configure --> marker
 ```
 
-The daemon survives SSH disconnects and Claude exits. It does not survive forced
-sandbox deletion; users should exit Claude cleanly before deleting a sandbox when
-they need the last writes to be durable.
+The FUSE daemon starts before the database upload exists. It completes the kernel
+FUSE handshake, keeps the mount present, and returns bounded `EIO` for operations that
+cannot wait for database readiness. The init-owned marker and management socket are
+same-UID coordination mechanisms, not security trust signals. Initialization also
+checks the lease row and mounted durability independently.
 
-## Persistence Boundary
+## Data Path
 
-Only Claude and OpenEral state are persisted to PostgreSQL:
+```mermaid
+flowchart LR
+  tools["Claude, git, compilers,<br/>editors, language servers"]
+  vfs["Linux VFS<br/>/sandbox/work"]
+  kernel["Kernel FUSE channel<br/>supervisor-owned FD"]
+  daemon["openeral-fused<br/>sandbox UID + Landlock + seccomp"]
+  proxy["OpenShell local proxy<br/>binary-attributed endpoint policy"]
+  tls["Raw CONNECT tunnel<br/>PostgreSQL TLS end to end"]
+  schema[("PostgreSQL<br/>_openeral.fs_* namespace")]
 
-```
-/home/agent/.claude/**    <--> _openeral.workspace_files
-/home/agent/.openeral/**  <--> _openeral.workspace_files
-
-/home/agent/src/**        ephemeral container disk
-/sandbox/**               sandbox-local runtime files
-/tmp/openeral/**          runtime state, marker, DB URL, PGlite data
-```
-
-The sync layer is prefix-scoped. Startup hydration uses PostgreSQL to populate only
-`/.claude` and `/.openeral`. Watchers later push changes under those same prefixes
-back to PostgreSQL. Source checkouts and arbitrary files outside those prefixes are
-not persisted.
-
-Without `DATABASE_URL`, OpenEral uses embedded PGlite under `/tmp/openeral/data`
-inside the sandbox. That state lasts only for the running sandbox lifetime.
-
-## Library Path
-
-The just-bash virtual filesystem still exists for custom agents and host-side
-library use:
-
-```
-createOpeneralShell()
-  |
-  |-- /db         -> PgFs, read-only database browsing
-  |-- /home/agent -> WorkspaceFs, SQL-backed virtual workspace
-  `-- /tmp        -> InMemoryFs
+  tools -->|"POSIX syscalls"| vfs --> kernel --> daemon
+  daemon -->|"HTTP CONNECT only<br/>no direct-dial fallback"| proxy --> tls --> schema
 ```
 
-Claude Code in the OpenShell sandbox does not run on this virtual filesystem path.
-It uses real `/bin/bash`, real kernel files, and the sync daemon for persistence.
+Claude receives neither `/dev/fuse` nor mount capability. The Rust daemon refuses to
+dial PostgreSQL directly: a valid OpenShell HTTP proxy environment is mandatory. The
+PostgreSQL endpoint uses `tls: skip` at the OpenShell route so the proxy relays the
+non-HTTP PostgreSQL TLS session without terminating it.
 
-## Database Schema
+`HOME` and the default interactive cwd are `/sandbox/work`. `/sandbox` remains the OCI
+bootstrap working directory because initialization and supervisor startup must work
+before the database-backed mount is writable.
 
-OpenEral stores operational state in the `_openeral` schema:
+## Storage Model
 
-- `workspace_config` stores workspace metadata.
-- `workspace_files` stores persisted file content and metadata.
-- `schema_version`, `mount_log`, `cache_hints`, and optimization tables support migrations, diagnostics, and analysis.
+Migration V7 introduces a normalized namespace:
 
-Migrations are idempotent and run during `openeral-init`.
+- `fs_volumes`: workspace-to-volume identity and root inode.
+- `fs_nodes`: stable inode metadata, type, mode, ownership, timestamps, size, links,
+  generation, symlink target, and deletion state.
+- `fs_dirents`: byte-preserving parent/name/child namespace edges.
+- `fs_chunks`: sparse 256 KiB file chunks.
+- `fs_mount_epochs`: one-writer lease, owner, expiry, and fencing epoch.
+- `fs_operations`: mutation IDs and request hashes for uncertain-commit resolution.
+- `fs_legacy_imports`: one-time import completion from scoped-sync rows.
+
+TypeScript owns migrations, volume preparation, and legacy import. Rust validates the
+installed schema and never migrates it. A PostgreSQL advisory lock and expiring lease
+allow only one writable daemon for a workspace.
+
+## Durability Contract
+
+Ordinary writes enter a shared, bounded dirty cache and are flushed in the background.
+They are not all synchronous PostgreSQL commits.
+
+The following are durability barriers:
+
+- `fsync` and `fdatasync`;
+- `O_SYNC` and `O_DSYNC` writes;
+- dirty-source rename, including replacement, which commits captured data and the
+  namespace transaction before success;
+- close/FLUSH after rewriting a pre-existing file through `O_TRUNC`;
+- the Claude wrapper's final `openeral-fused flush-all` on clean exit.
+
+Namespace and metadata mutations commit synchronously. Uncertain mutation commits are
+resolved through operation IDs. On terminal lease loss, the old daemon discards dirty
+bytes, surfaces writeback errors, never reacquires a new epoch in-process, and exits.
+
+## Failure And Recovery
+
+In-process remount is intentionally impossible after the supervisor installs its
+TSYNC seccomp prelude. Recovery therefore rebuilds the container mount namespace:
+
+```mermaid
+stateDiagram-v2
+  [*] --> Writable: mount + FUSE INIT + writer lease
+  Writable --> CriticalExit: daemon exit, FUSE loop exit, or terminal fence
+  CriticalExit --> Restarting: supervisor exits with reserved status
+  Restarting --> Writable: Docker restarts, remounts, higher writer epoch
+  Restarting --> Error: on-failure retry budget exhausted
+  Writable --> Stopped: explicit sandbox stop
+  Stopped --> Restarting: explicit sandbox start resets retry budget
+  Error --> Restarting: operator fixes cause and starts or recreates
+```
+
+Explicit sandbox stop remains Stopped; explicit start resets the retry budget and
+reconstructs the mount. An arbitrary alive-but-deadlocked daemon is a documented v1
+gap because same-UID health endpoints cannot serve as a supervisor trust signal.
+
+Open file descriptors and unbarriered dirty bytes cannot survive container restart.
+Committed data survives daemon, container, and sandbox replacement.
+
+## Security Boundary
+
+The FUSE capability is default-off in three places: the public request, the image's
+immutable policy, and Docker's operator config. Unsupported drivers reject it.
+
+The supervisor validates the daemon binary and mountpoint, performs the privileged
+mount, then launches the daemon through the normal unprivileged child path. The daemon
+inherits the sandbox UID, Landlock, child seccomp, network namespace, proxy, TLS roots,
+and binary-attributed egress policy. Claude cannot choose the daemon, mountpoint, or
+inherited descriptors.
+
+V1 does not claim same-UID secret isolation. Claude and the daemon share the sandbox
+UID; Claude can read runtime files and signal the daemon. Network policy, TLS, lease
+fencing, and least-privilege PostgreSQL roles remain required. A separate storage UID
+and supervisor-mediated secret channel are future hardening work.
+
+Provider keys are different from the uploaded PostgreSQL URL. OpenShell injects
+provider placeholders and resolves them only in approved HTTPS routes. StringCost
+presign creation is constrained to `POST /v1/presign` with request-body credential
+rewriting. Raw PostgreSQL cannot use that placeholder mechanism, so its URL is a
+mode-0600 upload consumed into runtime state and removed from `/sandbox` after init.
+
+## Compatibility Runtime
+
+`Dockerfile.openeral-compat` retains the previous model:
+
+```mermaid
+flowchart LR
+  shell["Claude with real /bin/bash"] --> disk["Kernel files under /sandbox"]
+  disk --> watcher["Detached Node daemon<br/>prefix-scoped watchers"]
+  watcher <--> rows[("_openeral.workspace_files<br/>PostgreSQL or PGlite")]
+  watcher --> included[".claude/**<br/>.claude.json<br/>.openeral/**"]
+  disk --> excluded["All other paths<br/>ephemeral"]
+```
+
+It supports PGlite and optional PostgreSQL. Source files outside those prefixes are
+ephemeral. The Docker-only tests under `tests/test_sandbox_e2e.sh` and
+`tests/test_setup_e2e.sh` target this image explicitly.
+
+## Custom-Agent Library Path
+
+`createOpeneralShell()` remains an in-process just-bash integration:
+
+```mermaid
+flowchart LR
+  agent["Custom agent"] --> shell["createOpeneralShell<br/>just-bash interpreter"]
+  shell --> db["/db<br/>read-only PgFs SQL browser"]
+  shell --> home["/home/agent<br/>PostgreSQL-backed WorkspaceFs"]
+  shell --> tmp["/tmp<br/>InMemoryFs"]
+```
+
+This path is useful when every command is interpreted by just-bash. Native Claude Code
+uses the kernel-backed sandbox paths above and does not see `/db` as a virtual mount.

@@ -23,14 +23,15 @@
 import { createServer, createConnection } from 'node:net';
 import { existsSync, unlinkSync, chmodSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { createHash } from 'node:crypto';
 
 const SOCKET_PATH = '/tmp/openeral-bash.sock';
-const SYNC_PREFIXES = ['/.claude', '/.openeral'];
+const SYNC_PREFIXES = [
+  { pathPrefix: '/.claude', pathPrefixKind: 'dir' },
+  { pathPrefix: '/.openeral', pathPrefixKind: 'dir' },
+  { pathPrefix: '/.claude.json', pathPrefixKind: 'file' },
+];
 const SYNC_EXCLUDES = new Set(['node_modules', '.git', '.cache', '.openeral-memory-backups']);
-const DATA_DIR = process.env.OPENERAL_DATA_DIR || '/tmp/openeral/data';
 const DB_URL_FILE = process.env.OPENERAL_DB_URL_FILE || '/tmp/openeral/database-url';
-const INIT_MARKER = process.env.OPENERAL_INIT_MARKER || '/tmp/openeral/init.done';
 
 function loadStoredDatabaseUrl() {
   if (process.env.DATABASE_URL) return;
@@ -42,31 +43,12 @@ function loadStoredDatabaseUrl() {
   } catch {}
 }
 
-function currentDatasourceHash() {
-  const datasource = process.env.DATABASE_URL
-    ? `postgres:${process.env.DATABASE_URL}`
-    : `pglite:${DATA_DIR}`;
-  return createHash('sha256').update(datasource).digest('hex');
-}
-
-function initMarkerMatches(workspaceId) {
-  if (!existsSync(INIT_MARKER)) return false;
-  try {
-    const data = JSON.parse(readFileSync(INIT_MARKER, 'utf8'));
-    return data?.version === 1
-      && data?.workspaceId === workspaceId
-      && data?.datasourceHash === currentDatasourceHash();
-  } catch {
-    return false;
-  }
-}
-
 function workspaceIdFromEnv() {
   return process.env.WORKSPACE_ID || process.env.OPENSHELL_SANDBOX_ID || 'default';
 }
 
 function syncRootFromEnv() {
-  return process.env.OPENERAL_HOME || '/home/agent';
+  return process.env.OPENERAL_HOME || '/sandbox';
 }
 
 async function runPgQuery(pool, sql) {
@@ -95,6 +77,7 @@ async function runPgQuery(pool, sql) {
 
 async function startDaemon() {
   loadStoredDatabaseUrl();
+  const { initMarkerMatches } = await import('/opt/openeral/dist/init-marker.js');
   const { createOpeneralShell } = await import('/opt/openeral/dist/shell.js');
   const { getDatabaseConnection } = await import('/opt/openeral/dist/db/embedded.js');
   const { syncToFs, syncFromFs, watchAndSync } = await import('/opt/openeral/dist/sync.js');
@@ -102,7 +85,7 @@ async function startDaemon() {
   const workspaceId = workspaceIdFromEnv();
   const syncRoot = syncRootFromEnv();
   const enableSync = process.env.OPENERAL_ENABLE_SYNC === '1' && !!process.env.DATABASE_URL;
-  const hydrateOnStart = enableSync && !initMarkerMatches(workspaceId);
+  const hydrateOnStart = enableSync && !initMarkerMatches({ workspaceId });
   const stopWatchers = [];
   let server;
   let shuttingDown = false;
@@ -112,9 +95,9 @@ async function startDaemon() {
   async function flushSync() {
     if (!enableSync) return 0;
     let count = 0;
-    for (const pathPrefix of SYNC_PREFIXES) {
+    for (const prefix of SYNC_PREFIXES) {
       count += await syncFromFs(pool, workspaceId, syncRoot, {
-        pathPrefix,
+        ...prefix,
         excludeDirs: SYNC_EXCLUDES,
       });
     }
@@ -139,18 +122,22 @@ async function startDaemon() {
 
   if (hydrateOnStart) {
     mkdirSync(syncRoot, { recursive: true });
-    for (const pathPrefix of SYNC_PREFIXES) {
-      mkdirSync(join(syncRoot, pathPrefix), { recursive: true });
+    for (const prefix of SYNC_PREFIXES) {
+      if (prefix.pathPrefixKind === 'dir') {
+        mkdirSync(join(syncRoot, prefix.pathPrefix), { recursive: true });
+      }
       const count = await syncToFs(pool, workspaceId, syncRoot, {
-        pathPrefix,
+        ...prefix,
         excludeDirs: SYNC_EXCLUDES,
       });
-      process.stderr.write(`openeral-bash: hydrated ${count} item(s) under ${pathPrefix}\n`);
+      process.stderr.write(`openeral-bash: hydrated ${count} item(s) under ${prefix.pathPrefix}\n`);
     }
   } else if (enableSync) {
     mkdirSync(syncRoot, { recursive: true });
-    for (const pathPrefix of SYNC_PREFIXES) {
-      mkdirSync(join(syncRoot, pathPrefix), { recursive: true });
+    for (const prefix of SYNC_PREFIXES) {
+      if (prefix.pathPrefixKind === 'dir') {
+        mkdirSync(join(syncRoot, prefix.pathPrefix), { recursive: true });
+      }
     }
   }
 
@@ -167,14 +154,14 @@ async function startDaemon() {
   }
 
   if (enableSync) {
-    for (const pathPrefix of SYNC_PREFIXES) {
+    for (const prefix of SYNC_PREFIXES) {
       stopWatchers.push(watchAndSync(pool, workspaceId, syncRoot, {
-        pathPrefix,
+        ...prefix,
         excludeDirs: SYNC_EXCLUDES,
         debounceMs: 1000,
       }));
     }
-    process.stderr.write(`openeral-bash: scoped sync enabled for ${SYNC_PREFIXES.join(', ')}\n`);
+    process.stderr.write(`openeral-bash: scoped sync enabled for ${SYNC_PREFIXES.map(p => p.pathPrefix).join(', ')}\n`);
   }
 
   server = createServer((conn) => {

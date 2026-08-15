@@ -35,6 +35,19 @@ export function createPool(connectionString: string): DbPool {
     connectionTimeoutMillis: 15000,
   };
 
+  if (process.env.OPENERAL_REQUIRE_POSTGRES_TLS === '1' && !isLocalHost(targetHost)) {
+    let sslMode = '';
+    try {
+      sslMode = new URL(connectionString).searchParams.get('sslmode')?.toLowerCase() ?? '';
+    } catch {
+      // pg reports malformed connection strings with its normal diagnostic.
+    }
+    if (sslMode === 'disable' || sslMode === 'allow') {
+      throw new Error('PostgreSQL TLS cannot be disabled in this runtime');
+    }
+    poolConfig.ssl = { rejectUnauthorized: true };
+  }
+
   if (useTunnel) {
     // pg 8.20 calls `stream` *synchronously* and expects a raw net.Socket.
     // It then calls `setNoDelay(true)` and `.connect(port, host)` on the

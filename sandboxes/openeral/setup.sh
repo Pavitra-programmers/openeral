@@ -21,6 +21,8 @@ set -euo pipefail
 # in some environments. Keep setup output clean and, more importantly, keep
 # warning text out of shell-captured values such as the StringCost presign URL.
 export NODE_NO_WARNINGS="${NODE_NO_WARNINGS:-1}"
+export OPENERAL_HOME="${OPENERAL_HOME:-/sandbox}"
+export HOME="$OPENERAL_HOME"
 
 OPENERAL_CMD="$(basename "$0")"
 OPENERAL_CLI_SUBCOMMAND=0
@@ -28,21 +30,21 @@ case "${1:-}" in
   init|memory|stats|analyze|apply|optimize|presign) OPENERAL_CLI_SUBCOMMAND=1 ;;
 esac
 
-# Use /opt/openeral directly if accessible, otherwise copy to /home/agent
+# Use /opt/openeral directly if accessible, otherwise copy to the sandbox home.
 if [ -r /opt/openeral/dist/db/embedded.js ]; then
   OPENERAL_DIR=/opt/openeral
   [ "$OPENERAL_CLI_SUBCOMMAND" -eq 1 ] || echo "setup: using /opt/openeral directly"
 else
   [ "$OPENERAL_CLI_SUBCOMMAND" -eq 1 ] || echo "setup: copying openeral to writable location..."
   # Use cp instead of tar to avoid permission issues
-  mkdir -p /home/agent/openeral
-  cp -r /opt/openeral/* /home/agent/openeral/ 2>/dev/null || {
+  mkdir -p "$OPENERAL_HOME/openeral"
+  cp -r /opt/openeral/* "$OPENERAL_HOME/openeral/" 2>/dev/null || {
     echo "setup: copy failed, trying with sudo..."
     # If copy fails, try to make /opt/openeral readable
     chmod -R a+rX /opt/openeral 2>/dev/null || true
-    cp -r /opt/openeral/* /home/agent/openeral/
+    cp -r /opt/openeral/* "$OPENERAL_HOME/openeral/"
   }
-  OPENERAL_DIR=/home/agent/openeral
+  OPENERAL_DIR="$OPENERAL_HOME/openeral"
 fi
 
 # Workspace ID defaults to sandbox ID (set by OpenShell supervisor), but an
@@ -51,7 +53,7 @@ export WORKSPACE_ID="${WORKSPACE_ID:-${OPENSHELL_SANDBOX_ID:-default}}"
 
 # Fix the PGlite data directory to a stable path so every Node.js process
 # in this script uses the same embedded database. Keep runtime state outside
-# /home/agent so scoped filesystem sync never persists secrets or PGlite files.
+# the sync root so scoped filesystem sync never persists secrets or PGlite files.
 export OPENERAL_STATE_DIR="${OPENERAL_STATE_DIR:-/tmp/openeral}"
 export OPENERAL_DATA_DIR="${OPENERAL_DATA_DIR:-/tmp/openeral/data}"
 OPENERAL_DB_URL_FILE="${OPENERAL_DB_URL_FILE:-$OPENERAL_STATE_DIR/database-url}"
@@ -67,7 +69,7 @@ if [ "$OPENERAL_CLI_SUBCOMMAND" -eq 1 ]; then
     /usr/local/bin/openeral init --ensure >/dev/null 2>&1
     openeral-daemon-ensure >/dev/null 2>&1
   fi
-  exec env HOME="/home/agent" OPENERAL_HOME="/home/agent" \
+  exec env HOME="$OPENERAL_HOME" OPENERAL_HOME="$OPENERAL_HOME" \
     OPENERAL_STATE_DIR="$OPENERAL_STATE_DIR" OPENERAL_DATA_DIR="$OPENERAL_DATA_DIR" \
     OPENERAL_DB_URL_FILE="$OPENERAL_DB_URL_FILE" OPENERAL_INIT_MARKER="$OPENERAL_INIT_MARKER" \
     node "$OPENERAL_DIR/dist/bin/openeral.js" "$@"
@@ -136,11 +138,12 @@ fi
 #
 # Priority:
 #   1. STRINGCOST_PROXY_URL already set → normalize and use it.
-#   2. Uploaded presign JSON or URL under /sandbox/openeral-input → normalize and use it.
-#   3. STRINGCOST_PROXY_URL stored from previous session in /home/agent/.openeral/presign.json → reuse.
-#   4. STRINGCOST_API_KEY + raw ANTHROPIC_API_KEY present → create a new permanent presign
-#      (expires_in=-1, max_uses=-1, cost_limit=$10), store in workspace, reuse on next launch.
-STRINGCOST_PRESIGN_FILE=/home/agent/.openeral/presign.json
+#   2. Uploaded presign JSON or URL from an older launch flow → normalize and use it.
+#   3. STRINGCOST_PROXY_URL stored in the sandbox home → reuse.
+#   4. STRINGCOST_API_KEY + ANTHROPIC_API_KEY present → create a permanent presign.
+#      OpenShell resolves provider placeholders in the authorization header and
+#      JSON body because the policy opts into request-body credential rewriting.
+STRINGCOST_PRESIGN_FILE="$OPENERAL_HOME/.openeral/presign.json"
 
 normalize_stringcost_proxy_url() {
   node -e '
@@ -252,11 +255,6 @@ try {
 fi
 
 if [ -z "${STRINGCOST_PROXY_URL:-}" ] && [ -n "${STRINGCOST_API_KEY:-}" ] && [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-  case "${ANTHROPIC_API_KEY:-}" in
-    openshell:resolve:env:*)
-      echo "setup.sh: skipping StringCost presign creation because ANTHROPIC_API_KEY is an OpenShell placeholder; upload a host-created presign.json to /sandbox/openeral-input instead" >&2
-      ;;
-    *)
   echo "setup.sh: creating a permanent StringCost presign..."
   mkdir -p "$(dirname "$STRINGCOST_PRESIGN_FILE")"
   STRINGCOST_PRESIGN_ERR=/tmp/openeral-stringcost-presign.err
@@ -325,8 +323,6 @@ const fetch = globalThis.fetch;
     STRINGCOST_PROXY_URL=""
   fi
   rm -f "$STRINGCOST_PRESIGN_ERR"
-      ;;
-  esac
 fi
 
 # Apply proxy to Claude Code settings if we have one
@@ -334,14 +330,15 @@ if [ -n "${STRINGCOST_PROXY_URL:-}" ]; then
   echo "setup.sh: writing StringCost proxy to ~/.claude/settings.json..."
   node -e "
 const fs = require('fs');
-const file = '/home/agent/.claude/settings.json';
+const home = process.env.OPENERAL_HOME || '/sandbox';
+const file = home + '/.claude/settings.json';
 let s = {};
 try { s = JSON.parse(fs.readFileSync(file, 'utf8')); } catch(e) {}
 if (!s.env) s.env = {};
 s.env.ANTHROPIC_BASE_URL = process.env.STRINGCOST_PROXY_URL;
 delete s.env.ANTHROPIC_API_KEY;
 delete s.env.ANTHROPIC_AUTH_TOKEN;
-fs.mkdirSync('/home/agent/.claude', {recursive: true});
+fs.mkdirSync(home + '/.claude', {recursive: true});
 fs.writeFileSync(file, JSON.stringify(s, null, 2));
 console.log('setup.sh: StringCost proxy written to ~/.claude/settings.json');
 "
@@ -447,45 +444,30 @@ node -e "
 "
 
 if [ -n "${DATABASE_URL:-}" ]; then
-  if NODE_NO_WARNINGS=1 node -e "
-const fs = require('fs');
-const crypto = require('crypto');
-const marker = process.env.OPENERAL_INIT_MARKER || '/tmp/openeral/init.done';
-const dbFile = process.env.OPENERAL_DB_URL_FILE || '/tmp/openeral/database-url';
-const workspaceId = process.env.WORKSPACE_ID || 'default';
-let datasource = 'pglite:' + (process.env.OPENERAL_DATA_DIR || '/tmp/openeral/data');
-try {
-  if (fs.existsSync(dbFile)) {
-    const dbUrl = fs.readFileSync(dbFile, 'utf8').trim();
-    if (dbUrl) datasource = 'postgres:' + dbUrl;
-  }
-  const data = JSON.parse(fs.readFileSync(marker, 'utf8'));
-  const datasourceHash = crypto.createHash('sha256').update(datasource).digest('hex');
-  if (data && data.version === 1 && data.workspaceId === workspaceId && data.datasourceHash === datasourceHash) {
-    process.exit(0);
-  }
-} catch {}
-process.exit(1);
-"; then
+  if NODE_NO_WARNINGS=1 node "$OPENERAL_DIR/dist/bin/openeral.js" init --check-marker; then
     echo "setup.sh: init marker is current; skipping PostgreSQL hydration"
   else
-  echo "setup.sh: hydrating Claude state from PostgreSQL..."
-  node -e "
-    import('$OPENERAL_DIR/dist/db/embedded.js').then(async ({ getDatabaseConnection }) => {
-      const { syncToFs } = await import('$OPENERAL_DIR/dist/sync.js');
-      const { pool } = await getDatabaseConnection();
-      const excludeDirs = new Set(['node_modules', '.git', '.cache', '.openeral-memory-backups']);
-      let count = 0;
-      for (const pathPrefix of ['/.claude', '/.openeral']) {
-        count += await syncToFs(pool, process.env.WORKSPACE_ID, '/home/agent', { pathPrefix, excludeDirs });
-      }
-      await pool.end();
-      console.log('setup.sh: hydrated ' + count + ' item(s)');
-    }).catch(err => {
-      console.error('setup.sh: hydration failed:', err.message);
-      process.exit(1);
-    });
-  "
+    echo "setup.sh: hydrating Claude state from PostgreSQL..."
+    node -e "
+      import('$OPENERAL_DIR/dist/db/embedded.js').then(async ({ getDatabaseConnection }) => {
+        const { syncToFs } = await import('$OPENERAL_DIR/dist/sync.js');
+        const { pool } = await getDatabaseConnection();
+        const excludeDirs = new Set(['node_modules', '.git', '.cache', '.openeral-memory-backups']);
+        let count = 0;
+        for (const prefix of [
+          { pathPrefix: '/.claude', pathPrefixKind: 'dir' },
+          { pathPrefix: '/.openeral', pathPrefixKind: 'dir' },
+          { pathPrefix: '/.claude.json', pathPrefixKind: 'file' },
+        ]) {
+          count += await syncToFs(pool, process.env.WORKSPACE_ID, process.env.OPENERAL_HOME || '/sandbox', { ...prefix, excludeDirs });
+        }
+        await pool.end();
+        console.log('setup.sh: hydrated ' + count + ' item(s)');
+      }).catch(err => {
+        console.error('setup.sh: hydration failed:', err.message);
+        process.exit(1);
+      });
+    "
   fi
 fi
 
@@ -495,17 +477,18 @@ if [ -n "${STRINGCOST_PROXY_URL:-}" ]; then
   echo "setup.sh: reapplying StringCost proxy after hydration..."
   node -e "
 const fs = require('fs');
-const presign = '/home/agent/.openeral/presign.json';
-fs.mkdirSync('/home/agent/.openeral', {recursive: true});
+const home = process.env.OPENERAL_HOME || '/sandbox';
+const presign = home + '/.openeral/presign.json';
+fs.mkdirSync(home + '/.openeral', {recursive: true});
 fs.writeFileSync(presign, JSON.stringify({ url: process.env.STRINGCOST_PROXY_URL, updated_at: new Date().toISOString() }, null, 2), { mode: 0o600 });
-const file = '/home/agent/.claude/settings.json';
+const file = home + '/.claude/settings.json';
 let s = {};
 try { s = JSON.parse(fs.readFileSync(file, 'utf8')); } catch(e) {}
 if (!s.env) s.env = {};
 s.env.ANTHROPIC_BASE_URL = process.env.STRINGCOST_PROXY_URL;
 delete s.env.ANTHROPIC_API_KEY;
 delete s.env.ANTHROPIC_AUTH_TOKEN;
-fs.mkdirSync('/home/agent/.claude', {recursive: true});
+fs.mkdirSync(home + '/.claude', {recursive: true});
 fs.writeFileSync(file, JSON.stringify(s, null, 2));
 "
 fi
@@ -518,8 +501,12 @@ if [ -n "${DATABASE_URL:-}" ]; then
       const { pool } = await getDatabaseConnection();
       const excludeDirs = new Set(['node_modules', '.git', '.cache', '.openeral-memory-backups']);
       let count = 0;
-      for (const pathPrefix of ['/.claude', '/.openeral']) {
-        count += await syncFromFs(pool, process.env.WORKSPACE_ID, '/home/agent', { pathPrefix, excludeDirs });
+      for (const prefix of [
+        { pathPrefix: '/.claude', pathPrefixKind: 'dir' },
+        { pathPrefix: '/.openeral', pathPrefixKind: 'dir' },
+        { pathPrefix: '/.claude.json', pathPrefixKind: 'file' },
+      ]) {
+        count += await syncFromFs(pool, process.env.WORKSPACE_ID, process.env.OPENERAL_HOME || '/sandbox', { ...prefix, excludeDirs });
       }
       await pool.end();
       console.log('setup.sh: persisted ' + count + ' item(s)');
@@ -564,9 +551,9 @@ write_export() {
 write_session_env() {
   local session_env=/tmp/openeral-session.env
   {
-    write_export HOME "/home/agent"
+    write_export HOME "$OPENERAL_HOME"
     write_export SHELL "/bin/bash"
-    write_export OPENERAL_HOME "/home/agent"
+    write_export OPENERAL_HOME "$OPENERAL_HOME"
     write_export OPENERAL_DIR "$OPENERAL_DIR"
     write_export OPENERAL_STATE_DIR "$OPENERAL_STATE_DIR"
     write_export OPENERAL_DATA_DIR "$OPENERAL_DATA_DIR"
@@ -574,14 +561,8 @@ write_session_env() {
     write_export WORKSPACE_ID "$WORKSPACE_ID"
     write_export NODE_NO_WARNINGS "$NODE_NO_WARNINGS"
     [ -z "${NPM_CONFIG_USERCONFIG:-}" ] || write_export NPM_CONFIG_USERCONFIG "$NPM_CONFIG_USERCONFIG"
-    if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-      write_export ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY"
-    else
-      # OpenShell exposes provider secrets to sandbox processes as placeholders.
-      # Later SSH/exec sessions are separate processes, so persist the standard
-      # placeholder for Claude's wrapper to inherit.
-      write_export ANTHROPIC_API_KEY "openshell:resolve:env:ANTHROPIC_API_KEY"
-    fi
+    # Provider credentials are injected into each OpenShell SSH/exec process.
+    # Never copy either raw credentials or their placeholders into a file.
     [ -z "${ANTHROPIC_BASE_URL:-}" ] || write_export ANTHROPIC_BASE_URL "$ANTHROPIC_BASE_URL"
     [ -z "${STRINGCOST_PROXY_URL:-}" ] || write_export ANTHROPIC_BASE_URL "$STRINGCOST_PROXY_URL"
   } > "$session_env"
@@ -601,7 +582,7 @@ case "$-" in
     ;;
 esac
 '
-  for profile in /sandbox/.bashrc /home/agent/.bashrc; do
+  for profile in "$OPENERAL_HOME/.bashrc"; do
     touch "$profile" 2>/dev/null || continue
     if ! grep -q 'OpenEral session environment' "$profile" 2>/dev/null; then
       printf '%s\n' "$snippet" >> "$profile" 2>/dev/null || true
@@ -612,43 +593,15 @@ esac
 write_session_env
 write_shell_hint
 
-# Install Claude Code if not already present in the image. Production images
-# preinstall /usr/local/bin/claude-real and expose /usr/local/bin/claude as the
-# OpenEral wrapper; this fallback keeps local/dev images usable.
+# The OpenShell base image installs Claude Code. OpenEral renames that binary to
+# claude-real at image build time and exposes its persistence-aware wrapper as
+# claude. Installing packages during sandbox startup is intentionally forbidden.
 if ! command -v claude-real >/dev/null 2>&1; then
-  echo "setup.sh: Claude CLI not found, installing..."
-  npm install -g @anthropic-ai/claude-code 2>&1 | tail -10
-  CLAUDE_BIN="$(command -v claude 2>/dev/null || true)"
-  if [ -z "$CLAUDE_BIN" ]; then
-    echo "setup.sh: ERROR: Claude CLI install failed" >&2
-    exit 1
-  fi
-  if [ "$CLAUDE_BIN" = "/usr/local/bin/claude" ]; then
-    mv /usr/local/bin/claude /usr/local/bin/claude-real
-  else
-    ln -sf "$CLAUDE_BIN" /usr/local/bin/claude-real
-  fi
-  echo "setup.sh: Claude CLI installed"
+  echo "setup.sh: ERROR: /usr/local/bin/claude-real is missing from the sandbox image" >&2
+  exit 1
 fi
 
-node -e "
-const fs = require('fs');
-const crypto = require('crypto');
-const marker = process.env.OPENERAL_INIT_MARKER || '/tmp/openeral/init.done';
-const dbFile = process.env.OPENERAL_DB_URL_FILE || '/tmp/openeral/database-url';
-let datasource = 'pglite:' + (process.env.OPENERAL_DATA_DIR || '/tmp/openeral/data');
-try {
-  if (fs.existsSync(dbFile)) datasource = 'postgres:' + fs.readFileSync(dbFile, 'utf8').trim();
-} catch {}
-const datasourceHash = crypto.createHash('sha256').update(datasource).digest('hex');
-fs.mkdirSync(require('path').dirname(marker), { recursive: true });
-fs.writeFileSync(marker, JSON.stringify({
-  version: 1,
-  workspaceId: process.env.WORKSPACE_ID || 'default',
-  datasourceHash,
-  completedAt: new Date().toISOString()
-}, null, 2), { mode: 0o600 });
-"
+node "$OPENERAL_DIR/dist/bin/openeral.js" init --write-marker
 chmod 600 "$OPENERAL_INIT_MARKER" 2>/dev/null || true
 
 echo ""
