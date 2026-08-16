@@ -1,4 +1,8 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S node --use-openssl-ca
+// --use-openssl-ca: trust the system CA store (where a private PostgreSQL CA is
+// installed), matching openrind-shell-init and the FUSE daemon. Without it Node
+// only trusts its bundled roots and a private-CA TLS failure surfaces as the
+// misleading "Connection terminated unexpectedly".
 
 import { readFileSync } from 'node:fs';
 

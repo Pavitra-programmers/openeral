@@ -190,7 +190,9 @@ describe('OpenShell runtime architecture', () => {
   });
 
   it('parents Claude so it can flush after Claude exits', () => {
-    expect(claudeWrapper).toContain('/usr/local/bin/claude-real "$@" &');
+    expect(claudeWrapper).toContain('exec 3<&0');
+    expect(claudeWrapper).toContain('/usr/local/bin/claude-real "$@" <&3 3<&- &');
+    expect(claudeWrapper).not.toContain('/usr/local/bin/claude-real "$@" &\n');
     expect(claudeWrapper).toContain('/usr/local/bin/openrind-shell-bash --flush');
     expect(claudeWrapper).not.toContain('exec /usr/local/bin/claude-real');
   });

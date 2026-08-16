@@ -261,7 +261,9 @@ network_policies:
   postgres:
     name: postgres
     endpoints:
-      # Supabase pooler — session mode (5432) and transaction mode (6543)
+      # Supabase pooler — session mode (5432) and transaction mode (6543).
+      # The FUSE runtime requires session mode and its init rejects 6543; the
+      # compatibility runtime may use either.
       - { host: "*.pooler.supabase.com", port: 5432, tls: skip }
       - { host: "*.pooler.supabase.com", port: 6543, tls: skip }
     binaries:

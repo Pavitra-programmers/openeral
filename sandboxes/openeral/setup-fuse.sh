@@ -55,6 +55,23 @@ case "${1:-}" in
     openrind-shell-fused flush-all >/dev/null 2>&1 || true
     exit "$status"
     ;;
+  "")
+    ;;
+  -h|--help|help)
+    cat <<'USAGE'
+Usage:
+  openrind-shell-init                 one-shot sandbox initialization (run by sandbox create)
+  openrind-shell init [--ensure|--check-marker|--write-marker]
+  openrind-shell memory refresh [--query TEXT]
+  openrind-shell stats|analyze|apply|optimize ...
+  openrind-shell presign [renew]
+USAGE
+    exit 0
+    ;;
+  *)
+    echo "openrind-shell: unknown command '$1' (see 'openrind-shell --help')" >&2
+    exit 2
+    ;;
 esac
 
 DATABASE_URL="${DATABASE_URL:-${OPENRIND_SHELL_DATABASE_URL:-${OPENERAL_DATABASE_URL:-${POSTGRES_URL:-}}}}"
@@ -91,6 +108,13 @@ case "$DATABASE_URL" in
 esac
 if [[ "$DATABASE_URL" =~ [\?\&]sslmode=(disable|allow)($|\&) ]]; then
   echo "setup-fuse.sh: PostgreSQL TLS cannot be disabled in the FUSE runtime" >&2
+  exit 1
+fi
+# The writer lease is a session-level advisory lock plus per-session settings.
+# Supabase port 6543 is transaction pooling, which detaches sessions from
+# backends and silently breaks fencing; the FUSE runtime requires session mode.
+if [[ "$DATABASE_URL" =~ ^postgres(ql)?://[^/@]*@[^/:]*\.pooler\.supabase\.com:6543(/|\?|$) ]]; then
+  echo "setup-fuse.sh: Supabase port 6543 (transaction pooling) breaks the writer lease; use the session-mode pooler on port 5432" >&2
   exit 1
 fi
 export DATABASE_URL
@@ -195,13 +219,20 @@ NPMRC
   chmod 600 "$OPENRIND_SHELL_NPMRC"
 fi
 
-if ! grep -q 'Openrind Shell FUSE session environment' "$OPENRIND_SHELL_HOME/.bashrc" 2>/dev/null; then
-  cat >> "$OPENRIND_SHELL_HOME/.bashrc" <<'BASHRC'
+# Interactive SSH shells start with the sandbox user's login home (/sandbox), not
+# the mount, so the session hook must live in that .bashrc. It sources
+# session.env (which exports HOME=/sandbox/work) and moves into the workspace.
+SHELL_BASHRC="${HOME:-/sandbox}/.bashrc"
+if ! grep -q 'Openrind Shell FUSE session environment' "$SHELL_BASHRC" 2>/dev/null; then
+  cat >> "$SHELL_BASHRC" <<'BASHRC'
 
 # Openrind Shell FUSE session environment.
 [ -f /var/lib/openrind-shell/runtime/session.env ] && . /var/lib/openrind-shell/runtime/session.env
 case "$-" in
   *i*)
+    case "$PWD" in
+      /|/sandbox) [ -d /sandbox/work ] && cd /sandbox/work ;;
+    esac
     if [ -z "${OPENRIND_SHELL_HINT_SHOWN:-}" ]; then
       export OPENRIND_SHELL_HINT_SHOWN=1
       echo "Openrind Shell ready. Run 'claude' to start; /exit or Ctrl-D returns here; 'claude -c' continues."
