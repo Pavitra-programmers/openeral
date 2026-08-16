@@ -55,11 +55,11 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install pnpm
-        run: npm install -g pnpm
+        run: npm install -g pnpm@11.22.0
 
       - name: Install dependencies
         working-directory: openeral-js
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Typecheck
         working-directory: openeral-js

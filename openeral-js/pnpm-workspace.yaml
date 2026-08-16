@@ -1,0 +1,5 @@
+allowBuilds:
+  # Optional just-bash archive codecs; Openrind does not execute their native installers.
+  '@mongodb-js/zstd@7.0.0': false
+  'esbuild@0.27.7': true
+  'node-liblzma@2.2.0': false
