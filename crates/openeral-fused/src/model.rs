@@ -38,7 +38,6 @@ pub struct Node {
     pub atime_ns: i64,
     pub mtime_ns: i64,
     pub ctime_ns: i64,
-    pub generation: i64,
     pub symlink_target: Option<Vec<u8>>,
     pub deleted: bool,
 }

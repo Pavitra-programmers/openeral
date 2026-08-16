@@ -171,6 +171,11 @@ impl InodeState {
         inner
             .dirty
             .retain(|_, chunk| chunk.sequence > snapshot.through_sequence);
+        // The data that previously failed to write back has now been committed,
+        // so nothing was lost: clear the sticky error instead of refusing every
+        // later write to this inode forever. Discarded (fenced) data never
+        // reaches this path because it is removed from `dirty` first.
+        inner.writeback_error = None;
     }
 
     pub fn truncate_local(&self, size: i64) {
@@ -287,7 +292,6 @@ mod tests {
             atime_ns: 0,
             mtime_ns: 0,
             ctime_ns: 0,
-            generation: 1,
             symlink_target: None,
             deleted: false,
         }

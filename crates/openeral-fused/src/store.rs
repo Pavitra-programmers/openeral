@@ -14,7 +14,7 @@ const LEASE_SECONDS: i64 = 15;
 
 pub struct PgStore {
     client: Mutex<Client>,
-    connection_error: tokio::sync::watch::Receiver<Option<String>>,
+    connection_error: parking_lot::Mutex<tokio::sync::watch::Receiver<Option<String>>>,
     database_url: String,
     volume_id: String,
     workspace_id: String,
@@ -79,7 +79,7 @@ impl PgStore {
 
         Ok(Self {
             client: Mutex::new(client),
-            connection_error: connected.connection_error,
+            connection_error: parking_lot::Mutex::new(connected.connection_error),
             database_url,
             volume_id,
             workspace_id,
@@ -129,7 +129,47 @@ impl PgStore {
     }
 
     pub fn connection_failed(&self) -> Option<String> {
-        self.connection_error.borrow().clone()
+        self.connection_error.lock().borrow().clone()
+    }
+
+    /// Replace a lost PostgreSQL connection while the writer lease is still
+    /// provably ours. Opens a fresh connection, re-takes the session-level
+    /// advisory lock, verifies the lease row (same owner and epoch, unexpired),
+    /// renews it, and only then swaps the live client. Any lease mismatch is
+    /// terminal (`Error::Fenced`); connection-level failures are retryable by the
+    /// caller within the lease safety window.
+    pub async fn reconnect(&self) -> Result<()> {
+        let connected = connect(&self.database_url).await?;
+        let acquired: bool = connected
+            .client
+            .query_one(
+                "SELECT pg_try_advisory_lock(hashtextextended($1, 0))",
+                &[&self.volume_id],
+            )
+            .await?
+            .get(0);
+        if !acquired {
+            return Err(Error::Internal(
+                "writer advisory lock is still held by the previous session".into(),
+            ));
+        }
+        let renewed = connected
+            .client
+            .execute(
+                "UPDATE _openeral.fs_mount_epochs
+                    SET lease_expires_at = NOW() + ($4::bigint * INTERVAL '1 second'),
+                        updated_at = NOW()
+                  WHERE volume_id = $1 AND owner_id = $2 AND epoch = $3
+                    AND lease_expires_at > NOW()",
+                &[&self.volume_id, &self.owner_id, &self.epoch, &LEASE_SECONDS],
+            )
+            .await?;
+        if renewed != 1 {
+            return Err(Error::Fenced);
+        }
+        *self.client.lock().await = connected.client;
+        *self.connection_error.lock() = connected.connection_error;
+        Ok(())
     }
 
     pub fn subscribe_terminal_fence(&self) -> tokio::sync::watch::Receiver<Option<String>> {
@@ -141,8 +181,12 @@ impl PgStore {
     }
 
     pub async fn heartbeat(&self) -> Result<()> {
-        if self.connection_failed().is_some() {
-            return Err(Error::Fenced);
+        if let Some(error) = self.connection_failed() {
+            // A dead connection is not a lost lease: the caller reconnects and
+            // re-verifies ownership within the lease safety window.
+            return Err(Error::Internal(format!(
+                "PostgreSQL connection lost: {error}"
+            )));
         }
         let client = self.client.lock().await;
         let updated = client
@@ -224,7 +268,7 @@ impl PgStore {
         let row = client
             .query_opt(
                 "SELECT node_id, kind, mode, uid, gid, size, nlink, atime_ns,
-                        mtime_ns, ctime_ns, generation, symlink_target, deleted
+                        mtime_ns, ctime_ns, symlink_target, deleted
                    FROM _openeral.fs_nodes
                   WHERE volume_id = $1 AND node_id = $2",
                 &[&self.volume_id, &node_id],
@@ -239,7 +283,7 @@ impl PgStore {
         let row = client
             .query_opt(
                 "SELECT n.node_id, n.kind, n.mode, n.uid, n.gid, n.size, n.nlink,
-                        n.atime_ns, n.mtime_ns, n.ctime_ns, n.generation,
+                        n.atime_ns, n.mtime_ns, n.ctime_ns,
                         n.symlink_target, n.deleted
                    FROM _openeral.fs_dirents d
                    JOIN _openeral.fs_nodes n
@@ -257,7 +301,7 @@ impl PgStore {
         let rows = client
             .query(
                 "SELECT d.name, n.node_id, n.kind, n.mode, n.uid, n.gid, n.size,
-                        n.nlink, n.atime_ns, n.mtime_ns, n.ctime_ns, n.generation,
+                        n.nlink, n.atime_ns, n.mtime_ns, n.ctime_ns,
                         n.symlink_target, n.deleted
                    FROM _openeral.fs_dirents d
                    JOIN _openeral.fs_nodes n
@@ -348,7 +392,7 @@ impl PgStore {
                     ctime_ns, symlink_target)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $8, $9)
                  RETURNING node_id, kind, mode, uid, gid, size, nlink, atime_ns,
-                           mtime_ns, ctime_ns, generation, symlink_target, deleted",
+                           mtime_ns, ctime_ns, symlink_target, deleted",
                 &[
                     &self.volume_id,
                     &(kind as i16),
@@ -407,7 +451,7 @@ impl PgStore {
                     SET size = $3, mtime_ns = $4, ctime_ns = $4, generation = generation + 1
                   WHERE volume_id = $1 AND node_id = $2 AND kind = 1 AND NOT deleted
                   RETURNING node_id, kind, mode, uid, gid, size, nlink, atime_ns,
-                            mtime_ns, ctime_ns, generation, symlink_target, deleted",
+                            mtime_ns, ctime_ns, symlink_target, deleted",
                 &[&self.volume_id, &node_id, &size, &timestamp],
             )
             .await?
@@ -460,7 +504,7 @@ impl PgStore {
                         generation = generation + 1
                   WHERE volume_id = $1 AND node_id = $2 AND NOT deleted
                   RETURNING node_id, kind, mode, uid, gid, size, nlink, atime_ns,
-                            mtime_ns, ctime_ns, generation, symlink_target, deleted",
+                            mtime_ns, ctime_ns, symlink_target, deleted",
                 &[
                     &self.volume_id,
                     &node_id,
@@ -984,9 +1028,8 @@ fn node_from_row_offset(row: &Row, offset: usize) -> Result<Node> {
         atime_ns: row.get(offset + 7),
         mtime_ns: row.get(offset + 8),
         ctime_ns: row.get(offset + 9),
-        generation: row.get(offset + 10),
-        symlink_target: row.get(offset + 11),
-        deleted: row.get(offset + 12),
+        symlink_target: row.get(offset + 10),
+        deleted: row.get(offset + 11),
     })
 }
 

@@ -15,10 +15,12 @@ import { runMigrations } from '../db/migrations.js';
 const runtimeDir = process.env.OPENRIND_SHELL_RUNTIME_DIR
   || process.env.OPENERAL_RUNTIME_DIR
   || '/var/lib/openrind-shell/runtime';
+// Same precedence as setup-fuse.sh, init-marker.ts, and the Rust daemon: the
+// legacy alias wins over the driver-injected OPENSHELL_SANDBOX_ID.
 const workspaceId = process.env.OPENRIND_SHELL_WORKSPACE_ID
+  || process.env.OPENERAL_WORKSPACE_ID
   || process.env.WORKSPACE_ID
   || process.env.OPENSHELL_SANDBOX_ID
-  || process.env.OPENERAL_WORKSPACE_ID
   || 'default';
 const databaseUrl = process.env.DATABASE_URL || '';
 

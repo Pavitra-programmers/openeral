@@ -55,10 +55,13 @@ impl RuntimeState {
 
     #[must_use]
     pub fn from_environment() -> Arc<Self> {
+        // Same precedence as setup-fuse.sh and init-marker.ts: the legacy alias
+        // must win over the driver-injected OPENSHELL_SANDBOX_ID, or the daemon and
+        // the init-written database.ready marker disagree about the workspace.
         let workspace_id = std::env::var("OPENRIND_SHELL_WORKSPACE_ID")
+            .or_else(|_| std::env::var("OPENERAL_WORKSPACE_ID"))
             .or_else(|_| std::env::var("WORKSPACE_ID"))
             .or_else(|_| std::env::var("OPENSHELL_SANDBOX_ID"))
-            .or_else(|_| std::env::var("OPENERAL_WORKSPACE_ID"))
             .unwrap_or_else(|_| "default".to_string());
         let runtime_dir = std::env::var_os("OPENRIND_SHELL_RUNTIME_DIR")
             .or_else(|| std::env::var_os("OPENERAL_RUNTIME_DIR"))
@@ -250,8 +253,17 @@ async fn monitor_lease_and_marker(state: &RuntimeState, store: &PgStore, hash: &
                     return;
                 }
                 if let Err(error) = store.heartbeat().await {
-                    state.fence(format!("writer lease lost: {error}"));
-                    return;
+                    if matches!(error, Error::Fenced) {
+                        state.fence(format!("writer lease lost: {error}"));
+                        return;
+                    }
+                    // Transient failure (typically a dropped connection): recover
+                    // within the lease safety window instead of restarting the
+                    // whole container. Mutations fail with EIO meanwhile.
+                    if let Err(error) = recover_connection(store, &error).await {
+                        state.fence(format!("writer lease lost: {error}"));
+                        return;
+                    }
                 }
             }
             changed = terminal_fence.changed() => {
@@ -265,6 +277,33 @@ async fn monitor_lease_and_marker(state: &RuntimeState, store: &PgStore, hash: &
                 };
                 state.fence(reason);
                 return;
+            }
+        }
+    }
+}
+
+/// Bounded reconnect after a heartbeat failure. The lease lasts `LEASE_SECONDS`
+/// and is renewed every 3 s, so at least ~12 s remain when the failure is seen;
+/// stop well before that so a replacement writer can never overlap with us.
+async fn recover_connection(store: &PgStore, cause: &Error) -> Result<()> {
+    const RECOVERY_WINDOW: Duration = Duration::from_secs(9);
+    const RETRY_INTERVAL: Duration = Duration::from_secs(1);
+    tracing::warn!(error = %cause, "PostgreSQL heartbeat failed; attempting bounded reconnect");
+    let deadline = tokio::time::Instant::now() + RECOVERY_WINDOW;
+    loop {
+        match store.reconnect().await {
+            Ok(()) => {
+                tracing::warn!("PostgreSQL connection re-established; writer lease renewed");
+                return Ok(());
+            }
+            Err(Error::Fenced) => return Err(Error::Fenced),
+            Err(error) => {
+                if tokio::time::Instant::now() + RETRY_INTERVAL > deadline {
+                    return Err(Error::Internal(format!(
+                        "reconnect failed within the lease safety window: {error}"
+                    )));
+                }
+                tokio::time::sleep(RETRY_INTERVAL).await;
             }
         }
     }

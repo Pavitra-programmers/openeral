@@ -125,13 +125,20 @@ impl PreparedFuseMount {
         )
         .into_diagnostic()?;
         let mappings = [fuse_mapping, readiness_mapping];
+        // The daemon starts in `/` so it never depends on its own not-yet-served
+        // mount, but that directory must not become a Landlock read-write grant:
+        // `include_workdir` would otherwise add the workspace root ("/") to the
+        // daemon's ruleset and disable Landlock for it entirely. The daemon gets
+        // exactly the static filesystem policy, nothing more.
         let daemon_workspace = ResolvedWorkspace::new(Some("/".to_string()), false);
+        let mut daemon_policy = policy.clone();
+        daemon_policy.filesystem.include_workdir = false;
         let mut handle = ProcessHandle::spawn_with_inherited_fds(
             self.declaration.binary.to_string_lossy().as_ref(),
             &self.declaration.args,
             &daemon_workspace,
             false,
-            policy,
+            &daemon_policy,
             resolved_identity,
             enforcement_mode,
             netns,

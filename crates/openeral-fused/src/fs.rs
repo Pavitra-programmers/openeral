@@ -17,6 +17,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+/// FUSE inode generation. The kernel treats a changed generation for the same
+/// nodeid as inode reuse and marks the cached inode bad, failing every open
+/// descriptor with EIO. Node ids are never reused (`fs_nodes.node_id` is an
+/// identity column), so the generation is a constant; `fs_nodes.generation` is a
+/// metadata version, not a FUSE generation.
+const FUSE_GENERATION: u64 = 0;
+
+/// Synthetic free capacity reported by `statfs`: 2^30 blocks of 4 KiB (4 TiB) and 2^30 inodes.
+const STATFS_FREE_BLOCKS: u64 = 1 << 30;
+const STATFS_FREE_FILES: u64 = 1 << 30;
+
 const TTL: Duration = Duration::from_secs(1);
 const DATABASE_WAIT: Duration = Duration::from_secs(5);
 
@@ -251,7 +262,7 @@ impl Filesystem for OpeneralFilesystem {
         match result {
             Ok((store, node)) => {
                 let attr = self.core.attr(&store, node.clone());
-                reply.entry(&TTL, &attr, Generation(node.generation as u64));
+                reply.entry(&TTL, &attr, Generation(FUSE_GENERATION));
             }
             Err(error) => Self::reply_error(reply, error),
         }
@@ -365,7 +376,7 @@ impl Filesystem for OpeneralFilesystem {
         match result {
             Ok((store, node)) => {
                 let attr = self.core.attr(&store, node.clone());
-                reply.entry(&TTL, &attr, Generation(node.generation as u64));
+                reply.entry(&TTL, &attr, Generation(FUSE_GENERATION));
             }
             Err(error) => Self::reply_error(reply, error),
         }
@@ -430,7 +441,7 @@ impl Filesystem for OpeneralFilesystem {
         match result {
             Ok((store, node)) => {
                 let attr = self.core.attr(&store, node.clone());
-                reply.entry(&TTL, &attr, Generation(node.generation as u64));
+                reply.entry(&TTL, &attr, Generation(FUSE_GENERATION));
             }
             Err(error) => Self::reply_error(reply, error),
         }
@@ -569,9 +580,15 @@ impl Filesystem for OpeneralFilesystem {
             }
             let state = self.core.cache.state_for(&node);
             self.core.flush_for_capacity(&state)?;
-            self.core
-                .block(state.prepare_chunks(&store, offset, data.len()))?;
-            state.write(offset, data)?;
+            // Prepare and copy under the inode writeback lock: a concurrent flush
+            // that commits between the two steps drops every chunk at or below the
+            // committed sequence, including freshly prepared placeholders, and the
+            // write would fail with "write chunk was not prepared".
+            self.core.block(async {
+                let _guard = state.lock_writeback().await;
+                state.prepare_chunks(&store, offset, data.len()).await?;
+                state.write(offset, data).map(|_| ())
+            })?;
             if state.dirty_bytes() > MAX_DIRTY_PER_INODE
                 || self.core.cache.dirty_bytes() > MAX_DIRTY_GLOBAL
                 || flags.0 & (libc::O_SYNC | libc::O_DSYNC) != 0
@@ -771,13 +788,18 @@ impl Filesystem for OpeneralFilesystem {
         })();
         match result {
             Ok((bytes, files)) => {
-                let blocks = bytes.div_ceil(u64::from(BLOCK_SIZE));
+                // PostgreSQL has no fixed capacity to report. Present used space
+                // plus a large synthetic free pool so `f_blocks >= f_bfree` and
+                // `df`/free-space checks see sane numbers.
+                let used_blocks = bytes.div_ceil(u64::from(BLOCK_SIZE));
+                let free_blocks = STATFS_FREE_BLOCKS;
+                let free_files = STATFS_FREE_FILES;
                 reply.statfs(
-                    blocks,
-                    u64::MAX / 4,
-                    u64::MAX / 4,
-                    files,
-                    u64::MAX / 4,
+                    used_blocks.saturating_add(free_blocks),
+                    free_blocks,
+                    free_blocks,
+                    files.saturating_add(free_files),
+                    free_files,
                     BLOCK_SIZE,
                     255,
                     BLOCK_SIZE,
@@ -829,7 +851,7 @@ impl Filesystem for OpeneralFilesystem {
                 reply.created(
                     &TTL,
                     &attr,
-                    Generation(node.generation as u64),
+                    Generation(FUSE_GENERATION),
                     handle,
                     FopenFlags::empty(),
                 );
