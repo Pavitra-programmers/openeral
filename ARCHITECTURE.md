@@ -76,9 +76,12 @@ dial PostgreSQL directly: a valid OpenShell HTTP proxy environment is mandatory.
 PostgreSQL endpoint uses `tls: skip` at the OpenShell route so the proxy relays the
 non-HTTP PostgreSQL TLS session without terminating it.
 
-`HOME` and the default interactive cwd are `/sandbox/work`. `/sandbox` remains the OCI
-bootstrap working directory because initialization and supervisor startup must work
-before the database-backed mount is writable.
+`HOME` and the default interactive cwd are `/sandbox/work`: the sandbox user's login
+home stays `/sandbox`, and initialization installs a hook in `/sandbox/.bashrc` that
+sources the session environment (`HOME=/sandbox/work`) and enters the mount for
+interactive shells; the `claude` wrapper applies the same environment itself.
+`/sandbox` remains the OCI bootstrap working directory because initialization and
+supervisor startup must work before the database-backed mount is writable.
 
 ## Storage Model
 
@@ -120,8 +123,12 @@ The following are durability barriers:
 - the Claude wrapper's final `openrind-shell-fused flush-all` on clean exit.
 
 Namespace and metadata mutations commit synchronously. Uncertain mutation commits are
-resolved through operation IDs. On terminal lease loss, the old daemon discards dirty
-bytes, surfaces writeback errors, never reacquires a new epoch in-process, and exits.
+resolved through operation IDs. A lost PostgreSQL connection is not a lost lease: the
+daemon reconnects within the lease safety window, re-takes the advisory lock, and
+renews the same owner/epoch before serving again; mutations return `EIO` meanwhile.
+On terminal lease loss (the row was taken over or expired), the old daemon discards
+dirty bytes, surfaces writeback errors, never reacquires a new epoch in-process, and
+exits.
 
 ## Failure And Recovery
 
@@ -136,16 +143,20 @@ stateDiagram-v2
   Restarting --> Writable: Docker restarts, remounts, higher writer epoch
   Restarting --> Error: on-failure retry budget exhausted
   Writable --> Stopped: explicit sandbox stop
-  Stopped --> Restarting: explicit sandbox start resets retry budget
-  Error --> Restarting: operator fixes cause and starts or recreates
+  Stopped --> Restarting: explicit sandbox start
+  Error --> [*]: delete and recreate with the same workspace ID
 ```
 
-Explicit sandbox stop remains Stopped; explicit start resets the retry budget and
-reconstructs the mount. An arbitrary alive-but-deadlocked daemon is a documented v1
-gap because same-UID health endpoints cannot serve as a supervisor trust signal.
+Explicit sandbox stop remains Stopped; explicit start reconstructs the mount. A
+sandbox that exhausted the retry budget is terminal `Error`; `sandbox start` requires
+`Stopped`, so recovery is delete plus recreate with the same workspace ID. An arbitrary
+alive-but-deadlocked daemon is a documented v1 gap because same-UID health endpoints
+cannot serve as a supervisor trust signal.
 
-Open file descriptors and unbarriered dirty bytes cannot survive container restart.
-Committed data survives daemon, container, and sandbox replacement.
+A container restart terminates every process in the sandbox, including interactive
+SSH shells and Claude sessions. Open file descriptors and unbarriered dirty bytes
+cannot survive it. Committed data survives daemon, container, and sandbox
+replacement.
 
 ## Security Boundary
 

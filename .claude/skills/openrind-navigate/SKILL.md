@@ -50,7 +50,9 @@ openrind-shell-fused flush-all
 ```
 
 Only one writable sandbox may mount a given workspace ID. Stop mutating files if
-health is not `writable`.
+health is not `writable`. Operations return `EIO` while the daemon reconnects to
+PostgreSQL; a daemon exit or lease loss restarts the whole container and ends the
+current shell or Claude session, so `fsync` anything you cannot afford to lose.
 
 ## Compatibility Workspace
 

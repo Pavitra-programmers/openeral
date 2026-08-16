@@ -59,7 +59,9 @@ test -x "$OPENSHELL_BIN"
 test -e /dev/fuse
 ```
 
-Do not work around a failed check by granting mount capability to Claude.
+Use `$OPENSHELL_BIN` for every FUSE-mode command; a stock `openshell` on `PATH` may be
+an older upstream build without `--fuse`. Do not work around a failed check by
+granting mount capability to Claude.
 
 ## Provider And Upload Setup
 
@@ -151,6 +153,20 @@ trap - EXIT
 `--from Dockerfile.openrind-shell` is also supported when OpenShell should build and
 transfer the child image through the selected driver.
 
+Check the create command's exit status: a sandbox whose `openrind-shell-init` failed
+still lists as `Ready`. Verify the volume before handing it to Claude:
+
+```bash
+"$OPENSHELL_BIN" --gateway-endpoint "$OPENSHELL_GATEWAY_ENDPOINT" \
+  sandbox exec -n "$OPENRIND_SHELL_WORKSPACE_ID" -- openrind-shell-fused health
+```
+
+`state` must be `writable`. Common init failures: `already has an active filesystem
+writer` (another live sandbox mounts the same workspace ID), `did not become writable
+within 60 seconds` with `database.ready identity or schema does not match` (workspace
+ID mismatch; set `OPENRIND_SHELL_WORKSPACE_ID` explicitly), and `port 6543
+(transaction pooling)` (use the Supabase session-mode pooler on 5432).
+
 ## Start, Stop, And Resume Claude
 
 Inside the sandbox:
@@ -197,8 +213,13 @@ For FUSE mode, invoke those subcommands through the configured patched
 
 ## Runtime Facts
 
-- Primary FUSE uses `HOME=/sandbox/work`, requires PostgreSQL/TLS, and allows one
-  writable mount per workspace.
+- Primary FUSE uses `HOME=/sandbox/work` (the login home is `/sandbox`; a `.bashrc`
+  hook and the `claude` wrapper apply the session environment), requires
+  PostgreSQL/TLS in session mode, and allows one writable mount per workspace.
+- A FUSE daemon exit or lease loss restarts the container, which ends every SSH shell
+  and Claude session in the sandbox; a lost PostgreSQL connection alone is recovered
+  in place. A sandbox in the `Error` phase (retry budget exhausted) must be deleted and
+  recreated with the same workspace ID; `sandbox start` only works from `Stopped`.
 - Compatibility uses `HOME=/sandbox` and only synchronizes documented state prefixes.
 - `/db` exists only in the custom-agent just-bash library path, not Claude's shell.
 - Provider credentials remain OpenShell placeholders. The PostgreSQL URL is same-UID

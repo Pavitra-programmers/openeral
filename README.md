@@ -136,6 +136,17 @@ command that migrates PostgreSQL, prepares the normalized volume, verifies the w
 lease, performs an fsync/read-back canary through the mounted filesystem, configures
 Claude, removes the uploaded URL, and exits.
 
+Check the create command's exit status: a sandbox whose initialization failed still
+lists as `Ready`, because the supervisor and mount are up but the volume is not. When
+in doubt, verify before use:
+
+```bash
+"$OPENSHELL_BIN" --gateway-endpoint "$OPENSHELL_GATEWAY_ENDPOINT" \
+  sandbox exec -n "$OPENRIND_SHELL_WORKSPACE_ID" -- openrind-shell-fused health
+```
+
+The reported `state` must be `writable`.
+
 ```mermaid
 sequenceDiagram
   autonumber
@@ -183,9 +194,12 @@ OpenShell's trailing command is deliberately not a service: it is delivered over
 after Ready and exits. The supervisor-owned FUSE daemon is the long-lived critical
 service and survives ordinary SSH disconnects and repeated Claude sessions.
 
-For Supabase, use an IPv4-compatible pooler URL on port 5432 or 6543. The included
-policy covers `*.pooler.supabase.com`; other database hosts need an exact policy entry
-in a derived image. PostgreSQL TLS is mandatory.
+For Supabase, use an IPv4-compatible **session-mode** pooler URL on port 5432. Port
+6543 is transaction pooling, which detaches sessions from backends and would break the
+one-writer lease; `openrind-shell-init` rejects it. The included policy covers
+`*.pooler.supabase.com`; other database hosts need an exact policy entry in a derived
+image. PostgreSQL TLS is mandatory. For a local trial without Supabase, BUILD.md
+describes a Docker Compose TLS PostgreSQL fixture and the derived test image.
 
 ### Start, Stop, And Resume Claude
 
@@ -213,7 +227,10 @@ exit         # disconnect without deleting the sandbox
 ```
 
 Reconnect later with the same `sandbox connect` command. The OpenShell supervisor and
-FUSE daemon remain sandbox services; they are not tied to the SSH session.
+FUSE daemon remain sandbox services; they are not tied to the SSH session. Interactive
+shells start with the sandbox user's login home `/sandbox`, then a hook installed by
+initialization sources the session environment (`HOME=/sandbox/work`) and enters the
+mount; the `claude` wrapper applies the same environment on its own.
 
 ### Persistence And Durability
 
@@ -223,9 +240,13 @@ FUSE daemon remain sandbox services; they are not tied to the SSH session.
   barrier. Claude's clean-exit wrapper calls `flush-all`.
 - Dirty-source rename replacement and existing-file `O_TRUNC` replacement have
   synchronous ordering barriers to protect common safe-save patterns.
-- A FUSE daemon exit is a critical-service failure. The Docker driver restarts the
-  container, reconstructs the mount, and advances the PostgreSQL writer epoch.
-- Open file descriptors do not survive a container restart.
+- A lost PostgreSQL connection is not a failure: the daemon reconnects within the
+  lease window and renews the same writer epoch; operations return `EIO` meanwhile.
+- A FUSE daemon exit or a genuine lease loss is a critical-service failure. The Docker
+  driver restarts the container, reconstructs the mount, and advances the PostgreSQL
+  writer epoch.
+- A container restart terminates every process in the sandbox, including your SSH
+  shell and Claude session; open file descriptors do not survive it.
 
 Use the same `OPENRIND_SHELL_WORKSPACE_ID` in a replacement sandbox to mount the same
 volume. Before
@@ -304,11 +325,14 @@ pg "SELECT now()"
 openrind-shell memory refresh --query "current project"
 ```
 
-From the host:
+From the host (for the FUSE runtime, always use the patched `$OPENSHELL_BIN`; a stock
+`openshell` on `PATH` may be an older upstream build):
 
 ```bash
-openshell sandbox exec -n "$OPENRIND_SHELL_WORKSPACE_ID" -- pg "SELECT 1"
-openshell sandbox exec -n "$OPENRIND_SHELL_WORKSPACE_ID" -- claude -p "Reply exactly: ok"
+"$OPENSHELL_BIN" --gateway-endpoint "$OPENSHELL_GATEWAY_ENDPOINT" \
+  sandbox exec -n "$OPENRIND_SHELL_WORKSPACE_ID" -- pg "SELECT 1"
+"$OPENSHELL_BIN" --gateway-endpoint "$OPENSHELL_GATEWAY_ENDPOINT" \
+  sandbox exec -n "$OPENRIND_SHELL_WORKSPACE_ID" -- claude -p "Reply exactly: ok"
 ```
 
 ## Troubleshooting
@@ -324,13 +348,26 @@ v1.
 image policy. Add an exact endpoint and include both `/usr/bin/node` and
 `/usr/local/bin/openrind-shell-fused` as authorized binaries.
 
-**Initialization cannot verify the writer lease:** another live sandbox is already
-mounted with the same `OPENRIND_SHELL_WORKSPACE_ID`, or PostgreSQL became unreachable. One writable
-mount per workspace is enforced by advisory lock and fencing epoch.
+**Initialization reports "already has an active filesystem writer":** another live
+sandbox is mounted with the same `OPENRIND_SHELL_WORKSPACE_ID`. One writable mount per
+workspace is enforced by advisory lock and fencing epoch; stop or delete the other
+sandbox first.
+
+**Initialization reports "FUSE daemon did not become writable within 60 seconds":**
+read the printed health JSON. `database.ready identity or schema does not match this
+sandbox` means the workspace ID seen by the daemon differs from the one used by
+initialization; set `OPENRIND_SHELL_WORKSPACE_ID` explicitly (legacy aliases are
+accepted with the same precedence). Other `lastInitializationError` values usually
+mean PostgreSQL is unreachable from the sandbox or the policy denies the host.
+
+**Initialization rejects the URL with "port 6543 (transaction pooling)":** use the
+Supabase session-mode pooler on port 5432; see above.
 
 **The sandbox enters an error after repeated daemon crashes:** the Docker driver uses
-a bounded `on-failure:5` policy for FUSE sandboxes. Inspect container/supervisor logs,
-fix the datasource or daemon failure, then use explicit sandbox start/recreate.
+a bounded `on-failure:5` policy for FUSE sandboxes. Inspect container/supervisor logs
+and fix the datasource or daemon failure. A sandbox in the `Error` phase cannot be
+started; delete it and recreate it with the same `OPENRIND_SHELL_WORKSPACE_ID` to
+remount the volume.
 
 Architecture and security details are in [ARCHITECTURE.md](./ARCHITECTURE.md). The
 alternatives survey and implementation contract are [FUSE.md](./FUSE.md) and

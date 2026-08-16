@@ -1,0 +1,41 @@
+# Local TLS PostgreSQL fixture for the Openrind Shell FUSE runtime tests.
+#
+# Usage (from the repository root):
+#   tests/fuse/postgres-fixture/gen-certs.sh
+#   cp tests/fuse/postgres-fixture/.env.example tests/fuse/postgres-fixture/.env  # then set a password
+#   docker compose -f tests/fuse/postgres-fixture/docker-compose.yml up -d --wait
+#   DATABASE_URL="postgresql://postgres:<password>@172.17.0.1:55432/postgres"
+#
+# The server presents certs/server.crt (SAN IP:172.17.0.1, DNS:localhost), signed by
+# certs/ca.crt. Build the sandbox overlay with context/ (public CA only):
+#   docker build -f tests/fuse/Dockerfile.local-postgres \
+#     --build-arg BASE_IMAGE=openrind-shell-fuse:local \
+#     --build-arg OPENERAL_TEST_DB_HOST=172.17.0.1 --build-arg OPENERAL_TEST_DB_PORT=55432 \
+#     -t openrind-shell-fuse-localdb:test tests/fuse/postgres-fixture/context
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: openrind-shell-fuse-fixture-postgres
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in tests/fuse/postgres-fixture/.env}
+      POSTGRES_DB: postgres
+    ports:
+      - "${FIXTURE_DB_PORT:-55432}:5432"
+    volumes:
+      - ./certs:/fixture-certs:ro
+    # The bind-mounted certs are owned by the host user; PostgreSQL requires the
+    # key to be owned by the server user with mode 0600, so copy them first.
+    command:
+      - -c
+      - |
+        cp /fixture-certs/server.crt /tmp/server.crt
+        cp /fixture-certs/server.key /tmp/server.key
+        chown postgres:postgres /tmp/server.crt /tmp/server.key
+        chmod 600 /tmp/server.key
+        exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key
+    entrypoint: ["/bin/sh"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -h 127.0.0.1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30

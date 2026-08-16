@@ -125,7 +125,12 @@ cd vendor/openshell
 cargo fmt --all --check
 cargo check -p openshell-cli -p openshell-driver-docker \
   -p openshell-policy -p openshell-supervisor-process
+cargo test -p openshell-policy -p openshell-driver-docker \
+  -p openshell-supervisor-process -p openshell-cli
 ```
+
+The gateway binary needs `libz3.so.4` at runtime (`libz3-4`/`libz3-dev`, or
+`LD_LIBRARY_PATH` to an extracted copy); see BUILD.md.
 
 Build only the child image; do not rebuild NVIDIA's base image:
 
@@ -143,6 +148,11 @@ OPENSHELL_GATEWAY_ENDPOINT='http://127.0.0.1:18770' \
 OPENRIND_SHELL_FUSE_E2E_IMAGE='openrind-shell-fuse:local' \
 tests/fuse/test_openshell_e2e.sh
 ```
+
+Without a Supabase URL, use the local TLS fixture in `tests/fuse/postgres-fixture/`
+(compose + `gen-certs.sh`; see BUILD.md "Local TLS PostgreSQL Fixture") and build the
+derived image with `--build-arg BASE_IMAGE=openrind-shell-fuse:local`, then set
+`OPENRIND_SHELL_FUSE_E2E_IMAGE=openrind-shell-fuse-localdb:test`.
 
 ## Required FUSE Semantics
 

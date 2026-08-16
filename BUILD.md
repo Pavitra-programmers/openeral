@@ -41,7 +41,8 @@ default-off Openrind Shell FUSE patch.
 - Linux Docker host with `/dev/fuse`.
 - Rust 1.95 toolchain.
 - Node.js 22 and pnpm for `openeral-js` development.
-- OpenShell build dependencies, including Protobuf and Z3.
+- OpenShell build dependencies, including Protobuf and Z3 (Z3 is also needed at
+  runtime by the patched gateway; see below).
 - External PostgreSQL with TLS for primary-runtime tests.
 - Optional Anthropic, AWS, and Openrind Gateway providers for live agent tests.
 
@@ -95,6 +96,13 @@ vendor/openshell/target/debug/openshell
 vendor/openshell/target/debug/openshell-gateway
 vendor/openshell/target/debug/openshell-sandbox
 ```
+
+`openshell-gateway` links the system Z3 library dynamically (`libz3.so.4`, from the
+`openshell-prover` crate). Z3 is therefore a runtime dependency of the gateway host,
+not only a build dependency: install `libz3-4`/`libz3-dev` (Debian/Ubuntu) or
+`z3-libs` (Fedora), or point `LD_LIBRARY_PATH` at an extracted copy before starting the
+gateway. A missing library fails immediately with "error while loading shared
+libraries: libz3.so.4".
 
 The patch adds a public `--fuse` resource request, immutable `fuse_mounts` policy,
 Docker operator/device gates, explicit inherited descriptors, FUSE INIT readiness,
@@ -242,21 +250,36 @@ credentials must never be passed with `--env`.
 
 ### Local TLS PostgreSQL Fixture
 
-The production policy permits Supabase poolers. A private fixture needs a derived
-test image with its exact host and port:
+The production policy permits Supabase poolers. For local testing,
+`tests/fuse/postgres-fixture/` provides a reproducible TLS PostgreSQL via Docker
+Compose plus a certificate generator (see its README):
+
+```bash
+tests/fuse/postgres-fixture/gen-certs.sh
+cp tests/fuse/postgres-fixture/.env.example tests/fuse/postgres-fixture/.env
+# edit .env: set POSTGRES_PASSWORD
+docker compose -f tests/fuse/postgres-fixture/docker-compose.yml up -d --wait
+export DATABASE_URL="postgresql://postgres:<password>@172.17.0.1:55432/postgres"
+```
+
+A private fixture needs a derived test image that trusts the fixture CA and allows
+its exact host and port. `BASE_IMAGE` must name your primary image tag:
 
 ```bash
 docker build \
   -f tests/fuse/Dockerfile.local-postgres \
+  --build-arg BASE_IMAGE=openrind-shell-fuse:local \
   --build-arg OPENERAL_TEST_DB_HOST=172.17.0.1 \
   --build-arg OPENERAL_TEST_DB_PORT=55432 \
   -t openrind-shell-fuse-localdb:test \
-  /path/to/context-containing-ca.crt
+  tests/fuse/postgres-fixture/context
 ```
 
-The fixture PostgreSQL server must present a TLS certificate chaining to `ca.crt`.
-The overlay adds that CA and an exact raw-tunnel policy route; it does not disable
-PostgreSQL TLS.
+The fixture PostgreSQL server must present a TLS certificate chaining to `ca.crt`
+(the compose fixture does). The overlay adds that CA and an exact raw-tunnel policy
+route; it does not disable PostgreSQL TLS. Point `OPENRIND_SHELL_FUSE_E2E_IMAGE`
+at the derived tag when running the E2E, and tear the fixture down with
+`docker compose -f tests/fuse/postgres-fixture/docker-compose.yml down -v`.
 
 ## Compatibility And Library Tests
 

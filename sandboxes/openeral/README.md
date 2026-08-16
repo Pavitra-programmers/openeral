@@ -80,7 +80,10 @@ PostgreSQL, its detached Node daemon watches and syncs only `.claude`, `.claude.
 ## PostgreSQL Policy
 
 The shared production policy permits raw CONNECT tunnels to Supabase poolers on 5432
-and 6543. PostgreSQL negotiates TLS end to end inside the tunnel, so the OpenShell
+and 6543. The primary FUSE runtime accepts only session mode (5432): its one-writer
+lease is a session-level advisory lock, so `openrind-shell-init` rejects 6543
+(transaction pooling); the compatibility runtime may use either port. PostgreSQL
+negotiates TLS end to end inside the tunnel, so the OpenShell
 endpoint must use `tls: skip` rather than HTTP/TLS inspection.
 
 A custom database host needs an exact route. Primary mode must authorize both Node

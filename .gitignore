@@ -30,3 +30,7 @@ dist/
 # Editor swap files
 *.swp
 *.swo
+
+# Local PostgreSQL fixture material
+tests/fuse/postgres-fixture/certs/
+tests/fuse/postgres-fixture/context/
