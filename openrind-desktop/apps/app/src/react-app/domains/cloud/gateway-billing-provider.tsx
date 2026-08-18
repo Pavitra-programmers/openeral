@@ -119,6 +119,8 @@ async function exchangeTokenForApiKey(token: string): Promise<{
   }
 }
 
+const inFlightTokens = new Set<string>();
+
 export function GatewayBillingProvider({ children }: GatewayBillingProviderProps) {
   const [billingStatus, setBillingStatus] = useState<BillingStatus>("none");
   const [stats, setStats] = useState<UsageStats | null>(null);
@@ -336,48 +338,60 @@ export function GatewayBillingProvider({ children }: GatewayBillingProviderProps
 
           let finalApiKey: string;
           let effectiveStatus: string = parsed.status;
-          let shouldSaveCredentials = false;
+          let isNewAccount = false;
 
           if (isSecureFlow) {
-            // Mark token as processed before exchange (prevents race conditions)
-            markTokenProcessed(parsed.token);
+            // Check in-flight to prevent concurrent duplicate processing
+            if (inFlightTokens.has(parsed.token)) {
+              console.log("[Gateway Auth] Token already in flight, skipping duplicate");
+              continue;
+            }
+            inFlightTokens.add(parsed.token);
             
-            // NEW SECURE FLOW: Exchange token for API key
-            console.log("[Gateway Auth] Secure token flow detected, exchanging token...");
+            // NEW SECURE FLOW: Exchange token for API key via Main process
+            console.log("[Gateway Auth] Secure token flow detected, invoking token exchange via main process...");
             
-            const exchangeResult = await exchangeTokenForApiKey(parsed.token);
-            
-            if (!exchangeResult.success || !exchangeResult.apiKey) {
-              console.error("[Gateway Auth] Token exchange failed:", exchangeResult.error);
+            try {
+              const exchangeResult = await invoke<{
+                success: boolean;
+                apiKey: string;
+                organizationId: number;
+                status: string;
+                isNewAccount: boolean;
+              }>("openrindGatewayExchangeToken", { token: parsed.token });
               
-              // NOTE: Don't remove from processed tokens on failure
-              // The token is likely expired or invalid - retrying won't help
+              finalApiKey = exchangeResult.apiKey;
+              effectiveStatus = exchangeResult.status || parsed.status;
+              isNewAccount = exchangeResult.isNewAccount;
+              
+              // Persist processed token ONLY after success!
+              markTokenProcessed(parsed.token);
+              console.log("[Gateway Auth] Token exchange successful, status:", effectiveStatus, "isNewAccount:", isNewAccount);
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              console.error("[Gateway Auth] Token exchange failed:", msg);
+              
+              // Clear in-flight token on network/server failures to allow retries
+              inFlightTokens.delete(parsed.token);
               
               window.alert(
-                `Failed to retrieve secure credentials: ${exchangeResult.error || "Unknown error"}. Please try logging in again.`
+                `Failed to retrieve secure credentials: ${msg}. Please try logging in again.`
               );
               continue;
             }
-
-            finalApiKey = exchangeResult.apiKey;
-            // Use status from exchange response (more reliable than URL param)
-            effectiveStatus = exchangeResult.status || parsed.status;
-            shouldSaveCredentials = !apiKeySet; // Only save if not already set
-            
-            console.log("[Gateway Auth] Token exchange successful, status:", effectiveStatus);
           } else if (isLegacyFlow) {
             // LEGACY FLOW: Direct API key in URL (DEPRECATED but supported)
             console.warn("[Gateway Auth] Legacy plaintext API key detected in URL (insecure)");
             finalApiKey = parsed.apiKey!;
-            shouldSaveCredentials = !apiKeySet;
+            isNewAccount = true; // Always save/prompt for legacy keys
           } else {
             console.error("[Gateway Auth] No valid authentication method found");
             continue;
           }
 
           // P1 Protection: Ask for explicit user confirmation before silently replacing their credentials
-          // BUT: Don't ask if we're just updating status (credentials already exist)
-          if (!apiKeySet) {
+          // BUT: Don't ask if we're just updating status (it's the same account)
+          if (isNewAccount) {
             const confirmReplace = window.confirm(
               `An API Key from Openrind Gateway was received${parsed.email ? ` for ${parsed.email}` : ""}. Would you like to connect this key to your local shell application?`
             );
@@ -385,22 +399,19 @@ export function GatewayBillingProvider({ children }: GatewayBillingProviderProps
               console.log("[Gateway Auth] User declined credential replacement");
               continue;
             }
+
+            // Persist legacy key if accepted
+            if (isLegacyFlow) {
+              await invoke("openrindSetCredential", {
+                key: "openrindGatewayApiKey",
+                value: finalApiKey,
+              });
+            }
           } else {
             console.log("[Gateway Auth] Updating existing credentials with new status");
           }
 
           try {
-            // Only save credentials if they weren't already set
-            if (shouldSaveCredentials) {
-              console.log("[Gateway Auth] Saving new credentials to keystore");
-              await invoke("openrindSetCredential", {
-                key: "openrindGatewayApiKey",
-                value: finalApiKey,
-              });
-            } else {
-              console.log("[Gateway Auth] Credentials already exist, skipping save");
-            }
-            
             // Normalize status: backend returns "active"/"trialing"/"unpaid", desktop expects "paid"/"unpaid"/"none"
             const normalizedStatus = (effectiveStatus === "active" || effectiveStatus === "trialing") 
               ? "paid" 
