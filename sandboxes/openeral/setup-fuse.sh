@@ -18,13 +18,13 @@ export OPENERAL_DB_URL_FILE="$OPENRIND_SHELL_DB_URL_FILE"
 export OPENERAL_INIT_MARKER="$OPENRIND_SHELL_INIT_MARKER"
 export OPENERAL_HOME="$OPENRIND_SHELL_HOME"
 export OPENERAL_REQUIRE_POSTGRES_TLS=1
-# OpenShell supplies its combined trust bundle through SSL_CERT_FILE. Node uses
-# that bundle only in OpenSSL-CA mode; image-level ENV is not preserved by the
-# supervisor's sandbox environment construction.
-case " ${NODE_OPTIONS:-} " in
-  *" --use-openssl-ca "*) ;;
-  *) export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--use-openssl-ca" ;;
-esac
+# OpenShell supplies its trust bundle through SSL_CERT_FILE. It must supplement
+# Node's bundled public roots, not replace them: the FUSE database connection
+# uses end-to-end TLS to the public Supabase pooler while OpenShell endpoints may
+# use a local CA. NODE_EXTRA_CA_CERTS preserves both trust sets.
+if [ -n "${SSL_CERT_FILE:-}" ] && [ -z "${NODE_EXTRA_CA_CERTS:-}" ]; then
+  export NODE_EXTRA_CA_CERTS="$SSL_CERT_FILE"
+fi
 OPENRIND_SHELL_DIR=/opt/openrind-shell
 OPENERAL_DIR="$OPENRIND_SHELL_DIR"
 mkdir -p "$OPENRIND_SHELL_RUNTIME_DIR"
@@ -137,55 +137,100 @@ PREPARED="$(node "$OPENRIND_SHELL_DIR/dist/bin/openrind-shell-fuse-init.js" prep
 IMPORTED="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).importedItems || 0))' "$PREPARED")"
 echo "setup-fuse.sh: normalized volume ready; imported $IMPORTED legacy item(s)"
 
-echo "setup-fuse.sh: waiting for the mounted filesystem writer lease..."
+FUSE_WRITABLE_TIMEOUT_SECONDS="${OPENRIND_SHELL_FUSE_WRITABLE_TIMEOUT_SECONDS:-60}"
+case "$FUSE_WRITABLE_TIMEOUT_SECONDS" in
+  ''|*[!0-9]*)
+    echo "setup-fuse.sh: OPENRIND_SHELL_FUSE_WRITABLE_TIMEOUT_SECONDS must be a positive integer" >&2
+    exit 2
+    ;;
+esac
+
+if [ "$FUSE_WRITABLE_TIMEOUT_SECONDS" -lt 1 ]; then
+  echo "setup-fuse.sh: OPENRIND_SHELL_FUSE_WRITABLE_TIMEOUT_SECONDS must be a positive integer" >&2
+  exit 2
+fi
+
+echo "setup-fuse.sh: waiting up to ${FUSE_WRITABLE_TIMEOUT_SECONDS}s for the mounted filesystem writer lease..."
 HEALTH=""
-for attempt in $(seq 1 60); do
+LAST_INIT_ERROR=""
+REPEATED_INIT_ERRORS=0
+for attempt in $(seq 1 "$FUSE_WRITABLE_TIMEOUT_SECONDS"); do
   HEALTH="$(openrind-shell-fused health 2>/dev/null || true)"
   STATE="$(node -e 'try { process.stdout.write(JSON.parse(process.argv[1]).state || "") } catch {}' "$HEALTH")"
+  INIT_ERROR="$(node -e 'try { const value = JSON.parse(process.argv[1]).lastInitializationError; if (typeof value === "string") process.stdout.write(value) } catch {}' "$HEALTH")"
   [ "$STATE" != writable ] || break
+  if [ -n "$INIT_ERROR" ]; then
+    if [ "$INIT_ERROR" = "$LAST_INIT_ERROR" ]; then
+      REPEATED_INIT_ERRORS=$((REPEATED_INIT_ERRORS + 1))
+    else
+      LAST_INIT_ERROR="$INIT_ERROR"
+      REPEATED_INIT_ERRORS=1
+      echo "setup-fuse.sh: daemon initialization: $INIT_ERROR" >&2
+    fi
+    # One error can be a transient PostgreSQL/proxy race. Three identical
+    # completed attempts indicate a stable configuration or connectivity
+    # failure; waiting out the full timeout cannot change it.
+    if [ "$REPEATED_INIT_ERRORS" -ge 3 ]; then
+      echo "setup-fuse.sh: FUSE daemon initialization failed repeatedly: $INIT_ERROR" >&2
+      exit 1
+    fi
+  fi
   if [ $((attempt % 10)) -eq 0 ]; then
     echo "setup-fuse.sh: still waiting (${STATE:-management socket unavailable}, ${attempt}s)"
   fi
   sleep 1
 done
 if [ "${STATE:-}" != writable ]; then
-  echo "setup-fuse.sh: FUSE daemon did not become writable within 60 seconds" >&2
+  echo "setup-fuse.sh: FUSE daemon did not become writable within ${FUSE_WRITABLE_TIMEOUT_SECONDS} seconds" >&2
+  [ -z "$LAST_INIT_ERROR" ] || echo "setup-fuse.sh: daemon initialization: $LAST_INIT_ERROR" >&2
   [ -z "$HEALTH" ] || echo "setup-fuse.sh: health: $HEALTH" >&2
   exit 1
 fi
-
+# These are the README-required acceptance checks. `state=writable` proves that
+# the daemon acquired a lease, while verify-lease independently confirms the
+# exact owner/epoch in PostgreSQL and the canary proves the mounted VFS path.
+# Desktop fast-start skips only optional mounted-home seeding below.
 LEASE_OWNER="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).leaseOwner)' "$HEALTH")"
 LEASE_EPOCH="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).leaseEpoch))' "$HEALTH")"
 OPENRIND_SHELL_LEASE_OWNER="$LEASE_OWNER" OPENRIND_SHELL_LEASE_EPOCH="$LEASE_EPOCH" \
 OPENERAL_LEASE_OWNER="$LEASE_OWNER" OPENERAL_LEASE_EPOCH="$LEASE_EPOCH" \
   node "$OPENRIND_SHELL_DIR/dist/bin/openrind-shell-fuse-init.js" verify-lease
 
-echo "setup-fuse.sh: verifying mounted read/write durability..."
+echo "setup-fuse.sh: verifying mounted write, fsync, and read-back..."
 HOME="$OPENRIND_SHELL_HOME" node --input-type=module - <<'NODE'
-import { closeSync, constants, mkdirSync, openSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync, fsyncSync } from 'node:fs';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { closeSync, constants, fsyncSync, openSync, readSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 
-const directory = '/sandbox/work/.openrind-shell/.init-probes';
-mkdirSync(directory, { recursive: true, mode: 0o700 });
-for (const name of readdirSync(directory)) rmSync(`${directory}/${name}`, { recursive: true, force: true });
-const path = `${directory}/${randomUUID()}`;
+// This is intentionally one mounted-file canary. The daemon is already known
+// writable and its PostgreSQL writer lease has just been verified above. Extra
+// directory creation, directory fsync, close/reopen, and cleanup scans turn a
+// small proof into many serial remote database round trips on a cold volume.
+// Keep one hidden canary instead of creating and garbage-collecting a new inode.
+// This removes the remote unlink/collection transaction while still proving a
+// mounted write, durability barrier, and post-commit read-back.
+const path = '/sandbox/work/.openrind-shell-durability-canary';
 const expected = randomBytes(4096);
-const fd = openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
+const fd = openSync(path, constants.O_CREAT | constants.O_TRUNC | constants.O_RDWR, 0o600);
 try {
   writeFileSync(fd, expected);
   fsyncSync(fd);
+  const actual = Buffer.allocUnsafe(expected.length);
+  const read = readSync(fd, actual, 0, actual.length, 0);
+  if (read !== expected.length || !actual.equals(expected)) {
+    throw new Error('FUSE canary read-back mismatch');
+  }
 } finally {
   closeSync(fd);
 }
-const directoryFd = openSync(directory, constants.O_RDONLY);
-try { fsyncSync(directoryFd); } finally { closeSync(directoryFd); }
-const actual = readFileSync(path);
-if (!actual.equals(expected)) throw new Error('FUSE canary read-back mismatch');
-unlinkSync(path);
-const finalDirectoryFd = openSync(directory, constants.O_RDONLY);
-try { fsyncSync(finalDirectoryFd); } finally { closeSync(finalDirectoryFd); }
 NODE
-
+if [ "${OPENRIND_SHELL_FAST_START:-}" = "1" ]; then
+  # Provider configuration is already injected by OpenShell and the Claude
+  # wrapper supplies the documented OpenRouter environment. Bundled skills and
+  # optional default settings must not delay the first interactive session.
+  echo "setup-fuse.sh: skipping optional mounted-home bootstrap on the first Desktop launch"
+  : > "$OPENRIND_SHELL_RUNTIME_DIR/desktop-fast-first-launch"
+  chmod 600 "$OPENRIND_SHELL_RUNTIME_DIR/desktop-fast-first-launch"
+else
 mkdir -p "$OPENRIND_SHELL_HOME/.claude/skills" "$OPENRIND_SHELL_HOME/.openrind-shell"
 if [ -d /opt/openrind-shell/skills ]; then
   cp -a --update=none /opt/openrind-shell/skills/. "$OPENRIND_SHELL_HOME/.claude/skills/"
@@ -208,7 +253,56 @@ if (!existsSync(settings)) {
 NODE
 
 HOME="$OPENRIND_SHELL_HOME" node /opt/openrind-shell/configure-openrind-gateway.mjs
+fi
 
+# Claude Code's first-run wizard writes several state files. Do that work as
+# part of the documented one-shot initializer, before a Desktop PTY connects,
+# so a selected Claude session opens its prompt instead of spending its first
+# interactive minute mutating the remote FUSE home. The state stays entirely
+# below HOME=/sandbox/work and existing user configuration is kept intact.
+HOME="$OPENRIND_SHELL_HOME" node --input-type=module - <<'NODE'
+import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+
+const home = '/sandbox/work';
+const configPath = `${home}/.claude.json`;
+const readJson = (path) => {
+  try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; }
+};
+const configExisted = existsSync(configPath);
+const config = readJson(configPath) || {};
+let needsWrite = false;
+if (config.hasCompletedOnboarding !== true) {
+  let version = '';
+  try {
+    version = String(execFileSync('/usr/local/bin/claude-real', ['--version'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })).match(/^(\d+\.\d+\.\d+)/m)?.[1] || '';
+  } catch {}
+  config.hasCompletedOnboarding = true;
+  if (version) config.lastOnboardingVersion = version;
+  needsWrite = true;
+}
+if (!config.trustedFolders || !config.trustedFolders.includes('/sandbox/work')) {
+  config.trustedFolders = [...(config.trustedFolders || []), '/sandbox/work'];
+  needsWrite = true;
+}
+if (needsWrite) {
+  const contents = `${JSON.stringify(config, null, 2)}\n`;
+  if (configExisted) {
+    const temporaryPath = `${configPath}.openrind-init-${process.pid}`;
+    writeFileSync(temporaryPath, contents, { mode: 0o600 });
+    renameSync(temporaryPath, configPath);
+    chmodSync(configPath, 0o600);
+  } else {
+    // Direct first-create avoids extra remote inode, rename, and chmod transactions.
+    // Existing user configuration still uses atomic replacement above.
+    writeFileSync(configPath, contents, { mode: 0o600 });
+  }
+  process.stdout.write('setup-fuse.sh: Claude first-run state initialized\n');
+}
+NODE
 OPENRIND_SHELL_NPMRC="$OPENRIND_SHELL_RUNTIME_DIR/npmrc"
 rm -f "$OPENRIND_SHELL_NPMRC"
 if [ -n "${SOCKET_TOKEN:-}" ]; then
@@ -222,9 +316,30 @@ fi
 # Interactive SSH shells start with the sandbox user's login home (/sandbox), not
 # the mount, so the session hook must live in that .bashrc. It sources
 # session.env (which exports HOME=/sandbox/work) and moves into the workspace.
-SHELL_BASHRC="${HOME:-/sandbox}/.bashrc"
-if ! grep -q 'Openrind Shell FUSE session environment' "$SHELL_BASHRC" 2>/dev/null; then
-  cat >> "$SHELL_BASHRC" <<'BASHRC'
+# `sandbox connect` invokes `bash -lc sandbox` in the OpenShell supervisor.
+# That is a login command, not an interactive shell, so it reads .bash_profile
+# but not the interactive branch of .bashrc. Install the one-shot desktop marker
+# hook in both startup paths: Desktop consumes it and execs the image-owned PTY
+# bridge; ordinary CLI connects have no marker and retain their documented shell.
+for SHELL_PROFILE in "/sandbox/.bash_profile" "/sandbox/.profile"; do
+  [ -d "$(dirname "$SHELL_PROFILE")" ] || continue
+  if ! grep -q 'Openrind Desktop Claude login hook' "$SHELL_PROFILE" 2>/dev/null; then
+    cat >> "$SHELL_PROFILE" <<'PROFILE'
+
+# Openrind Desktop Claude login hook.
+_openrind_desktop_marker=/var/lib/openrind-shell/runtime/desktop-claude-launch
+if [ -f "$_openrind_desktop_marker" ]; then
+  exec /usr/local/bin/openrind-desktop-claude-launch
+fi
+unset _openrind_desktop_marker
+PROFILE
+  fi
+done
+
+for SHELL_BASHRC in "/sandbox/.bashrc" "${HOME:-/sandbox}/.bashrc"; do
+  [ -d "$(dirname "$SHELL_BASHRC")" ] || continue
+  if ! grep -q 'Openrind Shell FUSE session environment' "$SHELL_BASHRC" 2>/dev/null; then
+    cat >> "$SHELL_BASHRC" <<'BASHRC'
 
 # Openrind Shell FUSE session environment.
 [ -f /var/lib/openrind-shell/runtime/session.env ] && . /var/lib/openrind-shell/runtime/session.env
@@ -233,6 +348,13 @@ case "$-" in
     case "$PWD" in
       /|/sandbox) [ -d /sandbox/work ] && cd /sandbox/work ;;
     esac
+    # Direct SSH shell requests arrive here. The Desktop connect path uses the
+    # matching login hook above; both consume the same one-shot marker.
+    _openrind_desktop_marker=/var/lib/openrind-shell/runtime/desktop-claude-launch
+    if [ -f "$_openrind_desktop_marker" ]; then
+      exec /usr/local/bin/openrind-desktop-claude-launch
+    fi
+    unset _openrind_desktop_marker
     if [ -z "${OPENRIND_SHELL_HINT_SHOWN:-}" ]; then
       export OPENRIND_SHELL_HINT_SHOWN=1
       echo "Openrind Shell ready. Run 'claude' to start; /exit or Ctrl-D returns here; 'claude -c' continues."
@@ -240,7 +362,8 @@ case "$-" in
     ;;
 esac
 BASHRC
-fi
+  fi
+done
 
 shell_quote() {
   printf "'"
@@ -266,6 +389,12 @@ SESSION_ENV="$OPENRIND_SHELL_RUNTIME_DIR/session.env"
   printf 'export OPENERAL_WORKSPACE_ID='; shell_quote "$WORKSPACE_ID"; printf '\n'
   printf 'export WORKSPACE_ID='; shell_quote "$WORKSPACE_ID"; printf '\n'
   printf 'export SHELL=/bin/bash\n'
+  if [ "${OPENRIND_SHELL_FAST_START:-}" = "1" ]; then
+    printf 'export OPENRIND_SHELL_FAST_START=1\n'
+  fi
+  if [ -n "${SSL_CERT_FILE:-}" ]; then
+    printf 'export NODE_EXTRA_CA_CERTS='; shell_quote "${NODE_EXTRA_CA_CERTS:-$SSL_CERT_FILE}"; printf '\n'
+  fi
   [ ! -f "$OPENRIND_SHELL_NPMRC" ] || printf 'export NPM_CONFIG_USERCONFIG=%s\n' "$(shell_quote "$OPENRIND_SHELL_NPMRC")"
   if [ -f "$OPENRIND_SHELL_RUNTIME_DIR/anthropic-base-url" ]; then
     printf 'export ANTHROPIC_BASE_URL='; shell_quote "$(cat "$OPENRIND_SHELL_RUNTIME_DIR/anthropic-base-url")"; printf '\n'
@@ -278,7 +407,9 @@ command -v claude-real >/dev/null 2>&1 || {
   exit 1
 }
 
-openrind-shell-fused flush-all >/dev/null
+if [ "${OPENRIND_SHELL_FAST_START:-}" != "1" ]; then
+  openrind-shell-fused flush-all >/dev/null
+fi
 node "$OPENRIND_SHELL_DIR/dist/bin/openrind-shell-fuse-init.js" mark-done
 
 if [ -n "$DB_URL_FILE" ] && [ "$DB_URL_FILE" != "$OPENERAL_DB_URL_FILE" ]; then

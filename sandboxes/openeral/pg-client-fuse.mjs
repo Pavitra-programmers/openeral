@@ -1,9 +1,7 @@
-#!/usr/bin/env -S node --use-openssl-ca
-// --use-openssl-ca: trust the system CA store (where a private PostgreSQL CA is
-// installed), matching openrind-shell-init and the FUSE daemon. Without it Node
-// only trusts its bundled roots and a private-CA TLS failure surfaces as the
-// misleading "Connection terminated unexpectedly".
-
+#!/usr/bin/env node
+// The shared pool client pins Supabase's database root for the end-to-end
+// PostgreSQL connection, while NODE_EXTRA_CA_CERTS retains OpenShell's local
+// proxy trust for other Node tooling in the sandbox.
 import { readFileSync } from 'node:fs';
 
 const sql = process.argv.slice(2).join(' ');

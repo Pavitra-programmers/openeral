@@ -1,9 +1,22 @@
 import pg from 'pg';
+import { existsSync, readFileSync } from 'node:fs';
 import { URL } from 'node:url';
 import { createTunneledSocket, isLocalHost, resolveHttpProxy } from './http-connect-socket.js';
 
 export type DbPool = pg.Pool;
 
+// Supabase's database poolers are signed by its private, self-signed Root 2021
+// CA. OpenShell supplies a separate proxy CA through SSL_CERT_FILE, so relying
+// on the sandbox's ambient trust bundle would reject this valid end-to-end
+// PostgreSQL certificate. The FUSE image pins the published Supabase root here
+// and still verifies both the certificate chain and hostname.
+const SUPABASE_POOLER_SUFFIX = '.pooler.supabase.com';
+const SUPABASE_ROOT_2021_CA_PATH = '/opt/openrind-shell/certs/supabase-root-2021-ca.pem';
+const CONNECTION_STRING_TLS_OPTIONS = ['sslmode', 'sslcert', 'sslkey', 'sslrootcert'];
+
+function isSupabasePooler(host: string | undefined): host is string {
+  return !!host && host.toLowerCase().endsWith(SUPABASE_POOLER_SUFFIX);
+}
 /**
  * Create a pg.Pool that tunnels through the OpenShell HTTP CONNECT proxy
  * when the current process has `HTTPS_PROXY`/`HTTP_PROXY` set AND the target
@@ -29,8 +42,10 @@ export function createPool(connectionString: string): DbPool {
 
   const useTunnel = !!proxyUrl && !isLocalHost(targetHost);
 
+  let poolConnectionString = connectionString;
+
   const poolConfig: pg.PoolConfig = {
-    connectionString,
+    connectionString: poolConnectionString,
     max: 16,
     // Supavisor may need time to wake a paused database before accepting a
     // session. The caller adds bounded retries around transient failures.
@@ -42,16 +57,42 @@ export function createPool(connectionString: string): DbPool {
       || process.env.OPENERAL_REQUIRE_POSTGRES_TLS === '1')
     && !isLocalHost(targetHost)
   ) {
+    let parsedConnectionString: URL | undefined;
     let sslMode = '';
     try {
-      sslMode = new URL(connectionString).searchParams.get('sslmode')?.toLowerCase() ?? '';
+      parsedConnectionString = new URL(connectionString);
+      sslMode = parsedConnectionString.searchParams.get('sslmode')?.toLowerCase() ?? '';
     } catch {
       // pg reports malformed connection strings with its normal diagnostic.
     }
     if (sslMode === 'disable' || sslMode === 'allow') {
       throw new Error('PostgreSQL TLS cannot be disabled in this runtime');
     }
-    poolConfig.ssl = { rejectUnauthorized: true };
+    if (parsedConnectionString) {
+      // node-postgres parses connection-string TLS options after the PoolConfig
+      // object and would otherwise replace the pinned strict TLS policy below.
+      // FUSE owns all TLS settings, so strip user-provided overrides only after
+      // validating that they did not request an insecure mode.
+      for (const option of CONNECTION_STRING_TLS_OPTIONS) {
+        parsedConnectionString.searchParams.delete(option);
+      }
+      poolConnectionString = parsedConnectionString.toString();
+      poolConfig.connectionString = poolConnectionString;
+    }
+    if (isSupabasePooler(targetHost)) {
+      if (!existsSync(SUPABASE_ROOT_2021_CA_PATH)) {
+        throw new Error(
+          `The FUSE image is missing its pinned Supabase CA at ${SUPABASE_ROOT_2021_CA_PATH}`,
+        );
+      }
+      poolConfig.ssl = {
+        ca: readFileSync(SUPABASE_ROOT_2021_CA_PATH, 'utf8'),
+        rejectUnauthorized: true,
+        servername: targetHost,
+      };
+    } else {
+      poolConfig.ssl = { rejectUnauthorized: true };
+    }
   }
 
   if (useTunnel) {
