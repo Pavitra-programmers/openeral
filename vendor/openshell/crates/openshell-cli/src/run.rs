@@ -1445,10 +1445,30 @@ pub async fn sandbox_exec_grpc(
         ));
     }
 
-    // Read stdin if piped (not a TTY), using spawn_blocking to avoid blocking
-    // the async runtime. Cap the read at MAX_STDIN_PAYLOAD + 1 so we never
-    // buffer more than the limit into memory.
-    let stdin_payload = if std::io::stdin().is_terminal() {
+    // Resolve TTY mode before reading piped stdin. An explicit --tty request is
+    // a bidirectional stream contract even when the caller is an application
+    // using pipes (such as Openrind Desktop); buffering until EOF would prevent
+    // a long-lived terminal bridge from ever starting.
+    let stdin_is_terminal = std::io::stdin().is_terminal();
+    let stdout_is_terminal = std::io::stdout().is_terminal();
+    let tty = tty_override.unwrap_or(stdin_is_terminal && stdout_is_terminal);
+
+    if tty_override == Some(true) {
+        return sandbox_exec_interactive_grpc(
+            client,
+            &sandbox,
+            command,
+            workdir,
+            timeout_seconds,
+            environment,
+        )
+        .await;
+    }
+
+    // One-shot exec requests may carry a bounded stdin payload. Keep this after
+    // the explicit interactive branch: read_to_end is deliberately incompatible
+    // with a live PTY bridge whose stdin stays open for user input.
+    let stdin_payload = if stdin_is_terminal {
         Vec::new()
     } else {
         tokio::task::spawn_blocking(|| {
@@ -1469,23 +1489,6 @@ pub async fn sandbox_exec_grpc(
         .await
         .into_diagnostic()?? // first ? unwraps JoinError, second ? unwraps Result
     };
-
-    // Resolve TTY mode: explicit --tty / --no-tty wins, otherwise auto-detect.
-    let tty = tty_override
-        .unwrap_or_else(|| std::io::stdin().is_terminal() && std::io::stdout().is_terminal());
-
-    if tty_override == Some(true) && std::io::stdin().is_terminal() {
-        return sandbox_exec_interactive_grpc(
-            client,
-            &sandbox,
-            command,
-            workdir,
-            timeout_seconds,
-            environment,
-        )
-        .await;
-    }
-
     // Make the streaming gRPC call.
     let mut stream = client
         .exec_sandbox(ExecSandboxRequest {
@@ -1851,7 +1854,15 @@ async fn sandbox_exec_interactive_grpc(
     use openshell_core::proto::{ExecSandboxInput, exec_sandbox_input};
     use tokio_stream::wrappers::ReceiverStream;
 
-    let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    let stdin_is_terminal = std::io::stdin().is_terminal();
+    let stdout_is_terminal = std::io::stdout().is_terminal();
+    let (cols, rows) = if stdin_is_terminal && stdout_is_terminal {
+        crossterm::terminal::size().unwrap_or((80, 24))
+    } else {
+        // Application pipes do not have a host terminal to query. The desktop
+        // immediately sends its actual dimensions through the framed bridge.
+        (80, 24)
+    };
 
     let (input_tx, input_rx) = tokio::sync::mpsc::channel::<ExecSandboxInput>(4096);
 
@@ -1879,10 +1890,15 @@ async fn sandbox_exec_interactive_grpc(
         .into_diagnostic()?
         .into_inner();
 
-    // Enable raw mode so keystrokes are forwarded immediately.
-    crossterm::terminal::enable_raw_mode().into_diagnostic()?;
-    let raw_guard = RawModeGuard;
-
+    // A real terminal needs raw mode for immediate keystrokes. Electron uses
+    // pipes, where raw-mode ioctls are invalid and the image bridge owns the
+    // terminal discipline instead.
+    let raw_guard = if stdin_is_terminal {
+        crossterm::terminal::enable_raw_mode().into_diagnostic()?;
+        Some(RawModeGuard)
+    } else {
+        None
+    };
     // Stdin reader on a detached OS thread. Using std::thread (not
     // spawn_blocking) so the tokio runtime shutdown doesn't wait for a
     // thread blocked on stdin.read(). The thread exits when the channel
