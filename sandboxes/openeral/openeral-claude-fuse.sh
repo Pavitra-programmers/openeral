@@ -25,14 +25,32 @@ export NODE_NO_WARNINGS="${NODE_NO_WARNINGS:-1}"
 
 unset STRINGCOST_API_KEY
 unset OPENRIND_GATEWAY_API_KEY
-unset ANTHROPIC_AUTH_TOKEN
+
+# The OpenShell provider supplies OPENROUTER_API_KEY as a gateway-resolved
+# placeholder. Claude Code reads ANTHROPIC_AUTH_TOKEN, so copy only that
+# placeholder; the proxy swaps it for the host secret while forwarding to
+# OpenRouter. The real token never enters this sandbox process or environment.
+if [ "${OPENRIND_SHELL_OPENROUTER:-}" = "1" ]; then
+  export ANTHROPIC_BASE_URL="https://openrouter.ai/api"
+  export ANTHROPIC_AUTH_TOKEN="${ANTHROPIC_AUTH_TOKEN:-${OPENROUTER_API_KEY:-}}"
+  export ANTHROPIC_API_KEY=""
+  export ANTHROPIC_DEFAULT_FABLE_MODEL="openrouter/free"
+  export ANTHROPIC_DEFAULT_OPUS_MODEL="openrouter/free"
+  export ANTHROPIC_DEFAULT_SONNET_MODEL="openrouter/free"
+  export ANTHROPIC_DEFAULT_HAIKU_MODEL="openrouter/free"
+  export CLAUDE_CODE_SUBAGENT_MODEL="openrouter/free"
+fi
 
 if [ ! -x /usr/local/bin/claude-real ]; then
   echo "openrind-shell: claude-real is missing from the sandbox image" >&2
   exit 127
 fi
 
-openrind-shell init --ensure
+# Sandbox creation completes initialization and writes this marker. Avoid a
+# full Node/FUSE initialization pass on every interactive Claude reconnect.
+if [ ! -f "$OPENRIND_SHELL_INIT_MARKER" ]; then
+  openrind-shell init --ensure
+fi
 
 HEALTH="$(openrind-shell-fused health 2>/dev/null || true)"
 STATE="$(node -e 'try { process.stdout.write(JSON.parse(process.argv[1]).state || "") } catch {}' "$HEALTH")"
@@ -44,6 +62,96 @@ fi
 case "$PWD" in
   /|/sandbox) cd /sandbox/work ;;
 esac
+
+# A desktop disconnect can interrupt Claude's first-run flow after it has
+# created its configuration and native timestamped backups. Moving the active
+# config away makes Claude refuse to start: it sees a backup but no active
+# configuration to recover. For desktop launches only, retain every existing
+# field and mark onboarding complete. If the active file is missing, restore
+# Claude's newest native backup first. Settings, credentials, conversations,
+# and project state remain on the README-required FUSE home.
+if [ "${OPENRIND_DESKTOP_CLAUDE_LAUNCH:-}" = "1" ] && [ "${OPENRIND_SHELL_SKIP_CLAUDE_REPAIR:-}" != "1" ]; then
+  node - "$HOME" <<'NODE'
+const fs = require("fs");
+const path = require("path");
+
+const home = process.argv[2];
+const configPath = path.join(home, ".claude.json");
+const backupsPath = path.join(home, ".claude", "backups");
+const readJson = (file) => {
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+};
+
+let state = readJson(configPath);
+let recoveredFromBackup = false;
+if (!state && fs.existsSync(backupsPath)) {
+  const newestNativeBackup = fs
+    .readdirSync(backupsPath)
+    .filter((name) => /^\.claude\.json\.backup\.\d+$/.test(name))
+    .sort()
+    .at(-1);
+  if (newestNativeBackup) {
+    state = readJson(path.join(backupsPath, newestNativeBackup));
+    recoveredFromBackup = Boolean(state);
+  }
+}
+
+if (!state) state = {};
+let needsWrite = recoveredFromBackup || state.hasCompletedOnboarding !== true;
+if (needsWrite) {
+  state.hasCompletedOnboarding = true;
+  try {
+    const version = String(require("child_process").execFileSync(
+      "/usr/local/bin/claude-real",
+      ["--version"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    )).match(/^(\d+\.\d+\.\d+)/m)?.[1];
+    if (version) state.lastOnboardingVersion = version;
+  } catch {}
+}
+if (!state.trustedFolders || !state.trustedFolders.includes('/sandbox/work')) {
+  state.trustedFolders = [...(state.trustedFolders || []), '/sandbox/work'];
+  needsWrite = true;
+}
+if (needsWrite) {
+  fs.mkdirSync(path.dirname(configPath), { recursive: true, mode: 0o700 });
+  const temporaryPath = `${configPath}.openrind-repair-${process.pid}`;
+  fs.writeFileSync(temporaryPath, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+  fs.renameSync(temporaryPath, configPath);
+  process.stderr.write(
+    "Openrind Shell: repaired interrupted Claude onboarding; settings and conversations were preserved.\n",
+  );
+}
+NODE
+fi
+unset OPENRIND_DESKTOP_CLAUDE_LAUNCH
+unset OPENRIND_SHELL_SKIP_CLAUDE_REPAIR
+
+# Desktop sessions receive a deterministic UUID through the one-shot launch
+# marker. Resume only when that transcript already exists; otherwise create it.
+# Ordinary CLI `claude` runs have no value and preserve Claude Code defaults.
+_openrind_session="${OPENRIND_DESKTOP_CLAUDE_SESSION:-}"
+case "$_openrind_session" in
+  [0-9a-fA-F][0-9a-fA-F-]*) ;;
+  *) _openrind_session="" ;;
+esac
+if [ -n "$_openrind_session" ]; then
+  # Claude stores this fixed working directory under a deterministic project
+  # slug. A single stat is constant-time; recursively scanning every persisted
+  # project delayed launch as the workspace accumulated conversations.
+  _openrind_transcript="$HOME/.claude/projects/-sandbox-work/$_openrind_session.jsonl"
+  if [ -f "$_openrind_transcript" ]; then
+    set -- --resume "$_openrind_session" "$@"
+  else
+    set -- --session-id "$_openrind_session" "$@"
+  fi
+  unset _openrind_transcript
+fi
+unset _openrind_session
 
 # Keep the terminal on Claude's stdin. A non-interactive shell gives an
 # asynchronous command /dev/null as stdin (POSIX; dash ignores a plain <&0),

@@ -231,6 +231,12 @@ FUSE daemon remain sandbox services; they are not tied to the SSH session. Inter
 shells start with the sandbox user's login home `/sandbox`, then a hook installed by
 initialization sources the session environment (`HOME=/sandbox/work`) and enters the
 mount; the `claude` wrapper applies the same environment on its own.
+Openrind Desktop's **Claude** selection adds a desktop-only convenience layer: before
+it connects, the app writes a one-shot launch marker inside the sandbox. The session
+hook consumes that marker and starts the same `claude` wrapper through the image's
+Linux PTY bridge, so Claude opens immediately without a typed command. This does not
+change the raw `sandbox connect` contract above: direct CLI connections still open the
+manual shell and require `claude` or `claude -c`.
 
 ### Persistence And Durability
 
