@@ -425,8 +425,8 @@ export function GatewayBillingProvider({ children }: GatewayBillingProviderProps
             
             setBillingStatus(normalizedStatus as BillingStatus);
             
-            // Update apiKeySet state if we saved credentials
-            if (shouldSaveCredentials) {
+            // Update apiKeySet state if this was a new account (main process saved the key)
+            if (isNewAccount) {
               setApiKeySet(true);
             }
             
