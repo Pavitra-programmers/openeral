@@ -568,6 +568,11 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
   // user can type immediately without having to click.
   useEffect(() => {
     if (phase !== "connected") return;
+    // During a fresh launch the bootstrap overlay still owns focus after the
+    // PTY connects. Focus again when the first agent paint (or its UI cap)
+    // removes that overlay; otherwise Claude's visible first-run prompt looks
+    // unresponsive until the user deliberately refocuses xterm.
+    if (isFreshBootstrap && !agentReady) return;
     setHasEverConnected(true);
     const raf = requestAnimationFrame(() => {
       try {
@@ -577,7 +582,7 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
       }
     });
     return () => cancelAnimationFrame(raf);
-  }, [phase]);
+  }, [phase, isFreshBootstrap, agentReady]);
 
   useEffect(() => {
     let cancelled = false;
@@ -635,31 +640,12 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
       setAgentReady(true);
     };
 
-    // Reveal the terminal because the paint CAP expired, not because the agent
-    // actually rendered. Without this the overlay just disappears and the user
-    // is left staring at a black rectangle with a green "Connected" badge and no
-    // explanation — the worst possible failure presentation.
-    //
-    // The byte count is the whole diagnosis. Near-zero means the PTY connected
-    // but the agent never painted, which is sandbox-side (setup.sh, the agent
-    // launch, credentials) and nothing in the renderer can fix. A healthy count
-    // means the bytes arrived and WE failed to paint them, which is ours.
+    // Bridge readiness is authoritative. Claude can legitimately spend longer
+    // than this UI cap loading persisted state, so quiet output is not a PTY
+    // error and must not be injected into the agent's terminal byte stream.
     const markAgentReadyOnPaintTimeout = () => {
       if (!trackPaintRef.current) return;
-      const received = paintBytesRef.current;
       markAgentReady();
-      if (received >= AGENT_PAINT_MIN_BYTES) return;
-      const seconds = Math.round(AGENT_PAINT_CAP_MS / 1000);
-      writeToTerm(
-        `\r\n\x1b[33m[No agent output after ${seconds}s — received ${received} byte(s).]\x1b[0m\r\n` +
-          `\x1b[2mThe PTY is connected, so the sandbox is reachable, but the agent never\r\n` +
-          `painted. That points at the sandbox side rather than this terminal.\r\n\r\n` +
-          `Try, in order:\r\n` +
-          `  1. Press Enter — the agent may be waiting at a prompt that never drew.\r\n` +
-          `  2. Overflow menu (⋮) → "Open in OS terminal" — if it is blank there too,\r\n` +
-          `     the problem is inside the sandbox, not in the renderer.\r\n` +
-          `  3. "Reconnect" to relaunch the agent in a fresh PTY.\x1b[0m\r\n`,
-      );
     };
 
     // ── Flow control (see FLOW_* constants) ───────────────────────────────
@@ -1198,6 +1184,10 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
           // Set sessionIdRef BEFORE phase 2 so the onPtyData handler accepts
           // events the moment the main process starts streaming.
           sessionIdRef.current = attached.id;
+          // Input must be live before replay/attach exposes an interactive
+          // prompt. A slow replay must never leave a visible Claude screen with
+          // an unwired keyboard.
+          wireTerminalIO();
           // Replay the buffered bytes at the geometry they were RECORDED at.
           // The buffer is the agent's raw PTY output: absolute cursor moves
           // plus hard wraps at the pty's width. Replaying a 120-col recording
@@ -1235,7 +1225,6 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
             });
           }
           if (cancelled) return;
-          wireTerminalIO();
           // Now fit to the actual container. For a live session the resize
           // frame reaches the agent's PTY (wireTerminalIO is up) and the agent
           // repaints the whole frame at the new size. A dead session stays at
@@ -1281,6 +1270,9 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
           return;
         }
         sessionIdRef.current = pty.id;
+        // Wire input immediately after PTY ownership is established, before
+        // buffered output can expose a prompt that appears unresponsive.
+        wireTerminalIO();
         // Start paint tracking only after provisioning, but before main attaches
         // the output stream. Main then installs the handler and replays all bytes
         // atomically, so Claude's first full-screen frame cannot race ahead of
@@ -1296,7 +1288,6 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
         if (cancelled) return;
         await flushEarlyBuffer(term);
         if (cancelled) return;
-        wireTerminalIO();
         setPhase("connected");
       } catch (err) {
         if (cancelled) return;

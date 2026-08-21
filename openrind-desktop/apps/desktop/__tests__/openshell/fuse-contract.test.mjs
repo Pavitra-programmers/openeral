@@ -33,10 +33,14 @@ test("FUSE provisioning follows the README create and validation sequence", () =
   assert.match(sandboxSource, /env: buildFuseWslEnv\(\),[\s\S]*stdin: databaseUrl/);
 });
 
-test("desktop Claude uses the streaming exec bridge while manual terminals keep sandbox connect", () => {
+test("desktop Claude and manual terminals use the README sandbox connect contract", () => {
   assert.match(
     ptySource,
-    /"sandbox",\s*"exec",\s*"-n",\s*sandboxName,\s*"--tty",\s*"--",\s*"\/usr\/local\/bin\/openrind-desktop-claude-launch"/,
+    /"sandbox",\s*"connect",\s*sandboxName/,
+  );
+  assert.doesNotMatch(
+    ptySource,
+    /"sandbox",\s*"exec"[\s\S]*"\/usr\/local\/bin\/openrind-desktop-claude-launch"/,
   );
   assert.match(ptySource, /buildFuseWslEnv/);
   assert.match(externalTerminalSource, /buildFuseCliCommand\(\["sandbox", "connect", sandboxName\]\)/);

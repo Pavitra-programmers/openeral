@@ -28,6 +28,7 @@ export { shellQuote };
 
 const FUSE_IMAGE = "openrind-shell-fuse:local";
 const SESSION_MARKER_PATH = "/var/lib/openrind-shell/runtime/desktop-claude-launch";
+const SESSION_HOOK_SENTINEL = "Openrind Desktop Claude interactive hook.";
 const CLAUDE_SESSION_NAMESPACE = "6f9b1e2a-0c3d-4b7a-9e21-8a4c1d5f7b30";
 
 export function imageForProfile(profile) {
@@ -114,8 +115,23 @@ export async function writeCurrentSessionMarker(name, value) {
   if (marker && !/^(?:auto|[0-9a-f]{8}-[0-9a-f-]{27})$/i.test(marker)) {
     throw new Error("Invalid desktop Claude session marker.");
   }
+  // Repair the interactive hook in the same exec that writes the marker. This
+  // keeps already-created sandboxes compatible when their setup predates the
+  // dedicated hook sentinel, without adding another launch-time round trip.
+  const interactiveHook = [
+    `# ${SESSION_HOOK_SENTINEL}`,
+    `if [ -f ${SESSION_MARKER_PATH} ]; then`,
+    `  exec /usr/local/bin/openrind-desktop-claude-launch`,
+    `fi`,
+  ].join("\n");
+  const repairHook = [
+    `touch /sandbox/.bashrc`,
+    `if ! grep -Fq ${shellQuote(SESSION_HOOK_SENTINEL)} /sandbox/.bashrc; then`,
+    `  printf '\\n%s\\n' ${shellQuote(interactiveHook)} >> /sandbox/.bashrc`,
+    `fi`,
+  ].join("\n");
   const script = marker
-    ? `umask 077; mkdir -p /var/lib/openrind-shell/runtime; printf %s ${shellQuote(marker)} > ${SESSION_MARKER_PATH}; chmod 600 ${SESSION_MARKER_PATH}`
+    ? `set -eu; umask 077; ${repairHook}; mkdir -p /var/lib/openrind-shell/runtime; printf %s ${shellQuote(marker)} > ${SESSION_MARKER_PATH}; chmod 600 ${SESSION_MARKER_PATH}`
     : `rm -f ${SESSION_MARKER_PATH}`;
   const result = await runMarkerScript(name, script, 30_000);
   if (result.exitCode !== 0) throw markerError("launch-marker write", result);

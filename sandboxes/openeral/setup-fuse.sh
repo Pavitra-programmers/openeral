@@ -10,6 +10,7 @@ export OPENRIND_SHELL_STATE_DIR="$OPENRIND_SHELL_RUNTIME_DIR"
 export OPENRIND_SHELL_DB_URL_FILE="$OPENRIND_SHELL_RUNTIME_DIR/database-url"
 export OPENRIND_SHELL_INIT_MARKER="$OPENRIND_SHELL_RUNTIME_DIR/init.done"
 export OPENRIND_SHELL_HOME=/sandbox/work
+export OPENRIND_SHELL_PROJECT_DIR=/sandbox/work/workspace
 export OPENRIND_SHELL_REQUIRE_POSTGRES_TLS=1
 # Legacy aliases are exported for user scripts and older library builds.
 export OPENERAL_RUNTIME_DIR="$OPENRIND_SHELL_RUNTIME_DIR"
@@ -261,10 +262,11 @@ fi
 # interactive minute mutating the remote FUSE home. The state stays entirely
 # below HOME=/sandbox/work and existing user configuration is kept intact.
 HOME="$OPENRIND_SHELL_HOME" node --input-type=module - <<'NODE'
-import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 
 const home = '/sandbox/work';
+const projectDir = '/sandbox/work/workspace';
 const configPath = `${home}/.claude.json`;
 const readJson = (path) => {
   try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; }
@@ -272,20 +274,32 @@ const readJson = (path) => {
 const configExisted = existsSync(configPath);
 const config = readJson(configPath) || {};
 let needsWrite = false;
+mkdirSync(projectDir, { recursive: true });
 if (config.hasCompletedOnboarding !== true) {
   let version = '';
   try {
     version = String(execFileSync('/usr/local/bin/claude-real', ['--version'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 3000,
     })).match(/^(\d+\.\d+\.\d+)/m)?.[1] || '';
   } catch {}
   config.hasCompletedOnboarding = true;
   if (version) config.lastOnboardingVersion = version;
   needsWrite = true;
 }
-if (!config.trustedFolders || !config.trustedFolders.includes('/sandbox/work')) {
-  config.trustedFolders = [...(config.trustedFolders || []), '/sandbox/work'];
+// Claude Code stores trust as per-project state in ~/.claude.json. The Desktop
+// sandbox creation action explicitly authorizes this policy-isolated workspace.
+if (!config.projects || typeof config.projects !== 'object' || Array.isArray(config.projects)) {
+  config.projects = {};
+  needsWrite = true;
+}
+const project = config.projects[projectDir];
+if (!project || typeof project !== 'object' || Array.isArray(project)) {
+  config.projects[projectDir] = { hasTrustDialogAccepted: true };
+  needsWrite = true;
+} else if (project.hasTrustDialogAccepted !== true) {
+  project.hasTrustDialogAccepted = true;
   needsWrite = true;
 }
 if (needsWrite) {
@@ -313,30 +327,25 @@ NPMRC
   chmod 600 "$OPENRIND_SHELL_NPMRC"
 fi
 
-# Interactive SSH shells start with the sandbox user's login home (/sandbox), not
-# the mount, so the session hook must live in that .bashrc. It sources
-# session.env (which exports HOME=/sandbox/work) and moves into the workspace.
-# `sandbox connect` invokes `bash -lc sandbox` in the OpenShell supervisor.
-# That is a login command, not an interactive shell, so it reads .bash_profile
-# but not the interactive branch of .bashrc. Install the one-shot desktop marker
-# hook in both startup paths: Desktop consumes it and execs the image-owned PTY
-# bridge; ordinary CLI connects have no marker and retain their documented shell.
+# OpenShell may enter the image through either a login shell or an interactive
+# shell, depending on the paired supervisor version. Install the one-shot hook
+# in both paths. Keep its sentinel separate from the general environment block:
+# older sandboxes can already contain that block without the Desktop hook, and
+# using the old sentinel caused upgrades to silently skip launcher installation.
 for SHELL_PROFILE in "/sandbox/.bash_profile" "/sandbox/.profile"; do
   [ -d "$(dirname "$SHELL_PROFILE")" ] || continue
   if ! grep -q 'Openrind Desktop Claude login hook' "$SHELL_PROFILE" 2>/dev/null; then
     cat >> "$SHELL_PROFILE" <<'PROFILE'
 
 # Openrind Desktop Claude login hook.
-_openrind_desktop_marker=/var/lib/openrind-shell/runtime/desktop-claude-launch
-if [ -f "$_openrind_desktop_marker" ]; then
+if [ -f /var/lib/openrind-shell/runtime/desktop-claude-launch ]; then
   exec /usr/local/bin/openrind-desktop-claude-launch
 fi
-unset _openrind_desktop_marker
 PROFILE
   fi
 done
 
-for SHELL_BASHRC in "/sandbox/.bashrc" "${HOME:-/sandbox}/.bashrc"; do
+for SHELL_BASHRC in "/sandbox/.bashrc" "$OPENRIND_SHELL_HOME/.bashrc"; do
   [ -d "$(dirname "$SHELL_BASHRC")" ] || continue
   if ! grep -q 'Openrind Shell FUSE session environment' "$SHELL_BASHRC" 2>/dev/null; then
     cat >> "$SHELL_BASHRC" <<'BASHRC'
@@ -346,21 +355,23 @@ for SHELL_BASHRC in "/sandbox/.bashrc" "${HOME:-/sandbox}/.bashrc"; do
 case "$-" in
   *i*)
     case "$PWD" in
-      /|/sandbox) [ -d /sandbox/work ] && cd /sandbox/work ;;
+      /|/sandbox) [ -d "${OPENRIND_SHELL_PROJECT_DIR:-/sandbox/work/workspace}" ] && cd "${OPENRIND_SHELL_PROJECT_DIR:-/sandbox/work/workspace}" ;;
     esac
-    # Direct SSH shell requests arrive here. The Desktop connect path uses the
-    # matching login hook above; both consume the same one-shot marker.
-    _openrind_desktop_marker=/var/lib/openrind-shell/runtime/desktop-claude-launch
-    if [ -f "$_openrind_desktop_marker" ]; then
-      exec /usr/local/bin/openrind-desktop-claude-launch
-    fi
-    unset _openrind_desktop_marker
     if [ -z "${OPENRIND_SHELL_HINT_SHOWN:-}" ]; then
       export OPENRIND_SHELL_HINT_SHOWN=1
       echo "Openrind Shell ready. Run 'claude' to start; /exit or Ctrl-D returns here; 'claude -c' continues."
     fi
     ;;
 esac
+BASHRC
+  fi
+  if ! grep -q 'Openrind Desktop Claude interactive hook' "$SHELL_BASHRC" 2>/dev/null; then
+    cat >> "$SHELL_BASHRC" <<'BASHRC'
+
+# Openrind Desktop Claude interactive hook.
+if [ -f /var/lib/openrind-shell/runtime/desktop-claude-launch ]; then
+  exec /usr/local/bin/openrind-desktop-claude-launch
+fi
 BASHRC
   fi
 done
@@ -374,6 +385,7 @@ SESSION_ENV="$OPENRIND_SHELL_RUNTIME_DIR/session.env"
 {
   printf 'export HOME='; shell_quote "$OPENRIND_SHELL_HOME"; printf '\n'
   printf 'export OPENRIND_SHELL_HOME='; shell_quote "$OPENRIND_SHELL_HOME"; printf '\n'
+  printf 'export OPENRIND_SHELL_PROJECT_DIR='; shell_quote "$OPENRIND_SHELL_PROJECT_DIR"; printf '\n'
   printf 'export OPENRIND_SHELL_RUNTIME_DIR='; shell_quote "$OPENRIND_SHELL_RUNTIME_DIR"; printf '\n'
   printf 'export OPENRIND_SHELL_STATE_DIR='; shell_quote "$OPENRIND_SHELL_RUNTIME_DIR"; printf '\n'
   printf 'export OPENRIND_SHELL_DB_URL_FILE='; shell_quote "$OPENRIND_SHELL_DB_URL_FILE"; printf '\n'

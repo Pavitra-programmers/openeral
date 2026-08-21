@@ -9,6 +9,7 @@ fi
 
 export HOME=/sandbox/work
 export OPENRIND_SHELL_HOME=/sandbox/work
+export OPENRIND_SHELL_PROJECT_DIR="${OPENRIND_SHELL_PROJECT_DIR:-/sandbox/work/workspace}"
 export OPENRIND_SHELL_RUNTIME_DIR="$RUNTIME_DIR"
 export OPENRIND_SHELL_STATE_DIR="$RUNTIME_DIR"
 export OPENRIND_SHELL_DB_URL_FILE="$RUNTIME_DIR/database-url"
@@ -49,19 +50,22 @@ fi
 # Sandbox creation completes initialization and writes this marker. Avoid a
 # full Node/FUSE initialization pass on every interactive Claude reconnect.
 if [ ! -f "$OPENRIND_SHELL_INIT_MARKER" ]; then
+  echo "Openrind Shell: completing interrupted workspace initialization..." >&2
   openrind-shell init --ensure
 fi
 
-HEALTH="$(openrind-shell-fused health 2>/dev/null || true)"
+# A wedged management socket must never leave users staring at a blank terminal.
+# Provisioning already established writability; this is only a bounded launch
+# guard, not another initialization pass.
+HEALTH="$(timeout 3s openrind-shell-fused health 2>/dev/null || true)"
 STATE="$(node -e 'try { process.stdout.write(JSON.parse(process.argv[1]).state || "") } catch {}' "$HEALTH")"
 if [ "$STATE" != writable ]; then
   echo "openrind-shell: FUSE storage is not writable (state: ${STATE:-unavailable})" >&2
   exit 1
 fi
 
-case "$PWD" in
-  /|/sandbox) cd /sandbox/work ;;
-esac
+mkdir -p "$OPENRIND_SHELL_PROJECT_DIR"
+cd "$OPENRIND_SHELL_PROJECT_DIR"
 
 # A desktop disconnect can interrupt Claude's first-run flow after it has
 # created its configuration and native timestamped backups. Moving the active
@@ -108,13 +112,22 @@ if (needsWrite) {
     const version = String(require("child_process").execFileSync(
       "/usr/local/bin/claude-real",
       ["--version"],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 3000 },
     )).match(/^(\d+\.\d+\.\d+)/m)?.[1];
     if (version) state.lastOnboardingVersion = version;
   } catch {}
 }
-if (!state.trustedFolders || !state.trustedFolders.includes('/sandbox/work')) {
-  state.trustedFolders = [...(state.trustedFolders || []), '/sandbox/work'];
+if (!state.projects || typeof state.projects !== 'object' || Array.isArray(state.projects)) {
+  state.projects = {};
+  needsWrite = true;
+}
+const projectDir = process.env.OPENRIND_SHELL_PROJECT_DIR || '/sandbox/work/workspace';
+const project = state.projects[projectDir];
+if (!project || typeof project !== 'object' || Array.isArray(project)) {
+  state.projects[projectDir] = { hasTrustDialogAccepted: true };
+  needsWrite = true;
+} else if (project.hasTrustDialogAccepted !== true) {
+  project.hasTrustDialogAccepted = true;
   needsWrite = true;
 }
 if (needsWrite) {
@@ -131,6 +144,11 @@ fi
 unset OPENRIND_DESKTOP_CLAUDE_LAUNCH
 unset OPENRIND_SHELL_SKIP_CLAUDE_REPAIR
 
+# Claude's supported trust model requires a project distinct from $HOME. Keep
+# the full durable FUSE home available as an additional working directory so
+# files created by older images at /sandbox/work remain accessible.
+set -- --add-dir "$HOME" "$@"
+
 # Desktop sessions receive a deterministic UUID through the one-shot launch
 # marker. Resume only when that transcript already exists; otherwise create it.
 # Ordinary CLI `claude` runs have no value and preserve Claude Code defaults.
@@ -143,7 +161,7 @@ if [ -n "$_openrind_session" ]; then
   # Claude stores this fixed working directory under a deterministic project
   # slug. A single stat is constant-time; recursively scanning every persisted
   # project delayed launch as the workspace accumulated conversations.
-  _openrind_transcript="$HOME/.claude/projects/-sandbox-work/$_openrind_session.jsonl"
+  _openrind_transcript="$HOME/.claude/projects/-sandbox-work-workspace/$_openrind_session.jsonl"
   if [ -f "$_openrind_transcript" ]; then
     set -- --resume "$_openrind_session" "$@"
   else
@@ -153,28 +171,14 @@ if [ -n "$_openrind_session" ]; then
 fi
 unset _openrind_session
 
-# Keep the terminal on Claude's stdin. A non-interactive shell gives an
-# asynchronous command /dev/null as stdin (POSIX; dash ignores a plain <&0),
-# so save the wrapper's stdin on fd 3 first and hand that to the child.
-exec 3<&0
-/usr/local/bin/claude-real "$@" <&3 3<&- &
-CHILD=$!
-
-forward_int() { kill -INT "$CHILD" 2>/dev/null || true; }
-forward_term() { kill -TERM "$CHILD" 2>/dev/null || true; }
-forward_hup() { kill -HUP "$CHILD" 2>/dev/null || true; }
-trap forward_int INT
-trap forward_term TERM
-trap forward_hup HUP
-
+# Claude must remain the foreground process attached to the bridge-owned PTY.
+# Starting it with `&` makes it a background job; an interactive read can then
+# stop it with SIGTTIN. That presents as a rendered-but-unresponsive prompt, or
+# as a completely blank terminal when the stop happens before the first paint.
 set +e
-while true; do
-  wait "$CHILD"
-  STATUS=$?
-  kill -0 "$CHILD" 2>/dev/null || break
-done
+/usr/local/bin/claude-real "$@"
+STATUS=$?
 set -e
-trap - INT TERM HUP
 
 if ! openrind-shell-fused flush-all >/dev/null 2>&1; then
   echo "openrind-shell: final FUSE flush failed; check 'openrind-shell-fused health' before deleting the sandbox" >&2

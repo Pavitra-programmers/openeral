@@ -693,12 +693,11 @@ function openOpenrindShellPtySession(opts) {
   if (profile !== "openrind-shell-claude") {
     throw new Error("The primary FUSE runtime supports the Claude profile only.");
   }
-  // Raw `openshell sandbox connect` remains the README's manual shell. The
-  // desktop Claude selection is different: it writes one consume-on-read
-  // launch marker, then explicitly starts the image-provided desktop launcher
-  // through OpenShell's interactive exec stream. This avoids relying on a
-  // login shell to notice the marker while keeping the marker as the sole
-  // session-selection input consumed inside the sandbox.
+  // Follow the README contract: Desktop writes one consume-on-read marker and
+  // then opens `openshell sandbox connect`. The login hook installed by
+  // setup-fuse.sh consumes that marker and replaces the manual shell with the
+  // image-provided framed PTY launcher. With no marker, the same connect command
+  // retains its documented manual-shell behavior.
   const live = openrindPty.findSessionBySandboxAndAgent(
     sandboxName,
     agentSessionId,
@@ -2502,10 +2501,10 @@ async function handleDesktopInvoke(event, command, ...args) {
     }
     case "openrindPtyOpen": {
       // Renderer xterm.js requests a PTY to an existing sandbox. We open the
-      // image's desktop launcher with `openshell sandbox exec --tty` over PLAIN
-      // PIPES (no ConPTY); openrind-pty-bridge.py owns the real Linux PTY the
-      // agent renders to, and we forward its raw bytes through the
-      // openrind-shell:pty-data event channel.
+      // README-defined `openshell sandbox connect` path over PLAIN PIPES (no
+      // ConPTY); its marker-aware login hook starts openrind-pty-bridge.py,
+      // which owns the real Linux PTY the agent renders to. We forward its raw
+      // bytes through the openrind-shell:pty-data event channel.
       const input = args[0] ?? {};
       const sandboxName = String(input.sandboxName ?? "").trim();
       if (!sandboxName) throw new Error("sandboxName is required");

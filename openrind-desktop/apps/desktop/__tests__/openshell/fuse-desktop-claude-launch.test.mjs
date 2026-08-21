@@ -6,6 +6,10 @@ const facadeSource = readFileSync(
   new URL("../../electron/openshell/openrind-shell.mjs", import.meta.url),
   "utf8",
 );
+const ptySource = readFileSync(
+  new URL("../../electron/openshell/openrind-shell-pty.mjs", import.meta.url),
+  "utf8",
+);
 const mainSource = readFileSync(
   new URL("../../electron/main.mjs", import.meta.url),
   "utf8",
@@ -66,7 +70,8 @@ test("desktop Claude selection writes a one-shot auto-launch marker", () => {
     else process.env.OPENSHELL_GATEWAY_ENDPOINT = oldGateway;
   }
   assert.match(facadeSource, /desktop-claude-launch/);
-  assert.match(facadeSource, /"sandbox",\s*"exec",\s*"-n",\s*sandboxName,\s*"--tty"/);
+  assert.match(ptySource, /"sandbox",\s*"connect",\s*sandboxName/);
+  assert.doesNotMatch(ptySource, /"sandbox",\s*"exec"[\s\S]*openrind-desktop-claude-launch/);
   assert.match(mainSource, /await writeOpenrindShellSessionMarker\(sandboxName, profile, agentSessionId\)/);
   assert.match(mainSource, /openrindMarkerPending\.add\(sandboxName\)/);
   assert.doesNotMatch(mainSource, /return openrindPty\.openSession\(\{\s*sandboxName,\s*cols,\s*rows,\s*extraEnv,\s*agentSessionId,\s*\}\);\s*const live/s);

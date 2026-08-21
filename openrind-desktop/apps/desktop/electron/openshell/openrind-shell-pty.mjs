@@ -12,7 +12,8 @@
 // So the byte path has no ConPTY at all:
 //
 //   renderer xterm.js ──IPC── main ──pipe(child_process)── wsl.exe ──
-//     openshell sandbox exec --tty <launcher> ── openrind-pty-bridge.py ── agent TUI
+//     openshell sandbox connect <name> ── login hook ──
+//     openrind-pty-bridge.py ── agent TUI
 //
 // The bridge (openrind-pty-bridge.py, shipped in the sandbox image) owns the
 // ONLY PTY the agent renders to, so the agent draws exactly as in a native
@@ -88,6 +89,7 @@ function appendToBuffer(session, data) {
  * @property {number | undefined} pid
  * @property {(() => void)} [pause]   Stop draining the transport (backpressure)
  * @property {(() => void)} [resume]  Resume draining the transport
+ * @property {Promise<void>} [ready]  Resolves only after the framed bridge is live
  */
 
 /**
@@ -216,7 +218,7 @@ function makePipePty(child, cols, rows) {
   const decoder = new TextDecoder("utf-8");
   /** @type {Set<DataHandler>} */
   const dataHandlers = new Set();
-  // `sandbox exec --tty` can start the bridge and Claude before openSession has
+  // `sandbox connect` can start the bridge and Claude before openSession has
   // installed its internal buffer handler. Retain that first paint here; a TUI
   // often becomes quiet after its initial frame, so dropping it produces a
   // permanently blank terminal even though Claude is running correctly.
@@ -231,7 +233,28 @@ function makePipePty(child, cols, rows) {
   const pending = [encodeResizeFrame(cols, rows)];
   let ready = false;
   let exited = false;
+  /** @type {{ exitCode: number|null, signal?: string } | null} */
+  let exitEvent = null;
   let readyProbe = Buffer.alloc(0);
+  let settleReadyResolve;
+  let settleReadyReject;
+  let readySettled = false;
+  const readyPromise = new Promise((resolve, reject) => {
+    settleReadyResolve = resolve;
+    settleReadyReject = reject;
+  });
+
+  const resolveBridgeReady = () => {
+    if (readySettled) return;
+    readySettled = true;
+    settleReadyResolve();
+  };
+
+  const rejectBridgeReady = (error) => {
+    if (readySettled) return;
+    readySettled = true;
+    settleReadyReject(error);
+  };
 
   const emitData = (chunk) => {
     if (!chunk?.length) return;
@@ -255,6 +278,7 @@ function makePipePty(child, cols, rows) {
       }
     }
     pending.length = 0;
+    resolveBridgeReady();
   };
 
   // A missing marker means the image is stale or the sandbox did not enter the
@@ -262,7 +286,16 @@ function makePipePty(child, cols, rows) {
   // that is precisely what produced the visible OPENRINDPTY1 command and dead
   // keyboard input. The normal marker arrives immediately after the bridge starts.
   const readyTimer = setTimeout(() => {
-    console.warn("[openrindPty] bridge did not signal framed readiness within 20 seconds");
+    const error = new Error(
+      "OpenShell connected, but its Desktop launch hook did not start the framed PTY bridge within 20 seconds. " +
+        "The sandbox image or shell hook is stale; reconnect after the hook repair completes.",
+    );
+    rejectBridgeReady(error);
+    try {
+      child.kill();
+    } catch {
+      /* child already exited */
+    }
   }, 20_000);
   if (typeof readyTimer.unref === "function") readyTimer.unref();
 
@@ -316,6 +349,7 @@ function makePipePty(child, cols, rows) {
   const emitExit = (exitCode, signal) => {
     if (exited) return;
     exited = true;
+    exitEvent = { exitCode, signal };
     clearTimeout(readyTimer);
     // If the image launcher failed before its ready marker, retain its final
     // stdout diagnostic instead of hiding its last marker-sized suffix forever.
@@ -325,7 +359,14 @@ function makePipePty(child, cols, rows) {
       emitData(readyProbe);
       readyProbe = Buffer.alloc(0);
     }
-    for (const handler of exitHandlers) handler({ exitCode, signal });
+    if (!ready) {
+      rejectBridgeReady(
+        new Error(
+          `OpenShell terminal exited before the framed PTY bridge became ready (exit ${exitCode ?? "?"}).`,
+        ),
+      );
+    }
+    for (const handler of exitHandlers) handler(exitEvent);
   };
   child.on("exit", (code, signal) =>
     emitExit(typeof code === "number" ? code : null, signal ?? undefined),
@@ -333,6 +374,7 @@ function makePipePty(child, cols, rows) {
   child.on("error", () => emitExit(null, undefined));
 
   return {
+    ready: readyPromise,
     get pid() {
       return child.pid;
     },
@@ -378,6 +420,10 @@ function makePipePty(child, cols, rows) {
     },
     onExit(handler) {
       exitHandlers.add(handler);
+      // The bridge can become ready and Claude can fail before openSession()
+      // installs its internal exit handler. Replay that terminal event instead
+      // of leaving a dead transport represented as permanently Connected.
+      if (exitEvent) handler(exitEvent);
       return {
         dispose() {
           exitHandlers.delete(handler);
@@ -411,13 +457,11 @@ async function legacyConptySpawn({ sandboxName, cols, rows, extraEnv }) {
 }
 
 /**
- * Default spawn: open an explicit interactive OpenShell exec stream to the
- * image-owned desktop launcher. Electron writes the README-required one-shot
- * marker first and the launcher consumes it before starting Claude. Invoking
- * the launcher directly avoids depending on login-profile evaluation inside
- * `sandbox connect`, which is reserved for the documented manual shell path.
- * `--tty` is intentional: the patched CLI treats an explicit TTY request as a
- * bidirectional stream even though Electron itself is connected with pipes.
+ * Default spawn: follow the README's interactive connection contract exactly.
+ * Electron writes the one-shot marker first, then `sandbox connect` allocates
+ * the remote SSH PTY and evaluates the login hook installed by setup-fuse.sh.
+ * That hook consumes the marker and execs the image-owned desktop launcher,
+ * which starts the framed Linux PTY bridge and Claude.
  *
  * @param {{ sandboxName: string, cols: number, rows: number,
  *           extraEnv?: Record<string, string> | null }} opts
@@ -430,17 +474,14 @@ async function defaultSpawnImpl(opts) {
     return legacyConptySpawn(opts);
   }
   const { sandboxName, cols, rows, extraEnv } = opts;
-  // There is no WSL-side TTY to configure because Electron uses pipes. The
-  // explicit OpenShell TTY belongs to the image bridge, which makes it raw
-  // before READY_MAGIC and then owns the only PTY Claude sees.
+  // Electron deliberately reaches wsl.exe through ordinary pipes. OpenShell's
+  // connect command forces the *remote* SSH PTY; the login hook then replaces
+  // that shell with the framed bridge, which makes the transport raw before it
+  // emits READY_MAGIC and owns the only PTY Claude renders into.
   const shellCmd = `exec ${buildFuseCliCommand([
     "sandbox",
-    "exec",
-    "-n",
+    "connect",
     sandboxName,
-    "--tty",
-    "--",
-    "/usr/local/bin/openrind-desktop-claude-launch",
   ])}`;
   // extraEnv is still forwarded through WSLENV for the host-side transport;
   // providers remain gateway-managed and are never copied into this command.
@@ -531,6 +572,12 @@ export async function openSession(opts) {
     rows,
     extraEnv,
   });
+  // Do not tell the renderer it is connected merely because wsl.exe spawned.
+  // The session becomes adoptable only after the image bridge confirms framed
+  // mode; otherwise the UI can sit on a false green Connected state forever.
+  if (pty.ready && typeof pty.ready.then === "function") {
+    await pty.ready;
+  }
   const id = randomUUID();
 
   /** @type {Session} */
@@ -887,6 +934,11 @@ export function attachHandlers(id, handlers = {}, options = {}) {
   // so the replay is not appended to the session buffer a second time.
   if (options.replayBuffered && session.onData && session.bufferBytes > 0) {
     session.onData(getBuffer(id));
+  }
+  // A fast agent failure may precede the renderer's IPC attach. Surface the
+  // retained exit immediately so the UI leaves Connected and offers recovery.
+  if (onExit !== undefined && session.onExit && session.exitInfo) {
+    session.onExit(session.exitInfo.exitCode, session.exitInfo.signal);
   }
   // A fresh renderer starts with an empty write queue and no memory of an
   // earlier pause, so hand it a flowing stream.

@@ -12,8 +12,8 @@ RUNTIME_DIR="${OPENRIND_SHELL_RUNTIME_DIR:-${OPENERAL_RUNTIME_DIR:-/var/lib/open
 MARKER_PATH="$RUNTIME_DIR/desktop-claude-launch"
 
 if [ ! -f "$MARKER_PATH" ]; then
-  # This reaches the renderer through the raw exec stream. Do not write it only
-  # to stderr: desktop transport diagnostics are deliberately not terminal data.
+  # This reaches the renderer through the connected terminal stream. Do not
+  # write it only to stderr: transport diagnostics are not terminal data.
   echo "Openrind Shell: desktop Claude launch marker was not found. Reconnect the session."
   exit 64
 fi

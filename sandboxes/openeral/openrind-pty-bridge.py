@@ -14,8 +14,8 @@ too-narrow welcome box, and a mis-placed composer. Nothing on the xterm.js side
 can un-corrupt bytes ConPTY already mangled.
 
 The fix is to take ConPTY out of the byte path: Openrind Desktop now spawns
-`wsl.exe` with plain pipes (no ConPTY) and this bridge — launched by setup.sh as
-the agent's exec — owns the ONLY PTY the agent renders to. The agent draws
+`wsl.exe` with plain pipes (no ConPTY) and this bridge — launched by the
+setup-fuse.sh login hook after `sandbox connect` — owns the ONLY PTY the agent renders to. The agent draws
 exactly as in a native Linux terminal, and every byte reaches xterm.js untouched.
 
 Two drive modes (auto-detected — see below)
@@ -354,7 +354,6 @@ def main():
     init_rows = 0
     if force_framed:
         _mode = "framed"
-        write_all(1, READY_MAGIC)
     else:
         # Backward-compatible raw/handshake auto-detection for direct callers.
         deadline = time.monotonic() + HANDSHAKE_WAIT_S
@@ -407,6 +406,11 @@ def main():
     pid = spawn_child(master_fd, slave_fd, argv)
     os.close(slave_fd)
 
+    # Readiness means the bridge owns a real PTY and the agent wrapper was
+    # successfully forked, not merely that the launcher reached Python.
+    if force_framed:
+        write_all(1, READY_MAGIC)
+
     # If framed and we buffered the first frame bytes, apply them now.
     if _mode == "framed" and inbound:
         parse_frames(inbound, master_fd)
@@ -431,9 +435,17 @@ def main():
 
     def forward_signal(signum, _frame):
         try:
-            os.kill(pid, signum)
-        except Exception:
+            # spawn_child() creates a new session whose process-group id is the
+            # child pid. Signal the whole group so the foreground Claude process
+            # receives close/cancel signals even though a shell wrapper execs it.
+            os.killpg(pid, signum)
+        except ProcessLookupError:
             pass
+        except Exception:
+            try:
+                os.kill(pid, signum)
+            except Exception:
+                pass
 
     for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
         try:
@@ -481,9 +493,14 @@ def main():
                 chunk = b""
             if not chunk:
                 try:
-                    os.kill(pid, signal.SIGHUP)
-                except Exception:
+                    os.killpg(pid, signal.SIGHUP)
+                except ProcessLookupError:
                     pass
+                except Exception:
+                    try:
+                        os.kill(pid, signal.SIGHUP)
+                    except Exception:
+                        pass
                 break
             if _mode is None:
                 # Late classification: content decides, size already set.
