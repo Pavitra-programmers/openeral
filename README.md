@@ -229,8 +229,18 @@ exit         # disconnect without deleting the sandbox
 Reconnect later with the same `sandbox connect` command. The OpenShell supervisor and
 FUSE daemon remain sandbox services; they are not tied to the SSH session. Interactive
 shells start with the sandbox user's login home `/sandbox`, then a hook installed by
-initialization sources the session environment (`HOME=/sandbox/work`) and enters the
-mount; the `claude` wrapper applies the same environment on its own.
+initialization sources the session environment (`HOME=/sandbox/work`) and enters
+`/sandbox/work/workspace`. Keeping the project directory inside the durable mount but
+distinct from `$HOME` lets Claude persist its per-project trust decision; Claude does not
+persist workspace trust when launched directly in the home directory. The `claude`
+wrapper applies the same environment and project directory on its own and grants the
+agent access to the full durable home for compatibility with existing files.
+Openrind Desktop's **Claude** selection adds a desktop-only convenience layer: before
+it connects, the app writes a one-shot launch marker inside the sandbox. The session
+hook consumes that marker and starts the same `claude` wrapper through the image's
+Linux PTY bridge, so Claude opens immediately without a typed command. This does not
+change the raw `sandbox connect` contract above: direct CLI connections still open the
+manual shell and require `claude` or `claude -c`.
 
 ### Persistence And Durability
 

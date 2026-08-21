@@ -1,6 +1,7 @@
 use crate::error::{Error, Result};
 use sha2::{Digest, Sha256};
 use std::str::FromStr;
+use rustls::pki_types::{pem::PemObject, CertificateDer};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -12,6 +13,8 @@ use url::Url;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_CONNECT_HEADERS: usize = 16 * 1024;
+const SUPABASE_POOLER_SUFFIX: &str = ".pooler.supabase.com";
+const SUPABASE_ROOT_2021_CA_PATH: &str = "/opt/openrind-shell/certs/supabase-root-2021-ca.pem";
 
 pub struct ConnectedDatabase {
     pub client: Client,
@@ -48,20 +51,7 @@ pub async fn connect(database_url: &str) -> Result<ConnectedDatabase> {
     config.connect_timeout(CONNECT_TIMEOUT);
 
     let _ = rustls::crypto::ring::default_provider().install_default();
-    let (mut tls, certificate_errors) =
-        MakeRustlsConnect::with_native_certs().map_err(|errors| {
-            Error::Internal(format!(
-                "could not load any native TLS roots ({} errors)",
-                errors.len()
-            ))
-        })?;
-    if !certificate_errors.is_empty() {
-        tracing::warn!(
-            errors = certificate_errors.len(),
-            "some native TLS roots could not be loaded"
-        );
-    }
-
+    let mut tls = tls_connector(host)?;
     let tls = <MakeRustlsConnect as MakeTlsConnect<TcpStream>>::make_tls_connect(&mut tls, host)
         .expect("rustls connector construction is infallible");
     let (client, connection) =
@@ -74,13 +64,64 @@ pub async fn connect(database_url: &str) -> Result<ConnectedDatabase> {
             let _ = error_tx.send(Some(error.to_string()));
         }
     });
-    client.batch_execute("SET synchronous_commit = on").await?;
+    client
+        .batch_execute("SET synchronous_commit = on")
+        .await
+        .map_err(|error| Error::database("configuring PostgreSQL durability", error))?;
     Ok(ConnectedDatabase {
         client,
         connection_error: error_rx,
     })
 }
 
+fn tls_connector(host: &str) -> Result<MakeRustlsConnect> {
+    // OpenShell sets SSL_CERT_FILE to its proxy trust bundle. rustls-native-certs
+    // deliberately treats that as an override of the system roots, so append the
+    // pinned Supabase root ourselves when the policy-bound pooler is the target.
+    let native_roots = rustls_native_certs::load_native_certs();
+    let mut roots = rustls::RootCertStore::empty();
+    for certificate in native_roots.certs {
+        roots.add(certificate).map_err(|error| {
+            Error::Internal(format!("could not add a native TLS root: {error}"))
+        })?;
+    }
+    if roots.is_empty() {
+        return Err(Error::Internal("could not load any native TLS roots".into()));
+    }
+    if !native_roots.errors.is_empty() {
+        tracing::warn!(
+            errors = native_roots.errors.len(),
+            "some native TLS roots could not be loaded"
+        );
+    }
+
+    if host.to_ascii_lowercase().ends_with(SUPABASE_POOLER_SUFFIX) {
+        let pem = std::fs::read(SUPABASE_ROOT_2021_CA_PATH).map_err(|error| {
+            Error::Internal(format!(
+                "could not read pinned Supabase TLS root at {SUPABASE_ROOT_2021_CA_PATH}: {error}"
+            ))
+        })?;
+        let mut added = 0;
+        for certificate in CertificateDer::pem_slice_iter(&pem) {
+            roots.add(certificate.map_err(|error| {
+                Error::Internal(format!("could not parse pinned Supabase TLS root: {error}"))
+            })?)
+            .map_err(|error| Error::Internal(format!("could not add pinned Supabase TLS root: {error}")))?;
+            added += 1;
+        }
+        if added != 1 {
+            return Err(Error::Internal(format!(
+                "expected exactly one pinned Supabase TLS root, found {added}"
+            )));
+        }
+    }
+
+    Ok(MakeRustlsConnect::new(
+        rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    ))
+}
 fn proxy_url() -> Result<Url> {
     let value = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
         .into_iter()

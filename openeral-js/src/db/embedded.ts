@@ -15,7 +15,6 @@ import { PGlite } from '@electric-sql/pglite';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
-import type pg from 'pg';
 import { createPool } from './pool.js';
 import type { DbPool } from './pool.js';
 
@@ -29,12 +28,16 @@ function positiveIntegerEnv(primary: string, legacy: string, fallback: number): 
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
-function isTransientConnectionError(err: unknown): boolean {
+export function isTransientConnectionError(err: unknown): boolean {
   const code = err && typeof err === 'object' && 'code' in err
     ? String((err as { code?: unknown }).code ?? '')
     : '';
   const message = err instanceof Error ? err.message : String(err);
-  return /\{:error,\s*:timeout\}|ECONNREFUSED|ECONNRESET|ETIMEDOUT/i.test(message)
+  // OpenShell's SSH relay can close an otherwise healthy first connection
+  // while the FUSE sandbox reaches Ready. The documented initializer is a
+  // one-shot command immediately after that transition, so retry this
+  // connection-establishment error within the existing bounded deadline.
+  return /\{:error,\s*:timeout\}|ECONNREFUSED|ECONNRESET|ETIMEDOUT|Connection terminated unexpectedly/i.test(message)
     || ['08001', '08006', '57P03'].includes(code);
 }
 
@@ -146,11 +149,12 @@ export async function getDatabaseConnection(): Promise<{
 
     while (Date.now() < deadline) {
       attempt++;
-      let client: pg.PoolClient | undefined;
       try {
-        client = await pool.connect();
-        await client.query('SELECT 1');
-        client.release();
+        // `Pool.query()` uses the same pooled client that migrations use, but
+        // avoids taking the custom OpenShell HTTP CONNECT stream through the
+        // separate `Pool.connect()` handoff. That handoff can be torn down by
+        // the supervisor relay even after a tunneled query is usable.
+        await pool.query('SELECT 1');
         return {
           pool,
           connectionString,
@@ -158,13 +162,6 @@ export async function getDatabaseConnection(): Promise<{
         };
       } catch (err) {
         lastError = err;
-        if (client) {
-          try {
-            client.release(err instanceof Error ? err : true);
-          } catch {
-            // The pool is closed below if the retry budget is exhausted.
-          }
-        }
 
         if (!isTransientConnectionError(err) || Date.now() + retryMs >= deadline) break;
         process.stderr.write(`[db] connection attempt ${attempt} failed; retrying in ${retryMs}ms\n`);

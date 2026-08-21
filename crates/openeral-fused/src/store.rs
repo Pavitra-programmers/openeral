@@ -54,7 +54,8 @@ impl PgStore {
                 "SELECT pg_try_advisory_lock(hashtextextended($1, 0))",
                 &[&volume_id],
             )
-            .await?
+            .await
+            .map_err(|error| Error::database("acquiring the filesystem advisory lock", error))?
             .get(0);
         if !acquired {
             return Err(Error::Fenced);
@@ -73,7 +74,8 @@ impl PgStore {
                  RETURNING epoch",
                 &[&volume_id, &owner_id, &LEASE_SECONDS],
             )
-            .await?
+            .await
+            .map_err(|error| Error::database("creating the filesystem writer lease", error))?
             .get(0);
         let (terminal_fence, _) = tokio::sync::watch::channel(None);
 
@@ -212,7 +214,9 @@ impl PgStore {
     ) -> Result<()> {
         match tx.commit().await {
             Ok(()) => Ok(()),
-            Err(error) if error.code().is_some() => Err(Error::Database(error)),
+            Err(error) if error.code().is_some() => {
+                Err(Error::database("committing a filesystem operation", error))
+            },
             Err(commit_error) => {
                 let reason = format!(
                     "database commit response was lost for operation {}: {commit_error}",
@@ -877,7 +881,8 @@ async fn ensure_volume(
               WHERE workspace_id = $1",
             &[&workspace_id],
         )
-        .await?
+        .await
+        .map_err(|error| Error::database("reading the prepared filesystem volume", error))?
     {
         let schema: i32 = row.get(1);
         if schema != SCHEMA_VERSION {
@@ -1037,7 +1042,7 @@ fn map_constraint_error(error: tokio_postgres::Error) -> Error {
     match error.code().map(tokio_postgres::error::SqlState::code) {
         Some("23505") => Error::Exists,
         Some("23503") => Error::NotFound,
-        _ => Error::Database(error),
+        _ => Error::database("applying a filesystem constraint", error),
     }
 }
 

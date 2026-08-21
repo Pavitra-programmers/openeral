@@ -169,7 +169,9 @@ grep -q 'openrind-shell on /sandbox/work type fuse' <<<"$mount_output"
 pass "OpenShell mounted Openrind Shell at /sandbox/work"
 
 echo "=== Filesystem conformance ==="
-os sandbox upload "$FIRST_SANDBOX" tests/fuse/conformance.mjs /tmp/openrind-shell-fuse-conformance
+os sandbox upload "$FIRST_SANDBOX" tests/fuse/conformance.mjs /tmp/openrind-shell-fuse-conformance/conformance.mjs
+# OpenShell upload acknowledgement precedes the supervisor-visible file update.
+sleep 2
 sandbox_exec "$FIRST_SANDBOX" \
   env NODE_NO_WARNINGS=1 HOME=/sandbox/work \
   node /tmp/openrind-shell-fuse-conformance/conformance.mjs

@@ -22,6 +22,9 @@ filesystem_policy:
     - /var/lib/openrind-shell/runtime
     - /var/lib/openeral/runtime
     - /dev/null
+    # The desktop PTY bridge allocates the agent's real Linux terminal here.
+    # Do not allow /dev/ptmx: it is a symlink the supervisor rejects.
+    - /dev/pts
 
 landlock:
   compatibility: best_effort

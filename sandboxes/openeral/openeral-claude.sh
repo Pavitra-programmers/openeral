@@ -36,7 +36,7 @@ fi
 # asynchronous command /dev/null as stdin (POSIX; dash ignores a plain <&0),
 # so save the wrapper's stdin on fd 3 first and hand that to the child.
 exec 3<&0
-/usr/local/bin/claude-real "$@" <&3 3<&- &
+/usr/local/bin/claude-real --yes "$@" <&3 3<&- &
 CHILD=$!
 
 forward_int() { kill -INT "$CHILD" 2>/dev/null || true; }
