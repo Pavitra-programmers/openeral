@@ -1,21 +1,19 @@
-// Openrind Shell credential storage. Four secrets live here:
+// Openrind Shell credential storage. Three secrets live here:
 //   - databaseUrl       PostgreSQL connection string for the `_openrind` schema
-//   - anthropicApiKey   Required by the gateway-managed Claude provider
+//   - anthropicApiKey   Required for OpenClaw; Claude Code can use providers
 //   - openrindGatewayApiKey  Optional cost-tracking API key
-//   - elevenLabsApiKey  Optional cloud transcription key
 //
 // All values are encrypted at rest via Electron's safeStorage API (Keychain
 // on macOS, DPAPI on Windows, libsecret/kwallet on Linux). The renderer
 // never sees the plaintext — only "set"/"unset" status flags. The
-// fuse-sandbox.mjs reads decrypted values in the main process. DATABASE_URL is
-// staged as the one-time README upload; ANTHROPIC_API_KEY is passed only to the
-// local OpenShell CLI so the gateway can store it as a provider credential.
+// openrind-shell.mjs module in Phase O3 reads decrypted values directly from
+// the main process when staging the credential bundle for a sandbox.
 //
 // Electron is loaded LAZILY (inside each function) so this module can be
 // imported under node --test on a dev box that doesn't ship electron.
 // When OPENRIND_DESKTOP_TEST_CREDENTIALS_DIR is set, the module reads/writes
 // plain files inside that directory instead — a test seam for the
-// FUSE sandbox suite.
+// openrind-shell.mjs suite.
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -36,13 +34,15 @@ async function getSafeStorage() {
   return safeStorage;
 }
 
-/** @typedef {"databaseUrl" | "anthropicApiKey" | "openrindGatewayApiKey" | "elevenLabsApiKey"} CredentialKey */
+/** @typedef {"databaseUrl" | "anthropicApiKey" | "openrouterApiKey" | "openrindGatewayApiKey" | "elevenLabsApiKey"} CredentialKey */
 
 const CREDENTIAL_KEYS = /** @type {const} */ ([
   "databaseUrl",
   "anthropicApiKey",
+  "openrouterApiKey",
   "openrindGatewayApiKey",
-  // ElevenLabs Scribe API key used by desktop voice dictation.
+  // ElevenLabs Scribe API key — optional, only used when the voice-input
+  // engine is set to ElevenLabs (cloud) instead of on-device Whisper.
   "elevenLabsApiKey",
 ]);
 
@@ -94,7 +94,7 @@ export async function setCredential(key, value) {
     throw new Error("Credential value is empty.");
   }
   // Test seam: when OPENRIND_DESKTOP_TEST_CREDENTIALS_DIR is set, write a plain
-  // file in that dir. The credential test suite uses this to stub
+  // file in that dir. The openrind-shell.mjs test suite uses this to stub
   // credentials without needing the Electron runtime.
   const testDir = testCredentialsDir();
   if (testDir) {
@@ -145,7 +145,7 @@ export async function clearCredential(key) {
 }
 
 /**
- * Internal helper for the FUSE sandbox module. NEVER exposed
+ * Internal helper for the openrind-shell.mjs module (Phase O3). NEVER exposed
  * via IPC — the renderer reaches credentials only by name, never by
  * value. Returns null on missing or decrypt failure.
  */

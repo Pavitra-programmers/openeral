@@ -12,14 +12,13 @@ import {
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-const projectHome = process.env.OPENRIND_SHELL_HOME || process.env.OPENERAL_HOME || '/sandbox/work';
-const claudeHome = process.env.OPENRIND_SHELL_CLAUDE_HOME || projectHome;
+const home = process.env.OPENRIND_SHELL_HOME || process.env.OPENERAL_HOME || '/sandbox/work';
 const runtimeDir = process.env.OPENRIND_SHELL_RUNTIME_DIR
   || process.env.OPENERAL_RUNTIME_DIR
   || '/var/lib/openrind-shell/runtime';
-const presignPath = join(projectHome, '.openrind-shell', 'presign.json');
-const legacyPresignPath = join(projectHome, '.openeral', 'presign.json');
-const settingsPath = join(claudeHome, '.claude', 'settings.json');
+const presignPath = join(home, '.openrind-shell', 'presign.json');
+const legacyPresignPath = join(home, '.openeral', 'presign.json');
+const settingsPath = join(home, '.claude', 'settings.json');
 const baseUrlPath = join(runtimeDir, 'anthropic-base-url');
 
 function normalize(raw) {
@@ -89,10 +88,17 @@ function storedPresign() {
 }
 
 async function createPresign() {
-  const openrindKey = process.env.OPENRIND_GATEWAY_API_KEY;
+  let openrindKey = process.env.OPENRIND_GATEWAY_API_KEY;
+  if (!openrindKey) {
+    try {
+      openrindKey = readFileSync(join(home, '.openrind-shell', 'gateway-api-key'), 'utf8').trim();
+    } catch {}
+  }
   const legacyKey = process.env.STRINGCOST_API_KEY;
   const gatewayKey = openrindKey || legacyKey;
-  if (!gatewayKey || !process.env.ANTHROPIC_API_KEY) return '';
+  const clientKey = process.env.ANTHROPIC_API_KEY || process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN;
+  if (!gatewayKey || !clientKey) return '';
+  const isOpenRouter = !!(process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30_000);
   try {
@@ -105,9 +111,9 @@ async function createPresign() {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        provider: 'anthropic',
-        client_api_key: process.env.ANTHROPIC_API_KEY,
-        path: ['/v1/messages'],
+        provider: isOpenRouter ? 'openrouter' : 'anthropic',
+        client_api_key: clientKey,
+        path: isOpenRouter ? ['/v1/messages', '/v1/chat/completions', '/v1/chat/completions'] : ['/v1/messages'],
         expires_in: -1,
         max_uses: -1,
         cost_limit: 10_000_000,
@@ -143,6 +149,11 @@ function persist(baseUrl) {
   try { settings = JSON.parse(readFileSync(settingsPath, 'utf8')); } catch {}
   settings.env = settings.env && typeof settings.env === 'object' ? settings.env : {};
   settings.env.ANTHROPIC_BASE_URL = baseUrl;
+  settings.env.ANTHROPIC_DEFAULT_SONNET_MODEL ||= 'openrouter/free';
+  settings.env.ANTHROPIC_DEFAULT_OPUS_MODEL ||= 'openrouter/free';
+  settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL ||= 'openrouter/free';
+  settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL ||= 'openrouter/free';
+  settings.env.CLAUDE_CODE_SUBAGENT_MODEL ||= 'openrouter/free';
   delete settings.env.ANTHROPIC_API_KEY;
   delete settings.env.ANTHROPIC_AUTH_TOKEN;
   writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);

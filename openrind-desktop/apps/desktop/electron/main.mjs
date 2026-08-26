@@ -34,15 +34,9 @@ import {
   exportWorkspaceConfig,
   importWorkspaceConfig,
 } from "./workspace-archive.mjs";
-import {
-  requireRegisteredLocalWorkspaceRoot,
-  resolveWorkspaceConfigFilePath,
-} from "./workspace-config-authorization.mjs";
-import * as openrindShell from "./openshell/fuse-sandbox.mjs";
-import {
-  getFuseRuntimeStatus,
-  restartFuseRuntime,
-} from "./openshell/fuse-runtime.mjs";
+import * as openshellClient from "./openshell/client.mjs";
+import * as openshellCli from "./openshell/cli.mjs";
+import * as openrindShell from "./openshell/openrind-shell.mjs";
 import * as openrindCredentials from "./openshell/openrind-shell-credentials.mjs";
 import * as openrindPty from "./openshell/openrind-shell-pty.mjs";
 import {
@@ -50,7 +44,6 @@ import {
   launchExternalTerminalToSandbox,
 } from "./openshell/openrind-shell-terminal.mjs";
 import { openshellDoctor } from "./openshell/doctor.mjs";
-import { appendClaudeLaunchError } from "./openshell/claude-launch-error-log.mjs";
 import {
   installOpenShellStack,
   loadInstallerState as loadOpenShellInstallerState,
@@ -99,10 +92,6 @@ async function assertOpenShellReady() {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const CLAUDE_LAUNCH_ERROR_LOG = process.env.OPENRIND_DESKTOP_CLAUDE_ERROR_LOG?.trim() ||
-  (app.isPackaged
-    ? path.join(app.getPath("logs"), "claude-launch-errors.log")
-    : path.resolve(__dirname, "../../..", ".debug", "claude-launch-errors.log"));
 const NATIVE_DEEP_LINK_EVENT = "openrind-desktop:deep-link-native";
 const TAURI_APP_IDENTIFIER = "com.differentai.openrind-desktop";
 const DESKTOP_PROTOCOL_SCHEME = "openrind-desktop";
@@ -630,10 +619,10 @@ async function dumpOpenrindShellPtyBuffer(sessionId) {
 }
 
 /**
- * Build the non-secret host-side environment used while opening the PTY.
- * Provider credentials are already attached by OpenShell and are never copied
- * into this WSL process. COLUMNS/LINES are only compatibility hints; the
- * authoritative initial geometry travels in the PTY bridge handshake.
+ * Build the extra env forwarded into the Openrind Shell PTY at spawn time:
+ * decrypted Anthropic / OpenrindGateway keys (so Claude Code auto-configures
+ * its provider on first run without an interactive prompt) plus COLUMNS /
+ * LINES belt-and-suspenders alongside the stty call in openrind-shell-pty.mjs.
  * Shared by the openrindPtyOpen and openrindPtyAttachOrOpen handlers.
  *
  * @param {number | undefined} cols
@@ -642,9 +631,18 @@ async function dumpOpenrindShellPtyBuffer(sessionId) {
  */
 async function buildOpenrindShellPtyEnv(cols, rows) {
   const extraEnv = {};
-  // Credentials are attached to the sandbox by OpenShell providers during
-  // creation; never copy raw keys into the desktop terminal environment.
-  {
+  try {
+    const anthropicApiKey =
+      await openrindCredentials.getCredential("anthropicApiKey");
+    if (anthropicApiKey) extraEnv.ANTHROPIC_API_KEY = anthropicApiKey;
+  } catch {
+    /* safeStorage may be unavailable in some test environments */
+  }
+  try {
+    const openrindGatewayApiKey =
+      await openrindCredentials.getCredential("openrindGatewayApiKey");
+    if (openrindGatewayApiKey) extraEnv.OPENRIND_GATEWAY_API_KEY = openrindGatewayApiKey;
+  } catch {
     /* optional — OpenrindGateway tracking only */
   }
   const effectiveCols = Number.isFinite(cols) && cols > 0 ? cols : 120;
@@ -657,9 +655,9 @@ async function buildOpenrindShellPtyEnv(cols, rows) {
 /**
  * Write the per-connect "which agent conversation to launch" marker into the
  * sandbox before a FRESH PTY connect, so the .bashrc launch block binds the
- * auto-launched Claude Code process to the Openrind Desktop session the user
- * selected. Marker failure is fatal: connecting without it would open a plain
- * shell and recreate the misleading blank-terminal failure.
+ * auto-launched agent (Claude Code / OpenClaw) to the Openrind Desktop session the
+ * user selected. Best-effort: any failure is swallowed so the connect still
+ * proceeds (the agent just launches its default conversation).
  *
  * @param {string} sandboxName
  * @param {string} profile  "openrind-shell-claude"
@@ -692,6 +690,14 @@ const openrindMarkerPending = new Set();
  */
 function openOpenrindShellPtySession(opts) {
   const { sandboxName, cols, rows, extraEnv, agentSessionId, profile } = opts;
+  if (profile !== "openrind-shell-claude") {
+    throw new Error("The primary FUSE runtime supports the Claude profile only.");
+  }
+  // Follow the README contract: Desktop writes one consume-on-read marker and
+  // then opens `openshell sandbox connect`. The login hook installed by
+  // setup-fuse.sh consumes that marker and replaces the manual shell with the
+  // image-provided framed PTY launcher. With no marker, the same connect command
+  // retains its documented manual-shell behavior.
   const live = openrindPty.findSessionBySandboxAndAgent(
     sandboxName,
     agentSessionId,
@@ -718,6 +724,20 @@ function openOpenrindShellPtySession(opts) {
         openrindMarkerPending.delete(sandboxName);
       }
       await writeOpenrindShellSessionMarker(sandboxName, profile, agentSessionId);
+      try {
+        const gatewayApiKey = await openrindCredentials.getCredential("openrindGatewayApiKey");
+        if (gatewayApiKey) {
+          await wslRun([
+            "-d", OPENSHELL_DISTRO_NAME, "--user", "banker", "--",
+            "openshell", "sandbox", "exec", "-n", sandboxName, "--",
+            "sh", "-c", `mkdir -p /sandbox/work/.openrind-shell && echo '${gatewayApiKey}' > /sandbox/work/.openrind-shell/gateway-api-key && chmod 600 /sandbox/work/.openrind-shell/gateway-api-key`
+          ], { timeout: 10_000 }).catch(() => undefined);
+        }
+      } catch (err) {
+        /* non-fatal */
+      }
+      // Even a desktop launch without a session id writes the `auto` marker, so
+      // every fresh connect must wait for this marker to be consumed.
       openrindMarkerPending.add(sandboxName);
       return openrindPty.openSession({
         sandboxName,
@@ -1012,7 +1032,7 @@ function openrindDesktopRemoteWorkspaceId(hostUrl, workspaceId) {
 }
 
 async function readWorkspaceOpenrindDesktopConfig(workspacePath) {
-  const openrindDesktopPath = await resolveWorkspaceConfigFilePath(workspacePath);
+  const openrindDesktopPath = path.join(workspacePath, ".opencode", "openrind-desktop.json");
   if (!(await pathExists(openrindDesktopPath))) {
     return defaultWorkspaceOpenrindDesktopConfig(workspacePath);
   }
@@ -1021,7 +1041,7 @@ async function readWorkspaceOpenrindDesktopConfig(workspacePath) {
 }
 
 async function writeWorkspaceOpenrindDesktopConfig(workspacePath, config) {
-  const openrindDesktopPath = await resolveWorkspaceConfigFilePath(workspacePath);
+  const openrindDesktopPath = path.join(workspacePath, ".opencode", "openrind-desktop.json");
   await mkdir(path.dirname(openrindDesktopPath), { recursive: true });
   await writeFile(openrindDesktopPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
   return execResult(true, `Wrote ${openrindDesktopPath}`);
@@ -1047,14 +1067,6 @@ async function readWorkspaceState() {
     activeId: typeof state?.activeId === "string" ? state.activeId : null,
     workspaces: Array.isArray(state?.workspaces) ? state.workspaces : [],
   };
-}
-
-async function resolveRegisteredWorkspaceConfigRoot(rawPath) {
-  const state = await readWorkspaceState();
-  return requireRegisteredLocalWorkspaceRoot({
-    requestedPath: rawPath,
-    workspaces: state.workspaces,
-  });
 }
 
 async function writeWorkspaceState(nextState) {
@@ -1685,16 +1697,13 @@ async function handleDesktopInvoke(event, command, ...args) {
     }
     case "workspaceAddAuthorizedRoot": {
       const input = args[0] ?? {};
-      const requestedWorkspacePath = String(input.workspacePath ?? "").trim();
+      const workspacePath = String(input.workspacePath ?? "").trim();
       const authorizedRoot = String(
         input.folderPath ?? input.authorizedRoot ?? "",
       ).trim();
-      if (!requestedWorkspacePath || !authorizedRoot) {
+      if (!workspacePath || !authorizedRoot) {
         throw new Error("workspacePath and folderPath are required");
       }
-      const workspacePath = await resolveRegisteredWorkspaceConfigRoot(
-        requestedWorkspacePath,
-      );
       const config = await readWorkspaceOpenrindDesktopConfig(workspacePath);
       if (!Array.isArray(config.authorizedRoots)) {
         config.authorizedRoots = [];
@@ -1704,21 +1713,15 @@ async function handleDesktopInvoke(event, command, ...args) {
       }
       return writeWorkspaceOpenrindDesktopConfig(workspacePath, config);
     }
-    case "workspaceOpenrindDesktopRead": {
-      const workspacePath = await resolveRegisteredWorkspaceConfigRoot(
+    case "workspaceOpenrindDesktopRead":
+      return readWorkspaceOpenrindDesktopConfig(
         String(args[0]?.workspacePath ?? "").trim(),
       );
-      return readWorkspaceOpenrindDesktopConfig(workspacePath);
-    }
-    case "workspaceOpenrindDesktopWrite": {
-      const workspacePath = await resolveRegisteredWorkspaceConfigRoot(
-        String(args[0]?.workspacePath ?? "").trim(),
-      );
+    case "workspaceOpenrindDesktopWrite":
       return writeWorkspaceOpenrindDesktopConfig(
-        workspacePath,
+        String(args[0]?.workspacePath ?? "").trim(),
         args[0]?.config ?? defaultWorkspaceOpenrindDesktopConfig(""),
       );
-    }
     case "workspaceExportConfig": {
       const input = args[0] ?? {};
       const workspaceId = String(input.workspaceId ?? "").trim();
@@ -2045,11 +2048,125 @@ async function handleDesktopInvoke(event, command, ...args) {
     case "openshellDoctor":
       return openshellDoctor();
     case "openshellListSandboxes":
-      return openrindShell.listSandboxes();
+      return openshellClient.listSandboxes();
     case "openshellGatewayStatus":
-      return getFuseRuntimeStatus();
-    case "openshellGatewayRestart":
-      return restartFuseRuntime();
+      return openshellClient.getGatewayStatus();
+    case "openshellGatewayRestart": {
+      // The gateway lifecycle has rotated across releases — see
+      // installer.mjs:bringUpGateway for the full story. Order of attempts:
+      //   1. Legacy `openshell gateway start [--recreate|--detach]`.
+      //   2. systemd user service restart (0.0.37+, the current shape).
+      //   3. Direct `docker restart` of an openshell-cluster* container
+      //      (recovery path for hand-rolled deployments).
+      // Each attempt is logged with its exit code so the final error
+      // message tells the user exactly what was tried and what each
+      // path reported.
+      const cliInfo = await openshellCli.getCliInfo();
+      const attempts = [];
+      const tryWsl = async (label, args, opts = {}) => {
+        const r = await wslRun(
+          [
+            "-d",
+            OPENSHELL_DISTRO_NAME,
+            ...(opts.user ? ["--user", opts.user] : []),
+            "--",
+            ...args,
+          ],
+          { timeout: opts.timeout ?? 60_000 },
+        );
+        attempts.push({ label, r });
+        return r.exitCode === 0;
+      };
+
+      // Path 1 — legacy gateway start verb (will silently no-op on 0.0.37+).
+      if (await openshellCli.hasSubcommand("gateway", "start")) {
+        if (
+          await tryWsl("openshell gateway start --recreate", [
+            "openshell",
+            "gateway",
+            "start",
+            "--recreate",
+          ])
+        )
+          return { ok: true, recoveredVia: "gateway start --recreate" };
+        if (
+          await tryWsl("openshell gateway start --detach", [
+            "openshell",
+            "gateway",
+            "start",
+            "--detach",
+          ])
+        )
+          return { ok: true, recoveredVia: "gateway start --detach" };
+        if (
+          await tryWsl("openshell gateway start", [
+            "openshell",
+            "gateway",
+            "start",
+          ])
+        )
+          return { ok: true, recoveredVia: "gateway start" };
+      }
+
+      // Path 2 — systemd user service (the current shape per install.sh).
+      if (
+        await tryWsl(
+          "systemctl --user restart openshell-gateway",
+          ["systemctl", "--user", "restart", "openshell-gateway"],
+          { user: "banker", timeout: 60_000 },
+        )
+      ) {
+        return {
+          ok: true,
+          recoveredVia: "systemctl --user restart openshell-gateway",
+        };
+      }
+
+      // Path 3 — docker fallback for hand-rolled cluster containers.
+      const list = await wslRun(
+        [
+          "-d",
+          OPENSHELL_DISTRO_NAME,
+          "--",
+          "bash",
+          "-c",
+          "docker ps -a --filter 'name=openshell' --format '{{.Names}}'",
+        ],
+        { timeout: 15_000 },
+      ).catch((err) => ({
+        exitCode: -1,
+        stdout: "",
+        stderr: err?.message ?? String(err),
+      }));
+
+      const names = list.stdout
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (names.length === 1) {
+        if (
+          await tryWsl(`docker restart ${names[0]}`, [
+            "docker",
+            "restart",
+            names[0],
+          ])
+        ) {
+          return { ok: true, recoveredVia: `docker restart ${names[0]}` };
+        }
+      }
+
+      const detail = attempts
+        .map(
+          ({ label, r }) =>
+            `${label} → exit ${r.exitCode}: ${(r.stderr || r.stdout || "").trim().slice(0, 200) || "(no output)"}`,
+        )
+        .join(" | ");
+      throw new Error(
+        `Could not restart the OpenShell gateway. CLI ${cliInfo.version ?? "(unknown)"}. ` +
+          `Tried: ${detail || "(no attempts)"}. ` +
+          `If this persists, open Settings → Sandbox → Reset distro.`,
+      );
+    }
     case "openshellListPolicies": {
       // Lists the bundled policy YAML files. Returns just filenames for
       // now; the UI doesn't need richer metadata yet, and the YAML
@@ -2194,7 +2311,7 @@ async function handleDesktopInvoke(event, command, ...args) {
       if (!response.ok) {
         const errBody = await response.json().catch(() => ({}));
         const errorMessage = errBody?.error || errBody?.message || `Failed to fetch stats: ${response.status} ${response.statusText}`;
-        throw new Error(`[HTTP ${response.status}] ${errorMessage}`);
+        throw new Error(errorMessage);
       }
       return await response.json();
     }
@@ -2218,12 +2335,12 @@ async function handleDesktopInvoke(event, command, ...args) {
       }
 
       const data = await response.json();
-      
+
       // Compare with the currently set API key to see if we should overwrite/replace it
       const currentKey = await openrindCredentials.getCredential("openrindGatewayApiKey");
-      
+
       const isNewAccount = !currentKey || (data.apiKey && data.apiKey !== currentKey);
-      
+
       if (isNewAccount && data.apiKey) {
         // Save the new API key to the keystore
         await openrindCredentials.setCredential("openrindGatewayApiKey", data.apiKey);
@@ -2252,9 +2369,10 @@ async function handleDesktopInvoke(event, command, ...args) {
       return openrindCredentials.getCredentialStatus();
     }
     case "voiceTranscribe": {
-      // Speech-to-text for the composer and terminal mic. The renderer captures
-      // audio and posts the raw bytes here; the ElevenLabs API key stays in the
-      // main process (never shipped to the renderer), which also avoids CORS.
+      // Cloud speech-to-text for the composer/terminal mic when the voice
+      // engine is set to ElevenLabs. The renderer captures audio and posts the
+      // raw bytes here; the API key stays in the main process (never shipped to
+      // the renderer) and this also sidesteps browser CORS to ElevenLabs.
       const input = args[0] ?? {};
       const audio = input.audio;
       const mimeType =
@@ -2266,7 +2384,7 @@ async function handleDesktopInvoke(event, command, ...args) {
         await openrindCredentials.getCredential("elevenLabsApiKey");
       if (!apiKey) {
         throw new Error(
-          "ElevenLabs API key not configured. Add it in Settings → Environment.",
+          "ElevenLabs API key not configured. Add it in Settings → Sandbox.",
         );
       }
       const bytes = audio instanceof Uint8Array ? audio : new Uint8Array(audio);
@@ -2328,7 +2446,6 @@ async function handleDesktopInvoke(event, command, ...args) {
       });
       const result = await openrindShell.createOpenrindShellSandbox({
         name: sandboxName,
-        workspaceId,
         profile,
         onProgress: (evt) =>
           emitOpenrindShellSessionProgress({
@@ -2337,7 +2454,6 @@ async function handleDesktopInvoke(event, command, ...args) {
             message: evt.message,
           }),
       });
-      await writeOpenrindShellSessionMarker(sandboxName, profile, null);
       emitOpenrindShellSessionProgress({
         sandboxName,
         phase: "launching-terminal",
@@ -2373,13 +2489,16 @@ async function handleDesktopInvoke(event, command, ...args) {
     case "openrindListSandboxes": {
       // Returns the subset of `openshell sandbox list` whose names start with
       // the openrind-shell- prefix — the sandboxes Openrind Desktop created. Uses the text
-      // Uses the patched CLI and the explicit paired FUSE gateway endpoint.
+      // parser in openrind-shell.mjs because CLI 0.0.45 rejects `sandbox list --json`,
+      // which left openshellClient.listSandboxes() (and this handler) empty.
       // Failures PROPAGATE to the renderer so a cold gateway at boot reads as
       // "still loading, retry" rather than "no sandboxes exist".
       const list = await openrindShell.listSandboxes();
       return Array.isArray(list)
         ? list.filter(
-            (s) => typeof s?.name === "string" && s.name.startsWith("or-"),
+            (s) =>
+              typeof s?.name === "string" &&
+              (s.name.startsWith("openrind-shell-") || s.name.startsWith("or-")),
           )
         : [];
     }
@@ -2408,10 +2527,12 @@ async function handleDesktopInvoke(event, command, ...args) {
       openrindPty.closeSessionsForSandbox(name);
       openrindFreshOpenChains.delete(name);
       openrindMarkerPending.delete(name);
-      const r = await openrindShell.deleteOpenrindShellSandbox(name);
-      if (r.exitCode !== 0) {
-        throw new Error(
-          `openshell sandbox delete failed: ${(r.stderr || r.stdout).trim()}`,
+      try {
+        await openrindShell.deleteOpenrindShellSandbox(name);
+      } catch (error) {
+        console.warn(
+          "[openrindDeleteSandbox] OpenShell delete reported an error:",
+          error?.message || String(error),
         );
       }
       emitOpenrindShellSessionProgress({
@@ -2433,11 +2554,11 @@ async function handleDesktopInvoke(event, command, ...args) {
       return Number(os.release().split(".")[2]) || 0;
     }
     case "openrindPtyOpen": {
-      // Renderer xterm.js requests a PTY to an existing sandbox. We spawn
-      // `wsl -d openrind-desktop-openshell -- bash -c 'exec openshell sandbox
-      // connect <name>'` over PLAIN PIPES (no ConPTY); the container-side
-      // openrind-pty-bridge.py owns the real PTY the agent renders to, and we
-      // forward its raw bytes via the openrind-shell:pty-data event channel.
+      // Renderer xterm.js requests a PTY to an existing sandbox. We open the
+      // README-defined `openshell sandbox connect` path over PLAIN PIPES (no
+      // ConPTY); its marker-aware login hook starts openrind-pty-bridge.py,
+      // which owns the real Linux PTY the agent renders to. We forward its raw
+      // bytes through the openrind-shell:pty-data event channel.
       const input = args[0] ?? {};
       const sandboxName = String(input.sandboxName ?? "").trim();
       if (!sandboxName) throw new Error("sandboxName is required");
@@ -2448,8 +2569,11 @@ async function handleDesktopInvoke(event, command, ...args) {
       const agentSessionId = String(input.sessionId ?? "").trim() || null;
       const profile = String(input.profile ?? "").trim();
 
-      // Build only non-secret terminal hints. Anthropic authentication is
-      // gateway-managed and was attached during sandbox creation.
+      // Read credentials from safeStorage and forward them into the sandbox
+      // via WSLENV. This is essential so the `openrind-shell` entrypoint can
+      // auto-configure Claude Code's Anthropic provider on first run without
+      // showing an interactive "enter API key" prompt that the user can't
+      // see or respond to (especially when the terminal is still sizing up).
       const extraEnv = await buildOpenrindShellPtyEnv(cols, rows);
 
       // Adopt-or-open via the per-sandbox serial chain: fresh connects bind
@@ -2463,20 +2587,7 @@ async function handleDesktopInvoke(event, command, ...args) {
         agentSessionId,
         profile,
       });
-      // Two-phase handoff, including first launch. The bridge can paint before
-      // invokeDesktop resolves; emitting then would race the renderer setting
-      // sessionIdRef and silently drop Claude's first screen. Pause the pipe,
-      // return everything already buffered, then let openrindPtyAttach install
-      // handlers and resume atomically after the replay.
-      openrindPty.pauseSession(result.id);
-      const opened = openrindPty.listSessions().find((item) => item.id === result.id);
-      return {
-        ...result,
-        buffered: openrindPty.getBuffer(result.id),
-        cols: opened?.cols ?? cols,
-        rows: opened?.rows ?? rows,
-        exited: Boolean(opened?.exited),
-      };
+      return result;
     }
     case "openrindPtyAttachOrOpen": {
       // Lossless re-attach. If a PTY for this sandbox is still alive in the
@@ -2515,7 +2626,6 @@ async function handleDesktopInvoke(event, command, ...args) {
         // and strands mangled fragments. After phase 2 the renderer fits to
         // the real pane size; that resize frame is what makes the agent
         // repaint a full clean frame at the new geometry.
-        if (!existing.exitInfo) openrindPty.pauseSession(existing.id);
         return {
           id: existing.id,
           buffered: openrindPty.getBuffer(existing.id),
@@ -2535,16 +2645,7 @@ async function handleDesktopInvoke(event, command, ...args) {
         agentSessionId,
         profile,
       });
-      openrindPty.pauseSession(result.id);
-      const opened = openrindPty.listSessions().find((item) => item.id === result.id);
-      return {
-        id: result.id,
-        buffered: openrindPty.getBuffer(result.id),
-        cols: opened?.cols ?? cols,
-        rows: opened?.rows ?? rows,
-        reused: false,
-        exited: Boolean(opened?.exited),
-      };
+      return { id: result.id, buffered: "", reused: false, exited: false };
     }
     case "openrindPtyAttach": {
       // Phase 2 of lossless re-attach: the renderer has already set
@@ -2552,10 +2653,14 @@ async function handleDesktopInvoke(event, command, ...args) {
       // live PTY output stream so no events are dropped.
       const id = String(args[0] ?? "").trim();
       if (!id) throw new Error("sessionId is required");
-      return openrindPty.attachHandlers(id, {
-        onData: (data) => emitOpenrindShellPtyData(id, data),
-        onExit: (exitCode, signal) => emitOpenrindShellPtyExit(id, exitCode, signal),
-      });
+      return openrindPty.attachHandlers(
+        id,
+        {
+          onData: (data) => emitOpenrindShellPtyData(id, data),
+          onExit: (exitCode, signal) => emitOpenrindShellPtyExit(id, exitCode, signal),
+        },
+        { replayBuffered: Boolean(args[1]?.replayBuffered) },
+      );
     }
     case "openrindPtyDetach": {
       // Renderer is unmounting on navigation — keep the wsl child + output
@@ -2575,11 +2680,40 @@ async function handleDesktopInvoke(event, command, ...args) {
         throw new Error("Invalid filename");
       }
 
-      return openrindShell.uploadWorkspaceFile(
-        sandboxName,
-        filename,
-        base64Data,
-      );
+      // We upload to /home/agent/inbox so that the sync daemon picks it up and
+      // it persists in the workspace.
+      const destDir = `/home/agent/inbox`;
+      const destPath = `${destDir}/${filename}`;
+
+      // We use a multi-step bash command to safely construct the file.
+      // 1. Write the raw base64 data to a text file using `cat`
+      // 2. Decode the text file into the binary file
+      // 3. Ensure destination dir exists in the sandbox
+      // 4. Run openshell sandbox upload
+      // 5. Cleanup
+      const tmpTxt = `/tmp/openrind_upload_${Date.now()}_tmp.txt`;
+      const tmpBin = `/tmp/openrind_upload_${Date.now()}_${filename.replace(/[^a-zA-Z0-9.-]/g, "_")}`;
+
+      const bashCmd = [
+        `trap 'rm -f ${openrindShell.shellQuote(tmpTxt)} ${openrindShell.shellQuote(tmpBin)}' EXIT`,
+        "mkdir -p /tmp",
+        `cat > ${openrindShell.shellQuote(tmpTxt)}`,
+        `base64 -d < ${openrindShell.shellQuote(tmpTxt)} > ${openrindShell.shellQuote(tmpBin)}`,
+        `openshell sandbox exec --name ${openrindShell.shellQuote(sandboxName)} -- bash -c "mkdir -p ${openrindShell.shellQuote(destDir)}"`,
+        `openshell sandbox upload ${openrindShell.shellQuote(sandboxName)} ${openrindShell.shellQuote(tmpBin)} ${openrindShell.shellQuote(destPath)}`
+      ].join(" && ");
+
+      const result = await wslRun([
+        "-d", OPENSHELL_DISTRO_NAME,
+        "--",
+        "bash", "-c", bashCmd
+      ], {
+        stdin: base64Data
+      });
+      if (result.exitCode !== 0) {
+        throw new Error(`openshell sandbox upload failed with exit code ${result.exitCode}: ${result.stderr || result.stdout}`);
+      }
+      return true;
     }
     case "openrindShellDeleteFile": {
       const sandboxName = String(args[0] ?? "").trim();
@@ -2590,7 +2724,19 @@ async function handleDesktopInvoke(event, command, ...args) {
       if (/[/\\]/.test(filename) || filename.includes("..")) {
         throw new Error("Invalid filename");
       }
-      return openrindShell.deleteWorkspaceFile(sandboxName, filename);
+      const destPath = `/home/agent/inbox/${filename}`;
+      const bashCmd = `rm -f ${openrindShell.shellQuote(destPath)}`;
+
+      const result = await wslRun([
+        "-d", OPENSHELL_DISTRO_NAME,
+        "--",
+        "openshell", "sandbox", "exec", "--name", sandboxName,
+        "--", "bash", "-c", bashCmd
+      ]);
+      if (result.exitCode !== 0) {
+        throw new Error(`openshell exec failed with exit code ${result.exitCode}`);
+      }
+      return true;
     }
     case "openrindPtyWrite": {
       const input = args[0] ?? {};
@@ -2665,7 +2811,6 @@ async function handleDesktopInvoke(event, command, ...args) {
       });
       const result = await openrindShell.createOpenrindShellSandbox({
         name: sandboxName,
-        workspaceId,
         profile,
         onProgress: (evt) =>
           emitOpenrindShellSessionProgress({
@@ -2690,11 +2835,6 @@ async function handleDesktopInvoke(event, command, ...args) {
       const sandboxName = String(args[0] ?? "").trim();
       if (!sandboxName) throw new Error("sandboxName is required");
       try {
-        await writeOpenrindShellSessionMarker(
-          sandboxName,
-          "openrind-shell-claude",
-          null,
-        );
         const terminal = await launchExternalTerminalToSandbox(sandboxName);
         return terminal;
       } catch (err) {
@@ -2755,48 +2895,6 @@ async function handleDesktopInvoke(event, command, ...args) {
       throw new Error(
         `Electron desktop bridge method is not implemented yet: ${command}`,
       );
-  }
-}
-
-const CLAUDE_LAUNCH_COMMANDS = new Set([
-  "openrindStartSession",
-  "openrindEnsureSandbox",
-  "openrindPtyOpen",
-  "openrindPtyAttachOrOpen",
-  "openrindPtyAttach",
-  "openrindPopOutTerminal",
-]);
-
-function claudeLaunchContext(args) {
-  const input = args[0];
-  if (input && typeof input === "object" && !Array.isArray(input)) {
-    return {
-      sandboxName: input.sandboxName,
-      workspaceId: input.workspaceId,
-      profile: input.profile,
-      sessionId: input.sessionId,
-    };
-  }
-  return { sandboxName: typeof input === "string" ? input : "" };
-}
-
-async function handleDesktopInvokeWithLaunchLogging(event, command, ...args) {
-  try {
-    return await handleDesktopInvoke(event, command, ...args);
-  } catch (error) {
-    if (CLAUDE_LAUNCH_COMMANDS.has(command)) {
-      try {
-        await appendClaudeLaunchError({
-          logPath: CLAUDE_LAUNCH_ERROR_LOG,
-          command,
-          context: claudeLaunchContext(args),
-          error,
-        });
-      } catch (logError) {
-        console.error("Could not append the internal Claude launch error log:", logError);
-      }
-    }
-    throw error;
   }
 }
 
@@ -3043,34 +3141,7 @@ async function createMainWindow() {
   return mainWindow;
 }
 
-ipcMain.handle("openrind-desktop:desktop", handleDesktopInvokeWithLaunchLogging);
-ipcMain.handle(
-  "openrind-desktop:workspace-config:add-authorized-root",
-  (event, input) =>
-    handleDesktopInvokeWithLaunchLogging(
-      event,
-      "workspaceAddAuthorizedRoot",
-      input,
-    ),
-);
-ipcMain.handle(
-  "openrind-desktop:workspace-config:read",
-  (event, input) =>
-    handleDesktopInvokeWithLaunchLogging(
-      event,
-      "workspaceOpenrindDesktopRead",
-      input,
-    ),
-);
-ipcMain.handle(
-  "openrind-desktop:workspace-config:write",
-  (event, input) =>
-    handleDesktopInvokeWithLaunchLogging(
-      event,
-      "workspaceOpenrindDesktopWrite",
-      input,
-    ),
-);
+ipcMain.handle("openrind-desktop:desktop", handleDesktopInvoke);
 ipcMain.handle("openrind-desktop:shell:openExternal", async (_event, url) => {
   await openExternalSafe(url);
 });

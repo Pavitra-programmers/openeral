@@ -18,9 +18,6 @@ import {
 } from "./sandbox-status";
 import { readSandboxProfile, sandboxDisplayName, writeSandboxDisplayName } from "./sandbox-prefs";
 import type { SandboxProfile } from "../../../../app/lib/desktop";
-import { deriveSandboxName } from "../sandbox-name";
-
-export { deriveSandboxName } from "../sandbox-name";
 
 type ElectronBridge = NonNullable<Window["__OPENRIND_DESKTOP_ELECTRON__"]>;
 
@@ -58,7 +55,16 @@ export type SandboxRowsState = {
 };
 
 /** Only Openrind Shell sandboxes belong in this list. */
-const NAME_PREFIX = "or-";
+const NAME_PREFIX = "openrind-shell-";
+
+export function deriveSandboxName(workspaceId: string): string {
+  const trimmed = workspaceId
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 50);
+  return trimmed ? `openrind-shell-${trimmed}` : "";
+}
 
 export function useSandboxRows(options?: {
   onDeleted?: (name: string) => void;
@@ -89,7 +95,9 @@ export function useSandboxRows(options?: {
         if (Array.isArray(list)) {
           setRaw(
             list.filter(
-              (row) => typeof row?.name === "string" && row.name.startsWith(NAME_PREFIX),
+              (row) =>
+                typeof row?.name === "string" &&
+                (row.name.startsWith(NAME_PREFIX) || row.name.startsWith("or-")),
             ),
           );
         }
