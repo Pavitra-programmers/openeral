@@ -88,10 +88,17 @@ function storedPresign() {
 }
 
 async function createPresign() {
-  const openrindKey = process.env.OPENRIND_GATEWAY_API_KEY;
+  let openrindKey = process.env.OPENRIND_GATEWAY_API_KEY;
+  if (!openrindKey) {
+    try {
+      openrindKey = readFileSync(join(home, '.openrind-shell', 'gateway-api-key'), 'utf8').trim();
+    } catch {}
+  }
   const legacyKey = process.env.STRINGCOST_API_KEY;
   const gatewayKey = openrindKey || legacyKey;
-  if (!gatewayKey || !process.env.ANTHROPIC_API_KEY) return '';
+  const clientKey = process.env.ANTHROPIC_API_KEY || process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN;
+  if (!gatewayKey || !clientKey) return '';
+  const isOpenRouter = !!(process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30_000);
   try {
@@ -104,9 +111,9 @@ async function createPresign() {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        provider: 'anthropic',
-        client_api_key: process.env.ANTHROPIC_API_KEY,
-        path: ['/v1/messages'],
+        provider: isOpenRouter ? 'openrouter' : 'anthropic',
+        client_api_key: clientKey,
+        path: isOpenRouter ? ['/v1/messages', '/v1/chat/completions', '/v1/chat/completions'] : ['/v1/messages'],
         expires_in: -1,
         max_uses: -1,
         cost_limit: 10_000_000,

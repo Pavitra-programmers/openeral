@@ -85,7 +85,7 @@ export async function createSandbox(opts) {
   }
   args.push("--", ...command);
 
-  const child = wslSpawn(args);
+  const child = wslSpawn(args, { user: "banker" });
   // Close stdin immediately: this command sends no input, and the openshell CLI
   // waits for stdin EOF before producing any output. Leaving the pipe open (as
   // wslSpawn does by default, unlike wslRun) means the readiness line below
@@ -173,7 +173,7 @@ export async function deleteSandbox(name) {
   assertSafeSandboxName(name, "deleteSandbox");
   return wslRun(
     ["-d", DISTRO_NAME, "--", "openshell", "sandbox", "delete", name, "--force"],
-    { timeout: DEFAULT_CLI_TIMEOUT_MS },
+    { timeout: DEFAULT_CLI_TIMEOUT_MS, user: "banker" },
   );
 }
 
@@ -182,7 +182,7 @@ export async function getSandboxStatus(name) {
   assertSafeSandboxName(name, "getSandboxStatus");
   const r = await wslRun(
     ["-d", DISTRO_NAME, "--", "openshell", "sandbox", "status", name, "--json"],
-    { timeout: 10_000 },
+    { timeout: 10_000, user: "banker" },
   );
   if (r.exitCode !== 0) {
     throw new Error(
@@ -195,7 +195,7 @@ export async function getSandboxStatus(name) {
 export async function listSandboxes() {
   const r = await wslRun(
     ["-d", DISTRO_NAME, "--", "bash", "-c", "timeout 15 openshell sandbox list --json"],
-    { timeout: 20_000 },
+    { timeout: 20_000, user: "banker" },
   );
   if (r.exitCode === 124) {
     throw new Error(
@@ -212,7 +212,7 @@ export async function listSandboxes() {
 export async function getGatewayStatus() {
   const r = await wslRun(
     ["-d", DISTRO_NAME, "--", "openshell", "gateway", "status", "--json"],
-    { timeout: 10_000 },
+    { timeout: 10_000, user: "banker" },
   );
   if (r.exitCode !== 0) {
     throw new Error(

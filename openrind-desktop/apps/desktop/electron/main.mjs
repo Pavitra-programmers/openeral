@@ -634,14 +634,14 @@ async function buildOpenrindShellPtyEnv(cols, rows) {
   try {
     const anthropicApiKey =
       await openrindCredentials.getCredential("anthropicApiKey");
-    void anthropicApiKey;
+    if (anthropicApiKey) extraEnv.ANTHROPIC_API_KEY = anthropicApiKey;
   } catch {
     /* safeStorage may be unavailable in some test environments */
   }
   try {
     const openrindGatewayApiKey =
       await openrindCredentials.getCredential("openrindGatewayApiKey");
-    void openrindGatewayApiKey;
+    if (openrindGatewayApiKey) extraEnv.OPENRIND_GATEWAY_API_KEY = openrindGatewayApiKey;
   } catch {
     /* optional — OpenrindGateway tracking only */
   }
@@ -724,6 +724,18 @@ function openOpenrindShellPtySession(opts) {
         openrindMarkerPending.delete(sandboxName);
       }
       await writeOpenrindShellSessionMarker(sandboxName, profile, agentSessionId);
+      try {
+        const gatewayApiKey = await openrindCredentials.getCredential("openrindGatewayApiKey");
+        if (gatewayApiKey) {
+          await wslRun([
+            "-d", OPENSHELL_DISTRO_NAME, "--user", "banker", "--",
+            "openshell", "sandbox", "exec", "-n", sandboxName, "--",
+            "sh", "-c", `mkdir -p /sandbox/work/.openrind-shell && echo '${gatewayApiKey}' > /sandbox/work/.openrind-shell/gateway-api-key && chmod 600 /sandbox/work/.openrind-shell/gateway-api-key`
+          ], { timeout: 10_000 }).catch(() => undefined);
+        }
+      } catch (err) {
+        /* non-fatal */
+      }
       // Even a desktop launch without a session id writes the `auto` marker, so
       // every fresh connect must wait for this marker to be consumed.
       openrindMarkerPending.add(sandboxName);
@@ -2303,6 +2315,45 @@ async function handleDesktopInvoke(event, command, ...args) {
       }
       return await response.json();
     }
+    case "openrindGatewayExchangeToken": {
+      const { token } = args[0] ?? {};
+      if (!token) throw new Error("Token is required.");
+
+      const gatewayUrl = process.env.OPENRIND_GATEWAY_URL || "https://app.openrind.com";
+      const response = await fetch(`${gatewayUrl}/api/auth/key-exchange`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ token }),
+      });
+
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => ({}));
+        const errorMessage = errBody?.error || `HTTP ${response.status}: ${response.statusText}`;
+        throw new Error(`[HTTP ${response.status}] ${errorMessage}`);
+      }
+
+      const data = await response.json();
+
+      // Compare with the currently set API key to see if we should overwrite/replace it
+      const currentKey = await openrindCredentials.getCredential("openrindGatewayApiKey");
+
+      const isNewAccount = !currentKey || (data.apiKey && data.apiKey !== currentKey);
+
+      if (isNewAccount && data.apiKey) {
+        // Save the new API key to the keystore
+        await openrindCredentials.setCredential("openrindGatewayApiKey", data.apiKey);
+      }
+
+      return {
+        success: true,
+        apiKey: data.apiKey,
+        organizationId: data.organizationId,
+        status: data.status,
+        isNewAccount,
+      };
+    }
     case "openrindCredentialStatus":
       return openrindCredentials.getCredentialStatus();
     case "openrindSetCredential": {
@@ -2446,7 +2497,8 @@ async function handleDesktopInvoke(event, command, ...args) {
       return Array.isArray(list)
         ? list.filter(
             (s) =>
-              typeof s?.name === "string" && s.name.startsWith("openrind-shell-"),
+              typeof s?.name === "string" &&
+              (s.name.startsWith("openrind-shell-") || s.name.startsWith("or-")),
           )
         : [];
     }
@@ -2475,10 +2527,12 @@ async function handleDesktopInvoke(event, command, ...args) {
       openrindPty.closeSessionsForSandbox(name);
       openrindFreshOpenChains.delete(name);
       openrindMarkerPending.delete(name);
-      const r = await openrindShell.deleteOpenrindShellSandbox(name);
-      if (r.exitCode !== 0) {
-        throw new Error(
-          `openshell sandbox delete failed: ${(r.stderr || r.stdout).trim()}`,
+      try {
+        await openrindShell.deleteOpenrindShellSandbox(name);
+      } catch (error) {
+        console.warn(
+          "[openrindDeleteSandbox] OpenShell delete reported an error:",
+          error?.message || String(error),
         );
       }
       emitOpenrindShellSessionProgress({

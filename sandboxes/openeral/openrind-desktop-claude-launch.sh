@@ -41,4 +41,8 @@ if [ -f "$FAST_FIRST_LAUNCH_MARKER" ]; then
   export OPENRIND_SHELL_SKIP_CLAUDE_REPAIR=1
 fi
 unset FAST_FIRST_LAUNCH_MARKER
+
+# Run Openrind Gateway proxy configuration on session launch!
+node /opt/openrind-shell/configure-openrind-gateway.mjs || true
+
 exec /usr/local/bin/openrind-pty-bridge.py --framed /usr/local/bin/claude

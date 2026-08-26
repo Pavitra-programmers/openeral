@@ -76,7 +76,7 @@ function resolvedEndpoint() {
 }
 
 function activateRuntime(runtime, endpoint) {
-  process.env.OPENSHELL_BIN = toWslPath(runtime.cli);
+  process.env.OPENSHELL_BIN = "/opt/openrind-desktop/fuse-runtime/openshell";
   process.env.OPENSHELL_GATEWAY_ENDPOINT = endpoint;
 }
 
@@ -105,7 +105,7 @@ default_image = "openrind-shell-fuse:local"
 image_pull_policy = "Never"
 sandbox_namespace = "openrind-desktop-fuse"
 grpc_endpoint = "http://host.openshell.internal:18770"
-supervisor_bin = "${toWslPath(runtime.supervisor)}"
+	supervisor_bin = "/opt/openrind-desktop/fuse-runtime/openshell-sandbox"
 enable_fuse = true
 `;
 }

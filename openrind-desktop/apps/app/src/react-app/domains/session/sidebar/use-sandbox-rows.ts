@@ -95,7 +95,9 @@ export function useSandboxRows(options?: {
         if (Array.isArray(list)) {
           setRaw(
             list.filter(
-              (row) => typeof row?.name === "string" && row.name.startsWith(NAME_PREFIX),
+              (row) =>
+                typeof row?.name === "string" &&
+                (row.name.startsWith(NAME_PREFIX) || row.name.startsWith("or-")),
             ),
           );
         }

@@ -49,14 +49,12 @@ export type OpenShellInstallStatus = {
 export type OpenrindShellCredentialKey =
   | "databaseUrl"
   | "anthropicApiKey"
-  | "openrouterApiKey"
   | "openrindGatewayApiKey"
   | "elevenLabsApiKey";
 
 export type OpenrindShellCredentialStatus = {
   databaseUrl: "set" | "unset";
   anthropicApiKey: "set" | "unset";
-  openrouterApiKey: "set" | "unset";
   openrindGatewayApiKey: "set" | "unset";
   elevenLabsApiKey: "set" | "unset";
   encryptionAvailable: boolean;
@@ -64,8 +62,6 @@ export type OpenrindShellCredentialStatus = {
   databaseUrl_updatedAt?: number;
   anthropicApiKey_masked?: string;
   anthropicApiKey_updatedAt?: number;
-  openrouterApiKey_masked?: string;
-  openrouterApiKey_updatedAt?: number;
   openrindGatewayApiKey_masked?: string;
   openrindGatewayApiKey_updatedAt?: number;
   elevenLabsApiKey_masked?: string;
@@ -173,6 +169,15 @@ export function useOpenShellState(options: { active: boolean } = { active: false
       // Failed to refresh credential status, ignored silently in UI
     }
   }, []);
+
+  // Listen for external credential changes (e.g., from gateway billing deep link)
+  useEffect(() => {
+    const handler = () => {
+      void refreshCredentialStatus();
+    };
+    window.addEventListener("openrind-shell-credentials-changed", handler);
+    return () => window.removeEventListener("openrind-shell-credentials-changed", handler);
+  }, [refreshCredentialStatus]);
 
   // Subscribe to streaming install progress whenever the bridge exposes
   // the openshell namespace (post-Phase-5 builds). One subscription per

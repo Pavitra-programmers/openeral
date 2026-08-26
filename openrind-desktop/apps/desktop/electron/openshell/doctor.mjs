@@ -583,7 +583,7 @@ async function checkOpenShellGateway() {
   try {
     const json = await wslRun(
       ["-d", DISTRO_NAME, "--", "openshell", "status", "--json"],
-      { timeout: 10_000 },
+      { timeout: 10_000, user: "banker" },
     );
     if (json.exitCode === 0) {
       const parsed = parseJsonSafely(json.stdout);
@@ -619,7 +619,7 @@ async function checkOpenShellGateway() {
     if (flagDropped) {
       const plain = await wslRun(
         ["-d", DISTRO_NAME, "--", "openshell", "status"],
-        { timeout: 10_000 },
+        { timeout: 10_000, user: "banker" },
       );
       if (plain.exitCode === 0) {
         return classifyPlainStatus(plain.stdout);

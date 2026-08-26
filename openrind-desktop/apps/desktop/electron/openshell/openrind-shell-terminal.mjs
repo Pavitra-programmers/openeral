@@ -237,6 +237,12 @@ async function launchLinuxTerminal(sandboxName, windowTitle) {
  * portability without risking collisions from truncation.
  */
 export function deriveOpenrindShellSandboxName(workspaceId) {
+  if (/^or-[a-z0-9]{1,7}-[a-f0-9]{8}$/.test(workspaceId)) {
+    return workspaceId;
+  }
+  if (/^openrind-shell-[a-z0-9_-]+$/.test(workspaceId)) {
+    return workspaceId;
+  }
   const normalized = String(workspaceId ?? "")
     .toLowerCase()
     .replace(/[^a-z0-9_.-]+/g, "-")

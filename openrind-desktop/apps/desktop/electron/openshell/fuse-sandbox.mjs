@@ -156,7 +156,7 @@ async function ensureManagedProvider({ apiKey, envKey, name, type, profileYaml =
       `trap ${shellQuote(`rm -f ${profilePath}`)} EXIT`,
       `printf '%s' ${shellQuote(profileYaml)} > ${shellQuote(profilePath)}`,
       `if ! ${profileImport} >/dev/null 2>&1; then`,
-      `  if ! ${profileExport} | grep -Fq -- ${shellQuote(OPENROUTER_PROFILE_MARKER)}; then`,
+      `  if ! ${profileExport} | grep -F -- ${shellQuote(OPENROUTER_PROFILE_MARKER)} >/dev/null; then`,
       "    echo 'OpenRouter provider profile conflicts with the desktop profile.' >&2",
       "    exit 1",
       "  fi",
@@ -166,7 +166,7 @@ async function ensureManagedProvider({ apiKey, envKey, name, type, profileYaml =
 
   lines.push(
     `if ${providerGet} >/dev/null 2>&1; then`,
-    `  if ! ${providerGet} | grep -Fq -- ${shellQuote(type)}; then`,
+    `  if ! ${providerGet} | grep -F -- ${shellQuote(type)} >/dev/null; then`,
     "    echo 'Existing OpenShell provider has an unexpected type.' >&2",
     "    exit 1",
     "  fi",

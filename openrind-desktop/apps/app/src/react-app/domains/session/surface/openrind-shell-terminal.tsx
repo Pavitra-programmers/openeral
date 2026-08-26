@@ -286,6 +286,9 @@ type BootstrapProgressEvent = {
  * returning (i.e. before setSandboxName is ever called).
  */
 function deriveExpectedSandboxName(workspaceId: string): string {
+  if (/^or-[a-z0-9]{1,7}-[a-f0-9]{8}$/.test(workspaceId)) {
+    return workspaceId;
+  }
   const trimmed = workspaceId
     .toLowerCase()
     .replace(/[^a-z0-9_.-]+/g, "-")
@@ -1587,7 +1590,7 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
           <div ref={containerRef} className="h-full w-full" />
         </div>
         {errorMessage && phase === "error" ? (
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-dls-surface p-6">
+          <div className="absolute inset-0 z-10 flex items-start justify-center overflow-y-auto bg-dls-surface p-4 md:p-6 md:items-center">
             <BootstrapErrorCard
               message={errorMessage}
               profile={props.profile}
@@ -1607,7 +1610,7 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
           // (isFreshBootstrap === false) skips it so returning is instant.
           // "error" without an errorMessage (cleared by commitRename) falls
           // through here — don't show the spinner, just show the terminal.
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-dls-surface p-6">
+          <div className="absolute inset-0 z-10 flex items-start justify-center overflow-y-auto bg-dls-surface p-4 md:p-6 md:items-center">
             <BootstrapProgress
               phase={phase}
               bootstrapMessage={bootstrapMessage}
