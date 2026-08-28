@@ -32,7 +32,7 @@ endpoints:
     access: read-write
     enforcement: enforce
 # Openrind Shell keeps a small durability wrapper at /usr/local/bin/claude and
-# moves the native Claude Code executable to claude-real. Include both paths so
-# provider-managed ANTHROPIC_API_KEY injection follows the process that actually
-# opens the Anthropic connection.
-binaries: [/usr/bin/claude, /usr/local/bin/claude, /usr/local/bin/claude-real]
+# moves the native Claude Code executable to claude-real. OpenClaw maps this
+# credential into its dedicated openrind-gateway model provider through a
+# fixed-target native parent, so its generic Node interpreter is never authorized.
+binaries: [/usr/bin/claude, /usr/local/bin/claude, /usr/local/bin/claude-real, /usr/local/bin/openrind-openclaw-agent]
