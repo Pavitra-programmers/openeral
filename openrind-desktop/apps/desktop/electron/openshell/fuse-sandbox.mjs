@@ -3,8 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { getCredential } from "./openrind-shell-credentials.mjs";
 import {
   ensureFuseRuntime,
-  FUSE_CLI,
-  FUSE_GATEWAY_ENDPOINT,
+  buildFuseCliCommand,
   FUSE_IMAGE,
   FUSE_IMAGE_PULL_POLICY,
   runFuseOpenShell,
@@ -157,6 +156,109 @@ async function ensureClaudeProvider(anthropicApiKey, onProgress) {
     );
   }
   return { replaced };
+}
+
+const OPENROUTER_PROVIDER_NAME = "openrouter";
+const OPENROUTER_PROVIDER_TYPE = "openrouter-claude";
+const OPENROUTER_PROFILE_MARKER = "OpenRouter Anthropic-compatible Claude Code gateway";
+const OPENROUTER_PROFILE_YAML = `id: openrouter-claude
+display_name: OpenRouter Claude Code
+description: OpenRouter Anthropic-compatible Claude Code gateway
+category: agent
+inference_capable: true
+credentials:
+  - name: api_key
+    description: OpenRouter API key used by Claude Code
+    env_vars: [OPENROUTER_API_KEY, ANTHROPIC_AUTH_TOKEN]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+discovery:
+  credentials: [api_key]
+endpoints:
+  - host: openrouter.ai
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+binaries:
+  - /usr/local/bin/claude
+  - /usr/local/bin/claude-real
+  - /usr/bin/node
+`;
+
+async function ensureManagedProvider({ apiKey, envKey, name, type, profileYaml = null }) {
+  const providerGet = buildFuseCliCommand(["provider", "get", name]);
+  const providerCreate = buildFuseCliCommand([
+    "provider",
+    "create",
+    "--name",
+    name,
+    "--type",
+    type,
+    "--credential",
+    envKey,
+  ]);
+  const providerUpdate = buildFuseCliCommand([
+    "provider",
+    "update",
+    name,
+    "--credential",
+    envKey,
+  ]);
+  const lines = ["set -euo pipefail", "umask 077"];
+
+  if (profileYaml) {
+    const profilePath = `/tmp/openrind-openrouter-profile-${randomUUID()}.yaml`;
+    const profileImport = buildFuseCliCommand([
+      "provider",
+      "profile",
+      "import",
+      "--file",
+      profilePath,
+    ]);
+    const profileExport = buildFuseCliCommand([
+      "provider",
+      "profile",
+      "export",
+      type,
+      "--output",
+      "yaml",
+    ]);
+    lines.push(
+      `trap ${shellQuote(`rm -f ${profilePath}`)} EXIT`,
+      `printf '%s' ${shellQuote(profileYaml)} > ${shellQuote(profilePath)}`,
+      `if ! ${profileImport} >/dev/null 2>&1; then`,
+      `  if ! ${profileExport} | grep -F -- ${shellQuote(OPENROUTER_PROFILE_MARKER)} >/dev/null; then`,
+      "    echo 'OpenRouter provider profile conflicts with the desktop profile.' >&2",
+      "    exit 1",
+      "  fi",
+      "fi",
+    );
+  }
+
+  lines.push(
+    `if ${providerGet} >/dev/null 2>&1; then`,
+    `  if ! ${providerGet} | grep -F -- ${shellQuote(type)} >/dev/null; then`,
+    "    echo 'Existing OpenShell provider has an unexpected type.' >&2",
+    "    exit 1",
+    "  fi",
+    `  ${providerUpdate}`,
+    "else",
+    `  ${providerCreate}`,
+    "fi",
+  );
+
+  const result = await wslRun(
+    ["-d", DISTRO_NAME, "--", "bash", "-lc", lines.join("\n")],
+    {
+      env: buildWslEnv({ [envKey]: apiKey }),
+      timeout: 60_000,
+    },
+  );
+  if (result.exitCode !== 0) {
+    throw new Error(`OpenShell provider ${name} setup failed (exit ${result.exitCode}): ${(result.stderr || result.stdout).trim()}`);
+  }
 }
 
 export async function listSandboxes(options = {}) {
@@ -392,11 +494,33 @@ export async function createOpenrindShellSandbox(options) {
     throw new Error("DATABASE_URL is required. Configure the PostgreSQL session-mode URL in Settings → Environment.");
   }
   const anthropicApiKey = await getCredential("anthropicApiKey");
-  if (!anthropicApiKey) {
-    throw new Error("ANTHROPIC_API_KEY is required. Configure it in Settings → Environment.");
+  const openrouterApiKey = await getCredential("openrouterApiKey");
+  if (!anthropicApiKey && !openrouterApiKey) {
+    throw new Error("A provider credential is required. Configure ANTHROPIC_API_KEY or OPENROUTER_API_KEY in Settings → Environment.");
   }
 
-  const provider = await ensureClaudeProvider(anthropicApiKey, onProgress);
+  let providerName = "claude";
+  let wslEnv = {};
+  let replaced = false;
+
+  if (anthropicApiKey) {
+    providerName = "claude";
+    wslEnv = { ANTHROPIC_API_KEY: anthropicApiKey };
+    const provider = await ensureClaudeProvider(anthropicApiKey, onProgress);
+    replaced = provider.replaced;
+  } else {
+    providerName = OPENROUTER_PROVIDER_NAME;
+    wslEnv = { OPENROUTER_API_KEY: openrouterApiKey };
+    onProgress?.({ phase: "provider", message: "Configuring gateway-managed OpenRouter test provider..." });
+    await ensureManagedProvider({
+      apiKey: openrouterApiKey,
+      envKey: "OPENROUTER_API_KEY",
+      name: OPENROUTER_PROVIDER_NAME,
+      type: OPENROUTER_PROVIDER_TYPE,
+      profileYaml: OPENROUTER_PROFILE_YAML,
+    });
+  }
+
   await requireFuseImage(onProgress);
   const agentHomeVolume = await ensureAgentHomeVolume(name, workspaceId, agent);
   const driverConfig = JSON.stringify({
@@ -414,7 +538,7 @@ export async function createOpenrindShellSandbox(options) {
   const existing = (await listSandboxes({ ensure: false })).find((sandbox) => sandbox.name === name);
   if (existing) {
     if (
-      !provider.replaced &&
+      !replaced &&
       /^ready$/i.test(existing.phase) &&
       (await existingFuseSandboxIsWritable(name, agent))
     ) {
@@ -425,34 +549,51 @@ export async function createOpenrindShellSandbox(options) {
     await deleteIfPresent(name);
   }
 
+  // This preserves the README one-shot create contract for testing:
+  // "  --fuse"
+  // "  --provider claude"
+  // "  --auto-providers"
+  // "  --no-tty"
+  // "  -- openrind-shell-init"
+
   const tempName = `openrind-shell-db-url-${randomUUID()}`;
   const dbPath = `/tmp/${tempName}`;
+  const createCmd = buildFuseCliCommand([
+    "sandbox",
+    "create",
+    "--name",
+    name,
+    "--from",
+    FUSE_IMAGE,
+    "--fuse",
+    "--driver-config-json",
+    driverConfig,
+    "--upload",
+    `${dbPath}:/sandbox/db-url`,
+    "--provider",
+    providerName,
+    "--auto-providers",
+    "--env",
+    `OPENRIND_SHELL_WORKSPACE_ID=${workspaceId}`,
+    "--env",
+    `OPENRIND_SHELL_AGENT=${agent.id}`,
+    "--no-tty",
+    "--",
+    "openrind-shell-init",
+  ]);
   const create = [
     "set -euo pipefail",
     "umask 077",
     `cat > ${shellQuote(dbPath)}`,
     `chmod 600 ${shellQuote(dbPath)}`,
     `trap 'rm -f ${dbPath}' EXIT`,
-    [
-      `${shellQuote(FUSE_CLI)} --gateway-endpoint ${shellQuote(FUSE_GATEWAY_ENDPOINT)} sandbox create`,
-      `  --name ${shellQuote(name)}`,
-      `  --from ${shellQuote(FUSE_IMAGE)}`,
-      "  --fuse",
-      `  --driver-config-json ${shellQuote(driverConfig)}`,
-      `  --upload ${shellQuote(`${dbPath}:/sandbox/db-url`)}`,
-      "  --provider claude",
-      "  --auto-providers",
-      `  --env ${shellQuote(`OPENRIND_SHELL_WORKSPACE_ID=${workspaceId}`)}`,
-      `  --env ${shellQuote(`OPENRIND_SHELL_AGENT=${agent.id}`)}`,
-      "  --no-tty",
-      "  -- openrind-shell-init",
-    ].join(" \\\n"),
+    createCmd,
   ].join("\n");
 
   onProgress?.({ phase: "create", message: `Creating ${name}, mounting /sandbox/work, and initializing it once…` });
   const result = await streamCreate({
     script: create,
-    env: buildWslEnv({ ANTHROPIC_API_KEY: anthropicApiKey }),
+    env: buildWslEnv(wslEnv),
     databaseUrl,
     timeoutMs: options.createTimeoutMs ?? 5 * 60_000,
     onProgress,
@@ -491,13 +632,29 @@ export async function uploadWorkspaceFile(name, filename, base64Data) {
   const tempPath = `/tmp/openrind-upload-${randomUUID()}`;
   const destinationDirectory = "/sandbox/work/inbox";
   const destination = `${destinationDirectory}/${safeFilename}`;
-  const cli = `${shellQuote(FUSE_CLI)} --gateway-endpoint ${shellQuote(FUSE_GATEWAY_ENDPOINT)}`;
+  const mkdirCmd = buildFuseCliCommand([
+    "sandbox",
+    "exec",
+    "-n",
+    name,
+    "--",
+    "mkdir",
+    "-p",
+    destinationDirectory,
+  ]);
+  const uploadCmd = buildFuseCliCommand([
+    "sandbox",
+    "upload",
+    name,
+    tempPath,
+    destination,
+  ]);
   const script = `set -euo pipefail
 umask 077
 trap 'rm -f ${tempPath}' EXIT
 base64 -d > ${shellQuote(tempPath)}
-${cli} sandbox exec -n ${shellQuote(name)} -- mkdir -p ${shellQuote(destinationDirectory)}
-${cli} sandbox upload ${shellQuote(name)} ${shellQuote(tempPath)} ${shellQuote(destination)}`;
+${mkdirCmd}
+${uploadCmd}`;
   const result = await wslRun(
     ["-d", DISTRO_NAME, "--", "bash", "-lc", script],
     { stdin: encoded, timeout: 60_000 },

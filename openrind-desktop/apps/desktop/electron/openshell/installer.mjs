@@ -15,8 +15,12 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import {
+  getCliInfo,
+  hasSubcommand,
+  resetCache as resetCliCache,
+} from "./cli.mjs";
 import { openshellDoctor } from "./doctor.mjs";
-import { ensureFuseRuntime } from "./fuse-runtime.mjs";
 import { DISTRO_NAME, wslRun } from "./wsl.mjs";
 
 const DEFAULT_STATE_FILE = path.join(
@@ -28,6 +32,7 @@ const MIN_WIN11_BUILD = 22_000;
 const MIN_RAM_GB = 14; // 16 GB nominal with system reserve slack
 const WSL_INSTALL_TIMEOUT_MS = 15 * 60_000;
 const DOCKER_INSTALL_TIMEOUT_MS = 10 * 60_000;
+const OPENSHELL_INSTALL_TIMEOUT_MS = 10 * 60_000;
 const DISTRO_IMPORT_TIMEOUT_MS = 5 * 60_000;
 
 /**
@@ -299,26 +304,413 @@ async function phaseDocker({ onProgress, signal }) {
  * @param {PhaseContext} ctx
  */
 async function phaseOpenshell({ onProgress, signal }) {
-  if (signal?.aborted) throw new DOMException("Installation cancelled", "AbortError");
   onProgress?.({
     phase: "openshell",
-    message: "Configuring the paired OpenShell FUSE control plane...",
+    message: "Verifying OpenShell CLI...",
     percent: 0,
   });
-  await ensureFuseRuntime({
-    onProgress: (event) =>
-      onProgress?.({
-        phase: "openshell",
-        message: event.message,
-        percent: 70,
-      }),
-  });
-  if (signal?.aborted) throw new DOMException("Installation cancelled", "AbortError");
+
+  // The cached probe must reflect the post-import binary state, not
+  // anything we observed on a prior install attempt with a stale distro.
+  resetCliCache();
+
+  const info = await getCliInfo();
+  if (!info.available) {
+    throw new Error(
+      `OpenShell CLI is not callable in distro "${DISTRO_NAME}". ` +
+        `Last error: ${info.error || "(none)"}. ` +
+        `The shipped rootfs is supposed to include /usr/local/bin/openshell — ` +
+        `if it does not, the MSI may be corrupted; try Settings → Sandbox → Reset distro.`,
+    );
+  }
   onProgress?.({
     phase: "openshell",
-    message: "Patched OpenShell CLI, Docker FUSE driver, and paired gateway are ready.",
+    message: `OpenShell CLI ${info.version ?? "(version unknown)"} present.`,
+    percent: 30,
+  });
+
+  // ── init ───────────────────────────────────────────────────────────
+  // Older CLIs accept `init --bootstrap-policies`; some newer releases
+  // dropped the flag (or the whole command). We try the documented form
+  // first, fall back to bare `init`, and only fail if both `init` exists
+  // and exits non-zero.
+  if (await hasSubcommand(null, "init")) {
+    onProgress?.({
+      phase: "openshell",
+      message: "Running `openshell init`...",
+      percent: 50,
+    });
+    let initResult = await wslRun(
+      [
+        "-d",
+        DISTRO_NAME,
+        "--user",
+        "root",
+        "--",
+        "openshell",
+        "init",
+        "--bootstrap-policies",
+      ],
+      { timeout: OPENSHELL_INSTALL_TIMEOUT_MS, signal },
+    );
+    if (
+      initResult.exitCode !== 0 &&
+      /unknown|unrecognized/i.test(initResult.stderr || "")
+    ) {
+      // Flag dropped — try the bare verb.
+      initResult = await wslRun(
+        ["-d", DISTRO_NAME, "--user", "root", "--", "openshell", "init"],
+        { timeout: OPENSHELL_INSTALL_TIMEOUT_MS, signal },
+      );
+    }
+    if (initResult.exitCode !== 0) {
+      throw new Error(
+        `openshell init failed (exit ${initResult.exitCode}): ` +
+          `${(initResult.stderr || initResult.stdout).trim() || "no output"}`,
+      );
+    }
+  } else {
+    onProgress?.({
+      phase: "openshell",
+      message: "CLI does not expose `init`; assuming built-in defaults.",
+      percent: 50,
+    });
+  }
+
+  // ── gateway bring-up ───────────────────────────────────────────────
+  // The gateway moves around the most across CLI releases. Try the
+  // verbs in descending order of historical evidence, and surface a
+  // very explicit error (with version + raw help) if none works.
+  await bringUpGateway({ onProgress, signal });
+
+  onProgress?.({
+    phase: "openshell",
+    message: `OpenShell CLI ${info.version ?? ""} ready.`.trim(),
     percent: 100,
   });
+}
+
+/**
+ * Bring the OpenShell gateway to a registered, selected state. The
+ * mechanism has shifted twice across CLI versions:
+ *
+ *   - Pre-0.0.37 era: `openshell gateway start [--detach|--recreate]`
+ *     spawned and managed a Docker container directly.
+ *   - 0.0.37+: the gateway is shipped as a systemd user service
+ *     (`openshell-gateway`) that the install.sh leaves enabled-but-not-
+ *     running. The CLI's `gateway` subcommand was reduced to a
+ *     registration manager (`add / select / list / info`).
+ *
+ * Strategy here, in order:
+ *   1. If `gateway start` is still a documented verb on this CLI, try
+ *      it. Older releases inside the bundled rootfs may still expose it.
+ *   2. Otherwise, start the systemd user service and register the
+ *      well-known endpoint (https://127.0.0.1:17670, hard-coded by
+ *      install.sh as LOCAL_GATEWAY_PORT) via `gateway add` + `select`.
+ *   3. As a last resort, try to restart an `openshell-cluster*` container
+ *      directly through docker — recovery path only.
+ */
+const LOCAL_GATEWAY_URL = "https://127.0.0.1:17670";
+const LOCAL_GATEWAY_NAME = "openshell";
+
+async function bringUpGateway({ onProgress, signal }) {
+  onProgress?.({
+    phase: "openshell",
+    message: "Starting OpenShell gateway...",
+    percent: 70,
+  });
+  const info = await getCliInfo();
+
+  // Path 1 — legacy `gateway start`. We probe before calling so we
+  // don't waste time invoking a CLI that doesn't have the verb.
+  if (await hasSubcommand("gateway", "start")) {
+    let r = await wslRun(
+      ["-d", DISTRO_NAME, "--", "openshell", "gateway", "start", "--detach"],
+      { timeout: OPENSHELL_INSTALL_TIMEOUT_MS, signal },
+    );
+    if (r.exitCode !== 0 && /unknown|unrecognized/i.test(r.stderr || "")) {
+      r = await wslRun(
+        ["-d", DISTRO_NAME, "--", "openshell", "gateway", "start"],
+        { timeout: OPENSHELL_INSTALL_TIMEOUT_MS, signal },
+      );
+    }
+    if (r.exitCode === 0) return;
+    // Don't return yet — fall through to the systemd path so a partial
+    // legacy match doesn't trap us.
+  }
+
+  // Path 2 — systemd user service + gateway registration (0.0.37+).
+  if (await hasSubcommand("gateway", "add")) {
+    const systemd = await startSystemdGateway({ signal, onProgress });
+    if (systemd.ok) {
+      const registered = await registerLocalGateway({ signal, onProgress });
+      if (registered.ok) return;
+      // Service running, registration failed — that's still
+      // catastrophic for downstream sandbox-create, surface it.
+      throw new Error(
+        `OpenShell gateway service started but registration failed. ` +
+          `CLI ${info.version ?? "(unknown)"}: ${registered.error}`,
+      );
+    }
+    // Try docker fallback before giving up.
+    const docker = await tryDockerGatewayFallback({ signal, onProgress });
+    if (docker.ok) return;
+    throw new Error(
+      `Could not start the OpenShell gateway. ` +
+        `systemd path: ${systemd.error}. ` +
+        `${docker.error ? `Docker fallback: ${docker.error}.` : "No docker fallback candidate."}`,
+    );
+  }
+
+  // Path 3 — neither `gateway start` nor `gateway add` exists. Either
+  // the CLI is too old, too new, or broken. Docker fallback only.
+  const docker = await tryDockerGatewayFallback({ signal, onProgress });
+  if (docker.ok) return;
+  throw new Error(
+    `OpenShell CLI ${info.version ?? "(unknown)"} exposes neither \`gateway start\` ` +
+      `nor \`gateway add\`. Available subcommands: ` +
+      `${[...info.subcommands].join(", ") || "(none parsed)"}. ` +
+      `${docker.error ? `Docker fallback error: ${docker.error}.` : ""}`.trim(),
+  );
+}
+
+/**
+ * Start the openshell-gateway systemd user service inside the distro.
+ * Requires WSL's systemd integration to be active (we set systemd=true
+ * in /etc/wsl.conf in the rootfs Dockerfile). The `--user` invocation
+ * targets the `banker` account's user manager, which install.sh
+ * configured at package-install time.
+ */
+async function startSystemdGateway({ signal, onProgress }) {
+  onProgress?.({
+    phase: "openshell",
+    message: "Enabling openshell-gateway service...",
+    percent: 75,
+  });
+  // `systemctl --user` needs a user systemd manager. On a fresh distro
+  // we may need to nudge it; `loginctl enable-linger banker` keeps the
+  // user manager alive without a live session. Capture the result so we
+  // can surface it if the subsequent --user call dies — a silent failure
+  // here used to hide rootfs bugs (missing systemd-sysv/dbus) behind an
+  // opaque "Connection refused" downstream.
+  const linger = await wslRun(
+    [
+      "-d",
+      DISTRO_NAME,
+      "--user",
+      "root",
+      "--",
+      "loginctl",
+      "enable-linger",
+      "banker",
+    ],
+    { timeout: 15_000, signal },
+  ).catch((err) => ({
+    exitCode: -1,
+    stdout: "",
+    stderr: err?.message ?? String(err),
+  }));
+
+  const enable = await wslRun(
+    [
+      "-d",
+      DISTRO_NAME,
+      "--user",
+      "banker",
+      "--",
+      "systemctl",
+      "--user",
+      "enable",
+      "--now",
+      "openshell-gateway",
+    ],
+    { timeout: 60_000, signal },
+  );
+  if (enable.exitCode !== 0) {
+    const out = `${enable.stderr}\n${enable.stdout}`;
+    const lingerOut = `${linger.stderr}\n${linger.stdout}`;
+    // Specific failure mode: systemd never took over as PID 1 in the
+    // distro. Happens when the rootfs is missing systemd-sysv/dbus, or
+    // when /etc/wsl.conf was changed without a `wsl --shutdown`. No
+    // amount of retrying systemctl recovers from this — give the user
+    // an action that actually fixes it.
+    const systemdMissing =
+      /Failed to connect to bus|System has not been booted with systemd as init system|No medium found/i.test(
+        out,
+      ) ||
+      /Failed to connect to bus|System has not been booted with systemd as init system/i.test(
+        lingerOut,
+      );
+    if (systemdMissing) {
+      return {
+        ok: false,
+        error:
+          "systemd is not running as PID 1 inside the openrind-desktop-openshell distro, " +
+          "so the user-scoped gateway service can't start. Run `wsl --shutdown` " +
+          "from PowerShell and reopen the app. If it persists, reset the distro " +
+          "from Settings → Sandbox (the bundled rootfs may be missing systemd-sysv " +
+          "and dbus, which Settings → Reset distro will reinstall from the latest tarball). " +
+          `(loginctl: exit ${linger.exitCode}; systemctl: exit ${enable.exitCode}: ${out.trim().slice(0, 200)})`,
+      };
+    }
+    return {
+      ok: false,
+      error:
+        `systemctl --user enable --now openshell-gateway failed (exit ${enable.exitCode}): ` +
+        `${(enable.stderr || enable.stdout || "no output").trim()}` +
+        (linger.exitCode !== 0
+          ? ` (preceded by loginctl enable-linger banker exit ${linger.exitCode}: ${(linger.stderr || linger.stdout || "no output").trim().slice(0, 200)})`
+          : ""),
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * Register the local gateway endpoint with the CLI and mark it active.
+ * Both calls are idempotent: re-registering an existing name returns a
+ * non-zero "already exists" we treat as success, and `gateway select`
+ * is a no-op when the named gateway is already the active one.
+ */
+async function registerLocalGateway({ signal, onProgress }) {
+  onProgress?.({
+    phase: "openshell",
+    message: "Registering local gateway...",
+    percent: 85,
+  });
+  const add = await wslRun(
+    [
+      "-d",
+      DISTRO_NAME,
+      "--user",
+      "banker",
+      "--",
+      "openshell",
+      "gateway",
+      "add",
+      LOCAL_GATEWAY_URL,
+      "--local",
+      "--name",
+      LOCAL_GATEWAY_NAME,
+    ],
+    { timeout: 30_000, signal },
+  );
+  // "already exists" / "already registered" — treat as success.
+  const addOk =
+    add.exitCode === 0 ||
+    /already (exists|registered)/i.test(`${add.stderr}\n${add.stdout}`);
+  if (!addOk) {
+    return {
+      ok: false,
+      error: `openshell gateway add failed (exit ${add.exitCode}): ${(add.stderr || add.stdout || "").trim()}`,
+    };
+  }
+  const select = await wslRun(
+    [
+      "-d",
+      DISTRO_NAME,
+      "--user",
+      "banker",
+      "--",
+      "openshell",
+      "gateway",
+      "select",
+      LOCAL_GATEWAY_NAME,
+    ],
+    { timeout: 15_000, signal },
+  );
+  if (select.exitCode !== 0) {
+    return {
+      ok: false,
+      error: `openshell gateway select failed (exit ${select.exitCode}): ${(select.stderr || select.stdout || "").trim()}`,
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * Look for any pre-existing OpenShell gateway container inside the distro
+ * and start it. This is the recovery path the prior CLIs used to take
+ * implicitly — newer ones expect the user (or Docker) to keep the
+ * container running and only register it via `gateway add/select`. We
+ * never CREATE a container here because the correct image, ports, volume
+ * mounts, and TLS SANs are upstream-specific and we'd be guessing.
+ *
+ * Returns { ok: true } if exactly one candidate container exists and
+ * was started successfully, { ok: false, error } otherwise.
+ */
+async function tryDockerGatewayFallback({ signal, onProgress }) {
+  const list = await wslRun(
+    [
+      "-d",
+      DISTRO_NAME,
+      "--",
+      "bash",
+      "-c",
+      "docker ps -a --filter 'name=openshell' --format '{{.Names}}\\t{{.State}}'",
+    ],
+    { timeout: 15_000, signal },
+  ).catch((err) => ({
+    exitCode: -1,
+    stdout: "",
+    stderr: err?.message ?? String(err),
+  }));
+
+  if (list.exitCode !== 0) {
+    return {
+      ok: false,
+      error: `docker ps failed: ${(list.stderr || "").trim()}`,
+    };
+  }
+  const candidates = list.stdout
+    .split(/\r?\n/)
+    .map((row) => row.trim())
+    .filter(Boolean)
+    .map((row) => {
+      const [name, state] = row.split(/\s+/);
+      return { name, state };
+    });
+
+  if (candidates.length === 0) {
+    return { ok: false, error: null };
+  }
+  // Prefer a container that's already running — nothing to do but
+  // report success.
+  const running = candidates.find((c) => c.state === "running");
+  if (running) {
+    onProgress?.({
+      phase: "openshell",
+      message: `Gateway container ${running.name} already running.`,
+      percent: 90,
+    });
+    return { ok: true };
+  }
+  // Otherwise start the first one. If there are multiple stopped
+  // candidates we don't try to pick — return an error so the user can
+  // investigate rather than us guessing wrong.
+  if (candidates.length > 1) {
+    return {
+      ok: false,
+      error: `multiple gateway containers found (${candidates.map((c) => c.name).join(", ")}); pick one manually`,
+    };
+  }
+  const target = candidates[0];
+  onProgress?.({
+    phase: "openshell",
+    message: `Starting existing gateway container ${target.name}...`,
+    percent: 85,
+  });
+  const start = await wslRun(
+    ["-d", DISTRO_NAME, "--", "docker", "start", target.name],
+    { timeout: 60_000, signal },
+  );
+  if (start.exitCode !== 0) {
+    return {
+      ok: false,
+      error: `docker start ${target.name} failed: ${(start.stderr || start.stdout || "").trim()}`,
+    };
+  }
+  return { ok: true };
 }
 
 /** @param {PhaseContext} ctx */

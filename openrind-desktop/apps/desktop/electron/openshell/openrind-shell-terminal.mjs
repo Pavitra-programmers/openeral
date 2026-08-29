@@ -13,9 +13,11 @@
 //              first one found. Dev-only — banker laptops are Windows.
 
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import process from "node:process";
+import { ensureManagedFuseGateway } from "./fuse-gateway.mjs";
 
-import { FUSE_CLI, FUSE_GATEWAY_ENDPOINT } from "./fuse-runtime.mjs";
+import { buildFuseCliCommand, buildFuseWslEnv } from "./fuse-runtime.mjs";
 import { DISTRO_NAME } from "./wsl.mjs";
 
 const LINUX_TERMINAL_CANDIDATES = [
@@ -51,6 +53,7 @@ function detectLinuxTerminal() {
  */
 export async function launchExternalTerminalToSandbox(sandboxName, options = {}) {
   if (!sandboxName) throw new Error("launchExternalTerminalToSandbox: sandboxName is required");
+  await ensureManagedFuseGateway();
   // Self-defending validation: the name is interpolated into a `bash -c`
   // command line and (via the default window title) into a cmd.exe `start`
   // argv below. deriveOpenrindShellSandboxName only ever emits this alphabet.
@@ -119,13 +122,13 @@ function launchWindowsTerminal(sandboxName, windowTitle) {
     "--",
     "bash",
     "-c",
-    `COLS=$(stty size 2>/dev/null | awk '{print $2}') && ROWS=$(stty size 2>/dev/null | awk '{print $1}') && stty cols \${COLS:-80} rows \${ROWS:-24} -icanon -echo min 1 time 0 2>/dev/null && exec ${FUSE_CLI} --gateway-endpoint ${FUSE_GATEWAY_ENDPOINT} sandbox connect '${escapedName}'`,
+    `COLS=$(stty size 2>/dev/null | awk '{print $2}') && ROWS=$(stty size 2>/dev/null | awk '{print $1}') && stty cols \${COLS:-80} rows \${ROWS:-24} -icanon -echo min 1 time 0 2>/dev/null && exec ${buildFuseCliCommand(["sandbox", "connect", sandboxName])}`,
   ];
 
   const wtChild = spawn(
     "wt.exe",
     ["--title", windowTitle, "wsl.exe", ...wslArgs],
-    { detached: true, stdio: "ignore", windowsHide: false },
+    { detached: true, stdio: "ignore", windowsHide: false, env: buildFuseWslEnv() },
   );
   return new Promise((resolve, reject) => {
     wtChild.once("error", () => {
@@ -139,7 +142,7 @@ function launchWindowsTerminal(sandboxName, windowTitle) {
       const cmdChild = spawn(
         "cmd.exe",
         ["/C", "start", startTitle, "wsl.exe", ...wslArgs],
-        { detached: true, stdio: "ignore", windowsHide: false },
+        { detached: true, stdio: "ignore", windowsHide: false, env: buildFuseWslEnv() },
       );
       cmdChild.once("error", reject);
       cmdChild.once("spawn", () => {
@@ -184,7 +187,7 @@ async function launchLinuxTerminal(sandboxName, windowTitle) {
     "--",
     "bash",
     "-c",
-    `COLS=$(stty size 2>/dev/null | awk '{print $2}') && ROWS=$(stty size 2>/dev/null | awk '{print $1}') && stty cols \${COLS:-80} rows \${ROWS:-24} -icanon -echo min 1 time 0 2>/dev/null && exec ${FUSE_CLI} --gateway-endpoint ${FUSE_GATEWAY_ENDPOINT} sandbox connect '${escapedName}'`,
+    `COLS=$(stty size 2>/dev/null | awk '{print $2}') && ROWS=$(stty size 2>/dev/null | awk '{print $1}') && stty cols \${COLS:-80} rows \${ROWS:-24} -icanon -echo min 1 time 0 2>/dev/null && exec ${buildFuseCliCommand(["sandbox", "connect", sandboxName])}`,
   ];
   const candidates = detectLinuxTerminal();
   for (const cand of candidates) {
@@ -193,6 +196,7 @@ async function launchLinuxTerminal(sandboxName, windowTitle) {
       const child = spawn(cand.exe, args, {
         detached: true,
         stdio: "ignore",
+        env: buildFuseWslEnv(),
       });
       // Sync error from missing binary fires within a tick.
       const launched = await new Promise((resolve) => {
@@ -226,26 +230,27 @@ async function launchLinuxTerminal(sandboxName, windowTitle) {
 }
 
 /**
- * Sanitize a workspace id into a stable OpenShell sandbox name.
- * Sandbox name = workspace id is Openrind Shell's portability story; same
- * workspace from a different machine restores the same Postgres-backed
- * /sandbox/work. We just guard against punctuation OpenShell won't accept.
+ * Derive a compact, stable OpenShell sandbox identity. The gateway caps
+ * routable names at 19 characters, so the earlier descriptive
+ * `openrind-shell-<workspace>` form could never be created for normal IDs.
+ * Keep a recognizable slug plus a hash suffix to preserve cross-machine
+ * portability without risking collisions from truncation.
  */
 export function deriveOpenrindShellSandboxName(workspaceId) {
-  const normalized = String(workspaceId ?? "").trim().toLowerCase();
+  if (/^or-[a-z0-9]{1,7}-[a-f0-9]{8}$/.test(workspaceId)) {
+    return workspaceId;
+  }
+  if (/^openrind-shell-[a-z0-9_-]+$/.test(workspaceId)) {
+    return workspaceId;
+  }
+  const normalized = String(workspaceId ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/[_.]/g, "-");
   if (!normalized) {
     throw new Error("Cannot derive Openrind Shell sandbox name from empty workspace id.");
   }
-  if (/^or-[a-z0-9-]{1,16}$/.test(normalized) && normalized.length <= 19) {
-    return normalized;
-  }
-  const slug = normalized
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 8) || "workspace";
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < normalized.length; index += 1) {
-    hash = Math.imul(hash ^ normalized.charCodeAt(index), 0x01000193) >>> 0;
-  }
-  return `or-${slug}-${hash.toString(16).padStart(8, "0").slice(0, 7)}`;
+  const hash = createHash("sha256").update(normalized).digest("hex").slice(0, 8);
+  return `or-${normalized.slice(0, 7)}-${hash}`;
 }

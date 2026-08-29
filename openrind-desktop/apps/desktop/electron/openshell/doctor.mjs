@@ -6,11 +6,6 @@
 import { spawn } from "node:child_process";
 import os from "node:os";
 
-import {
-  FUSE_CLI,
-  FUSE_GATEWAY_ENDPOINT,
-  getFuseRuntimeStatus,
-} from "./fuse-runtime.mjs";
 import { DISTRO_NAME, distroExists, wslRun } from "./wsl.mjs";
 
 /**
@@ -335,7 +330,7 @@ async function checkDockerInDistro() {
 async function checkOpenShellCli() {
   try {
     const r = await wslRun(
-      ["-d", DISTRO_NAME, "--", FUSE_CLI, "version", "--json"],
+      ["-d", DISTRO_NAME, "--", "openshell", "version", "--json"],
       { timeout: 10_000 },
     );
     if (r.exitCode !== 0) {
@@ -344,7 +339,7 @@ async function checkOpenShellCli() {
       // missing — that lets the doctor distinguish "no binary" from
       // "binary present but CLI surface changed".
       const fallback = await wslRun(
-        ["-d", DISTRO_NAME, "--", FUSE_CLI, "--version"],
+        ["-d", DISTRO_NAME, "--", "openshell", "--version"],
         { timeout: 10_000 },
       ).catch(() => null);
       if (fallback && fallback.exitCode === 0) {
@@ -586,35 +581,85 @@ async function checkOrphans() {
 /** @returns {Promise<OpenShellComponent>} */
 async function checkOpenShellGateway() {
   try {
-    const status = await getFuseRuntimeStatus();
-    if (status.healthy && status.current) {
+    const json = await wslRun(
+      ["-d", DISTRO_NAME, "--", "openshell", "status", "--json"],
+      { timeout: 10_000, user: "banker" },
+    );
+    if (json.exitCode === 0) {
+      const parsed = parseJsonSafely(json.stdout);
+      if (parsed !== null) {
+        const gatewayState = parsed?.gateway?.state ?? parsed?.state ?? null;
+        if (gatewayState === "Ready" || gatewayState === "ok") {
+          return {
+            id: "openshell-gateway",
+            label: "OpenShell gateway",
+            state: "ok",
+            version: parsed?.version ?? null,
+            detail: null,
+            actionable: null,
+          };
+        }
+        return {
+          id: "openshell-gateway",
+          label: "OpenShell gateway",
+          state: "warn",
+          version: parsed?.version ?? null,
+          detail: `Gateway state: ${gatewayState ?? "unknown"}.`,
+          actionable: "Click Settings → Sandbox → Restart gateway.",
+        };
+      }
+      // JSON-mode succeeded but output wasn't JSON — treat the text as
+      // the v0.0.45+ plain-status format.
+      return classifyPlainStatus(json.stdout);
+    }
+    // --json rejected. Differentiate "flag dropped by CLI" from a real
+    // gateway failure: only the former should trigger the text fallback.
+    const errorBlob = `${json.stderr}\n${json.stdout}`;
+    const flagDropped = /unexpected argument|unknown|unrecognized/i.test(errorBlob);
+    if (flagDropped) {
+      const plain = await wslRun(
+        ["-d", DISTRO_NAME, "--", "openshell", "status"],
+        { timeout: 10_000, user: "banker" },
+      );
+      if (plain.exitCode === 0) {
+        return classifyPlainStatus(plain.stdout);
+      }
+      const detail =
+        (plain.stderr || plain.stdout || "").trim() ||
+        "openshell status failed.";
+      // Use "warn" not "missing": the CLI, distro, and Docker are all
+      // installed at this point — only the gateway *runtime* is down.
+      // "missing" would aggregate up to a "not installed yet" banner,
+      // hiding the Restart button users actually need.
       return {
         id: "openshell-gateway",
-        label: "OpenShell FUSE gateway",
-        state: "ok",
+        label: "OpenShell gateway",
+        state: "warn",
         version: null,
-        detail: FUSE_GATEWAY_ENDPOINT,
-        actionable: null,
+        detail,
+        actionable: "Click Settings → Sandbox → Restart gateway, or reset the distro if that fails.",
       };
     }
+    // Genuine non-zero from `status --json` (gateway down, no
+    // registration, etc). Same rationale: runtime down ≠ install missing.
+    const detail =
+      (json.stderr || json.stdout || "").trim() || "openshell status failed.";
     return {
       id: "openshell-gateway",
-      label: "OpenShell FUSE gateway",
+      label: "OpenShell gateway",
       state: "warn",
       version: null,
-      detail: status.healthy
-        ? "The gateway is reachable but its desktop FUSE control contract is outdated."
-        : `The paired gateway is not responding at ${FUSE_GATEWAY_ENDPOINT}.`,
-      actionable: "Click Settings → Sandbox → Restart gateway.",
+      detail,
+      actionable: "Click Settings → Sandbox → Restart gateway, or reset the distro if that fails.",
     };
   } catch (err) {
     return {
       id: "openshell-gateway",
-      label: "OpenShell FUSE gateway",
+      label: "OpenShell gateway",
       state: "unknown",
       version: null,
-      detail: `Could not query ${FUSE_GATEWAY_ENDPOINT}: ${err.message || err}`,
-      actionable: "Click Settings → Sandbox → Restart gateway.",
+      detail: `Could not query gateway: ${err.message || err}`,
+      actionable: null,
     };
   }
 }

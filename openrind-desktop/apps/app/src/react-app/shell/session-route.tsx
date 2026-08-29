@@ -944,6 +944,7 @@ export function SessionRoute() {
   const sandboxRows = useSandboxRows({
     onDeleted: (name) =>
       handleSetSelectedSandbox((current) => (current?.name === name ? null : current)),
+    workspaces,
   });
 
   // Selecting a sandbox anywhere reveals it in the sidebar. Without this the
