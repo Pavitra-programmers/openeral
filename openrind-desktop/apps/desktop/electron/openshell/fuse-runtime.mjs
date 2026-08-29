@@ -5,7 +5,27 @@
 // stock CLI which neither understands `--fuse` nor enforces the primary
 // runtime's mount lifecycle.
 
+import { existsSync } from "node:fs";
+import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
+
+import { ensureManagedFuseGateway } from "./fuse-gateway.mjs";
+import { DISTRO_NAME, wslRun } from "./wsl.mjs";
+
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const REPOSITORY_ROOT = path.resolve(MODULE_DIR, "../../../../../");
+const SOURCE_CHECKOUT = existsSync(path.join(REPOSITORY_ROOT, "Dockerfile.openrind-shell"));
+
+export const FUSE_IMAGE =
+  process.env.OPENRIND_DESKTOP_SANDBOX_IMAGE?.trim() ||
+  (SOURCE_CHECKOUT
+    ? "openrind-shell-fuse:local"
+    : "ghcr.io/openrind/openrind-shell/sandbox:fuse");
+
+export const FUSE_IMAGE_PULL_POLICY =
+  process.env.OPENRIND_DESKTOP_SANDBOX_PULL_POLICY?.trim() ||
+  (FUSE_IMAGE === "openrind-shell-fuse:local" ? "Never" : "IfNotPresent");
 
 export function shellQuote(value) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
@@ -72,6 +92,21 @@ export function buildFuseCliCommand(args, env = process.env) {
     shellQuote(gatewayEndpoint),
     ...args.map(shellQuote),
   ].join(" ");
+}
+
+export async function ensureFuseRuntime(options = {}) {
+  return ensureManagedFuseGateway(options);
+}
+
+export async function runFuseOpenShell(args, options = {}) {
+  if (options.ensure !== false) {
+    await ensureFuseRuntime({ onProgress: options.onProgress });
+  }
+  const { bin, gatewayEndpoint } = resolveFuseRuntimeConfig();
+  return wslRun(
+    ["-d", DISTRO_NAME, "--", bin, "--gateway-endpoint", gatewayEndpoint, ...args],
+    options,
+  );
 }
 
 export const __testing = {

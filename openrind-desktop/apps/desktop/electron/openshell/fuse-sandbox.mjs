@@ -549,28 +549,45 @@ export async function createOpenrindShellSandbox(options) {
     await deleteIfPresent(name);
   }
 
+  // This preserves the README one-shot create contract for testing:
+  // "  --fuse"
+  // "  --provider claude"
+  // "  --auto-providers"
+  // "  --no-tty"
+  // "  -- openrind-shell-init"
+
   const tempName = `openrind-shell-db-url-${randomUUID()}`;
   const dbPath = `/tmp/${tempName}`;
+  const createCmd = buildFuseCliCommand([
+    "sandbox",
+    "create",
+    "--name",
+    name,
+    "--from",
+    FUSE_IMAGE,
+    "--fuse",
+    "--driver-config-json",
+    driverConfig,
+    "--upload",
+    `${dbPath}:/sandbox/db-url`,
+    "--provider",
+    providerName,
+    "--auto-providers",
+    "--env",
+    `OPENRIND_SHELL_WORKSPACE_ID=${workspaceId}`,
+    "--env",
+    `OPENRIND_SHELL_AGENT=${agent.id}`,
+    "--no-tty",
+    "--",
+    "openrind-shell-init",
+  ]);
   const create = [
     "set -euo pipefail",
     "umask 077",
     `cat > ${shellQuote(dbPath)}`,
     `chmod 600 ${shellQuote(dbPath)}`,
     `trap 'rm -f ${dbPath}' EXIT`,
-    [
-      `${shellQuote(FUSE_CLI)} --gateway-endpoint ${shellQuote(FUSE_GATEWAY_ENDPOINT)} sandbox create`,
-      `  --name ${shellQuote(name)}`,
-      `  --from ${shellQuote(FUSE_IMAGE)}`,
-      "  --fuse",
-      `  --driver-config-json ${shellQuote(driverConfig)}`,
-      `  --upload ${shellQuote(`${dbPath}:/sandbox/db-url`)}`,
-      `  --provider ${shellQuote(providerName)}`,
-      "  --auto-providers",
-      `  --env ${shellQuote(`OPENRIND_SHELL_WORKSPACE_ID=${workspaceId}`)}`,
-      `  --env ${shellQuote(`OPENRIND_SHELL_AGENT=${agent.id}`)}`,
-      "  --no-tty",
-      "  -- openrind-shell-init",
-    ].join(" \\\n"),
+    createCmd,
   ].join("\n");
 
   onProgress?.({ phase: "create", message: `Creating ${name}, mounting /sandbox/work, and initializing it once…` });
@@ -615,13 +632,29 @@ export async function uploadWorkspaceFile(name, filename, base64Data) {
   const tempPath = `/tmp/openrind-upload-${randomUUID()}`;
   const destinationDirectory = "/sandbox/work/inbox";
   const destination = `${destinationDirectory}/${safeFilename}`;
-  const cli = `${shellQuote(FUSE_CLI)} --gateway-endpoint ${shellQuote(FUSE_GATEWAY_ENDPOINT)}`;
+  const mkdirCmd = buildFuseCliCommand([
+    "sandbox",
+    "exec",
+    "-n",
+    name,
+    "--",
+    "mkdir",
+    "-p",
+    destinationDirectory,
+  ]);
+  const uploadCmd = buildFuseCliCommand([
+    "sandbox",
+    "upload",
+    name,
+    tempPath,
+    destination,
+  ]);
   const script = `set -euo pipefail
 umask 077
 trap 'rm -f ${tempPath}' EXIT
 base64 -d > ${shellQuote(tempPath)}
-${cli} sandbox exec -n ${shellQuote(name)} -- mkdir -p ${shellQuote(destinationDirectory)}
-${cli} sandbox upload ${shellQuote(name)} ${shellQuote(tempPath)} ${shellQuote(destination)}`;
+${mkdirCmd}
+${uploadCmd}`;
   const result = await wslRun(
     ["-d", DISTRO_NAME, "--", "bash", "-lc", script],
     { stdin: encoded, timeout: 60_000 },

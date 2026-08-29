@@ -285,7 +285,6 @@ type BootstrapProgressEvent = {
   message: string;
   timestamp: number;
 };
-};
 
 /**
  * Mirrors deriveOpenrindShellSandboxName() in openrind-shell-terminal.mjs.
@@ -1611,20 +1610,6 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
                 }}
               />
             </>
-          ) : null}
-
-          {phase === "connected" ? (
-            <button
-              type="button"
-              className={TOOLBAR_BTN}
-              aria-label="Files"
-              onClick={() => setFilesModalOpen(true)}
-              onMouseDown={(e) => e.preventDefault()}
-              title="View uploaded files"
-            >
-              <FileText size={16} />
-              <span className="hidden lg:inline">Files{uploadedFiles.length > 0 ? ` (${uploadedFiles.length})` : ""}</span>
-            </button>
           ) : null}
         </div>
       </div>

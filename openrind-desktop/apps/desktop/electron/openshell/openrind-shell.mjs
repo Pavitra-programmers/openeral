@@ -17,7 +17,7 @@ import {
 import { DISTRO_NAME, wslRun } from "./wsl.mjs";
 
 export {
-  createPrimaryFuseSandbox as createOpenrindShellSandbox,
+  createOpenrindShellSandbox,
 } from "./fuse-sandbox.mjs";
 export {
   deletePrimaryFuseSandbox as deleteOpenrindShellSandbox,

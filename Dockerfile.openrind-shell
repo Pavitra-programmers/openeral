@@ -1,4 +1,4 @@
-# Openrind Shell primary sandbox: OpenShell-mounted PostgreSQL FUSE workspace.
+    # Openrind Shell primary sandbox: OpenShell-mounted PostgreSQL FUSE workspace.
 # Keep synchronized with sandboxes/openeral/Dockerfile. Dockerfile.openeral is
 # retained as a legacy entry point.
 
@@ -35,8 +35,6 @@ RUN cd /opt/openrind-shell && npm install && npm run build && npm prune --omit=d
     && chmod -R a+rX /opt/openrind-shell \
     && chown -R sandbox:sandbox /opt/openrind-shell \
     && ln -s /opt/openrind-shell /opt/openeral
-
-RUN npm install -g openclaw
 
 RUN test -x /usr/local/bin/claude \
     && mv /usr/local/bin/claude /usr/local/bin/claude-real

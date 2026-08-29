@@ -3179,6 +3179,65 @@ async function createMainWindow() {
 }
 
 ipcMain.handle("openrind-desktop:desktop", handleDesktopInvoke);
+
+ipcMain.handle("openrind-desktop:workspace-config:read", async (_event, input) => {
+  const workspacePath = String(input?.workspacePath ?? "").trim();
+  const state = await readWorkspaceState();
+  const workspaceRoot = await requireRegisteredLocalWorkspaceRoot({
+    requestedPath: workspacePath,
+    workspaces: state.workspaces,
+  });
+  const configPath = await resolveWorkspaceConfigFilePath(workspaceRoot);
+  if (!(await pathExists(configPath))) {
+    return defaultWorkspaceOpenrindDesktopConfig(workspaceRoot);
+  }
+  const raw = await readFile(configPath, "utf8");
+  return JSON.parse(raw);
+});
+
+ipcMain.handle("openrind-desktop:workspace-config:write", async (_event, input) => {
+  const workspacePath = String(input?.workspacePath ?? "").trim();
+  const config = input?.config ?? defaultWorkspaceOpenrindDesktopConfig("");
+  const state = await readWorkspaceState();
+  const workspaceRoot = await requireRegisteredLocalWorkspaceRoot({
+    requestedPath: workspacePath,
+    workspaces: state.workspaces,
+  });
+  const configPath = await resolveWorkspaceConfigFilePath(workspaceRoot);
+  await mkdir(path.dirname(configPath), { recursive: true });
+  await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  return execResult(true, `Wrote ${configPath}`);
+});
+
+ipcMain.handle("openrind-desktop:workspace-config:add-authorized-root", async (_event, input) => {
+  const workspacePath = String(input?.workspacePath ?? "").trim();
+  const authorizedRoot = String(input?.folderPath ?? input?.authorizedRoot ?? "").trim();
+  if (!workspacePath || !authorizedRoot) {
+    throw new Error("workspacePath and folderPath are required");
+  }
+  const state = await readWorkspaceState();
+  const workspaceRoot = await requireRegisteredLocalWorkspaceRoot({
+    requestedPath: workspacePath,
+    workspaces: state.workspaces,
+  });
+  const configPath = await resolveWorkspaceConfigFilePath(workspaceRoot);
+  let config;
+  if (!(await pathExists(configPath))) {
+    config = defaultWorkspaceOpenrindDesktopConfig(workspaceRoot);
+  } else {
+    const raw = await readFile(configPath, "utf8");
+    config = JSON.parse(raw);
+  }
+  if (!Array.isArray(config.authorizedRoots)) {
+    config.authorizedRoots = [];
+  }
+  if (!config.authorizedRoots.includes(authorizedRoot)) {
+    config.authorizedRoots.push(authorizedRoot);
+  }
+  await mkdir(path.dirname(configPath), { recursive: true });
+  await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  return execResult(true, `Wrote ${configPath}`);
+});
 ipcMain.handle("openrind-desktop:shell:openExternal", async (_event, url) => {
   await openExternalSafe(url);
 });
