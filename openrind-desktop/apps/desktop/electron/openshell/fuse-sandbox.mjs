@@ -3,8 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { getCredential } from "./openrind-shell-credentials.mjs";
 import {
   ensureFuseRuntime,
-  FUSE_CLI,
-  FUSE_GATEWAY_ENDPOINT,
+  buildFuseCliCommand,
   FUSE_IMAGE,
   FUSE_IMAGE_PULL_POLICY,
   runFuseOpenShell,
@@ -189,11 +188,8 @@ binaries:
 `;
 
 async function ensureManagedProvider({ apiKey, envKey, name, type, profileYaml = null }) {
-  const providerGet = [FUSE_CLI, "--gateway-endpoint", FUSE_GATEWAY_ENDPOINT, "provider", "get", name].map(shellQuote).join(" ");
-  const providerCreate = [
-    FUSE_CLI,
-    "--gateway-endpoint",
-    FUSE_GATEWAY_ENDPOINT,
+  const providerGet = buildFuseCliCommand(["provider", "get", name]);
+  const providerCreate = buildFuseCliCommand([
     "provider",
     "create",
     "--name",
@@ -202,42 +198,33 @@ async function ensureManagedProvider({ apiKey, envKey, name, type, profileYaml =
     type,
     "--credential",
     envKey,
-  ].map(shellQuote).join(" ");
-  const providerUpdate = [
-    FUSE_CLI,
-    "--gateway-endpoint",
-    FUSE_GATEWAY_ENDPOINT,
+  ]);
+  const providerUpdate = buildFuseCliCommand([
     "provider",
     "update",
     name,
     "--credential",
     envKey,
-  ].map(shellQuote).join(" ");
+  ]);
   const lines = ["set -euo pipefail", "umask 077"];
 
   if (profileYaml) {
     const profilePath = `/tmp/openrind-openrouter-profile-${randomUUID()}.yaml`;
-    const profileImport = [
-      FUSE_CLI,
-      "--gateway-endpoint",
-      FUSE_GATEWAY_ENDPOINT,
+    const profileImport = buildFuseCliCommand([
       "provider",
       "profile",
       "import",
       "--file",
       profilePath,
-    ].map(shellQuote).join(" ");
-    const profileExport = [
-      FUSE_CLI,
-      "--gateway-endpoint",
-      FUSE_GATEWAY_ENDPOINT,
+    ]);
+    const profileExport = buildFuseCliCommand([
       "provider",
       "profile",
       "export",
       type,
       "--output",
       "yaml",
-    ].map(shellQuote).join(" ");
+    ]);
     lines.push(
       `trap ${shellQuote(`rm -f ${profilePath}`)} EXIT`,
       `printf '%s' ${shellQuote(profileYaml)} > ${shellQuote(profilePath)}`,
