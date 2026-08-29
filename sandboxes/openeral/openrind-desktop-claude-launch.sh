@@ -9,6 +9,12 @@
 set -eu
 
 RUNTIME_DIR="${OPENRIND_SHELL_RUNTIME_DIR:-${OPENERAL_RUNTIME_DIR:-/var/lib/openrind-shell/runtime}}"
+
+if [ -f "$RUNTIME_DIR/session.env" ]; then
+  # shellcheck disable=SC1090
+  . "$RUNTIME_DIR/session.env"
+fi
+
 MARKER_PATH="$RUNTIME_DIR/desktop-claude-launch"
 
 if [ ! -f "$MARKER_PATH" ]; then
@@ -21,12 +27,20 @@ fi
 marker="$(tr -d '\r\n ' < "$MARKER_PATH" 2>/dev/null || true)"
 rm -f "$MARKER_PATH" 2>/dev/null || true
 
-case "$marker" in
+profile="${marker%%:*}"
+session_id="${marker#*:}"
+
+if [ "$profile" = "$marker" ]; then
+  profile="openrind-shell-claude"
+  session_id="$marker"
+fi
+
+case "$session_id" in
   auto)
     unset OPENRIND_DESKTOP_CLAUDE_SESSION
     ;;
   [0-9a-fA-F][0-9a-fA-F-]*)
-    export OPENRIND_DESKTOP_CLAUDE_SESSION="$marker"
+    export OPENRIND_DESKTOP_CLAUDE_SESSION="$session_id"
     ;;
   *)
     echo "Openrind Shell: desktop Claude launch marker is invalid. Reconnect the session."
@@ -35,6 +49,12 @@ case "$marker" in
 esac
 
 export OPENRIND_DESKTOP_CLAUDE_LAUNCH=1
+
+# If ANTHROPIC_API_KEY is not set but OPENROUTER_API_KEY is, alias them so
+# the agent (which expects ANTHROPIC_API_KEY) can authenticate seamlessly.
+if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -n "${OPENROUTER_API_KEY:-}" ]; then
+  export ANTHROPIC_API_KEY="$OPENROUTER_API_KEY"
+fi
 FAST_FIRST_LAUNCH_MARKER="$RUNTIME_DIR/desktop-fast-first-launch"
 if [ -f "$FAST_FIRST_LAUNCH_MARKER" ]; then
   rm -f "$FAST_FIRST_LAUNCH_MARKER"
@@ -45,4 +65,21 @@ unset FAST_FIRST_LAUNCH_MARKER
 # Run Openrind Gateway proxy configuration on session launch!
 node /opt/openrind-shell/configure-openrind-gateway.mjs || true
 
-exec /usr/local/bin/openrind-pty-bridge.py --framed /usr/local/bin/claude
+if [ -f "$RUNTIME_DIR/anthropic-base-url" ]; then
+  export ANTHROPIC_BASE_URL="$(cat "$RUNTIME_DIR/anthropic-base-url" 2>/dev/null | tr -d '\r\n ')"
+fi
+
+AGENT_BIN="/usr/local/bin/claude"
+if [ "$profile" = "openrind-shell-openclaw" ]; then
+  if command -v openclaw >/dev/null 2>&1; then
+    AGENT_BIN="openclaw"
+  elif [ -x /usr/local/bin/openclaw ]; then
+    AGENT_BIN="/usr/local/bin/openclaw"
+  elif [ -x /usr/bin/openclaw ]; then
+    AGENT_BIN="/usr/bin/openclaw"
+  else
+    AGENT_BIN="/usr/bin/opencode"
+  fi
+fi
+
+exec /usr/local/bin/openrind-pty-bridge.py --framed "$AGENT_BIN"

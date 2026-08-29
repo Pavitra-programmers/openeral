@@ -29,6 +29,8 @@ RUN cd /opt/openrind-shell && npm install && npm run build && npm prune --omit=d
     && chown -R sandbox:sandbox /opt/openrind-shell \
     && ln -s /opt/openrind-shell /opt/openeral
 
+RUN npm install -g openclaw
+
 # The OpenShell Community base installs Claude with Anthropic's native
 # installer. Preserve it behind Openrind Shell's persistence-aware wrapper.
 RUN test -x /usr/local/bin/claude \
@@ -42,15 +44,16 @@ COPY sandboxes/openeral/openeral-claude-fuse.sh /usr/local/bin/claude
 COPY sandboxes/openeral/pg-client-fuse.mjs /usr/local/bin/pg
 COPY sandboxes/openeral/setup-fuse.sh /opt/openrind-shell/setup.sh
 COPY sandboxes/openeral/openrind-pty-bridge.py /opt/openrind-shell/openrind-pty-bridge.py
+COPY sandboxes/openeral/openrind-desktop-claude-launch.sh /usr/local/bin/openrind-desktop-claude-launch
 COPY sandboxes/openeral/configure-stringcost.mjs /opt/openrind-shell/configure-openrind-gateway.mjs
 COPY sandboxes/openeral/supabase-root-2021-ca.pem /opt/openrind-shell/certs/supabase-root-2021-ca.pem
-RUN chmod 755 /usr/local/bin/openrind-shell-fused /usr/local/bin/claude /usr/local/bin/pg \
+RUN chmod 755 /usr/local/bin/openrind-shell-fused /usr/local/bin/claude /usr/local/bin/pg /usr/local/bin/openrind-desktop-claude-launch \
         /opt/openrind-shell/setup.sh /opt/openrind-shell/openrind-pty-bridge.py \
         /opt/openrind-shell/configure-openrind-gateway.mjs \
     && chmod 644 /opt/openrind-shell/certs/supabase-root-2021-ca.pem \
     && install -m 0644 /opt/openrind-shell/certs/supabase-root-2021-ca.pem /usr/local/share/ca-certificates/supabase-root-2021-ca.crt \
     && cat /opt/openrind-shell/certs/supabase-root-2021-ca.pem >> /etc/ssl/certs/ca-certificates.crt \
-    && sed -i 's/\r$//' /usr/local/bin/claude /usr/local/bin/pg \
+    && sed -i 's/\r$//' /usr/local/bin/claude /usr/local/bin/pg /usr/local/bin/openrind-desktop-claude-launch \
         /opt/openrind-shell/setup.sh /opt/openrind-shell/openrind-pty-bridge.py \
         /opt/openrind-shell/configure-openrind-gateway.mjs \
     && printf '%s' fuse-metadata-cache-v11 > /opt/openrind-shell/desktop-contract \
@@ -61,6 +64,7 @@ RUN chmod 755 /usr/local/bin/openrind-shell-fused /usr/local/bin/claude /usr/loc
     && ln -sf /usr/local/bin/openrind-shell /usr/local/bin/openeral \
     && ln -sf /usr/local/bin/openrind-shell-init /usr/local/bin/openeral-init \
     && ln -sf /usr/local/bin/openrind-shell-start /usr/local/bin/openeral-start \
+    && ln -sf /opt/openrind-shell/openrind-pty-bridge.py /usr/local/bin/openrind-pty-bridge.py \
     && install -d -o sandbox -g sandbox -m 0700 \
         /var/lib/openrind-shell/runtime /sandbox/claude-home
 

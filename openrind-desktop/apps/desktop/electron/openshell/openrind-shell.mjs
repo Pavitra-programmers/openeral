@@ -32,9 +32,9 @@ const SESSION_HOOK_SENTINEL = "Openrind Desktop Claude interactive hook.";
 const CLAUDE_SESSION_NAMESPACE = "6f9b1e2a-0c3d-4b7a-9e21-8a4c1d5f7b30";
 
 export function imageForProfile(profile) {
-  if (profile !== "openrind-shell-claude") {
+  if (profile !== "openrind-shell-claude" && profile !== "openrind-shell-openclaw") {
     throw new Error(
-      `The primary FUSE runtime supports the Claude profile only; received ${JSON.stringify(profile)}.`,
+      `The primary FUSE runtime supports the Claude and OpenClaw profiles only; received ${JSON.stringify(profile)}.`,
     );
   }
   return process.env.OPENRIND_DESKTOP_SANDBOX_IMAGE?.trim() || FUSE_IMAGE;
@@ -65,11 +65,12 @@ function deriveClaudeSessionUuid(sessionId) {
  * transcript for a selected desktop session.
  */
 export function resolveAgentSessionValue(profile, agentSessionId) {
-  if (profile !== "openrind-shell-claude") {
-    throw new Error("The primary FUSE runtime supports the Claude profile only.");
+  if (profile !== "openrind-shell-claude" && profile !== "openrind-shell-openclaw") {
+    throw new Error("The primary FUSE runtime supports the Claude and OpenClaw profiles only.");
   }
   const sessionId = String(agentSessionId ?? "").trim();
-  return sessionId ? deriveClaudeSessionUuid(sessionId) : "auto";
+  const value = sessionId ? deriveClaudeSessionUuid(sessionId) : "auto";
+  return `${profile}:${value}`;
 }
 
 function markerCommand(name, script) {
@@ -112,7 +113,7 @@ function markerError(action, result) {
 /** Write the one-shot marker immediately before a new desktop connect. */
 export async function writeCurrentSessionMarker(name, value) {
   const marker = String(value ?? "").trim();
-  if (marker && !/^(?:auto|[0-9a-f]{8}-[0-9a-f-]{27})$/i.test(marker)) {
+  if (marker && !/^(?:openrind-shell-claude|openrind-shell-openclaw):(?:auto|[0-9a-f]{8}-[0-9a-f-]{27})$/i.test(marker)) {
     throw new Error("Invalid desktop Claude session marker.");
   }
   // Repair the interactive hook in the same exec that writes the marker. This

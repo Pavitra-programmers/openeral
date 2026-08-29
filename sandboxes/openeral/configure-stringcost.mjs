@@ -91,14 +91,26 @@ async function createPresign() {
   let openrindKey = process.env.OPENRIND_GATEWAY_API_KEY;
   if (!openrindKey) {
     try {
+      openrindKey = readFileSync('/sandbox/openrind-shell-gateway-api-key', 'utf8').trim();
+    } catch {}
+  }
+  if (!openrindKey) {
+    try {
       openrindKey = readFileSync(join(home, '.openrind-shell', 'gateway-api-key'), 'utf8').trim();
     } catch {}
   }
   const legacyKey = process.env.STRINGCOST_API_KEY;
   const gatewayKey = openrindKey || legacyKey;
-  const clientKey = process.env.ANTHROPIC_API_KEY || process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN;
+  let clientKey = '';
+  let isOpenRouter = false;
+  if (process.env.ANTHROPIC_API_KEY) {
+    clientKey = process.env.ANTHROPIC_API_KEY;
+    isOpenRouter = false;
+  } else if (process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) {
+    clientKey = process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN;
+    isOpenRouter = true;
+  }
   if (!gatewayKey || !clientKey) return '';
-  const isOpenRouter = !!(process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30_000);
   try {

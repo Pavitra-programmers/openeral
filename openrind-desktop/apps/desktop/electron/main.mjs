@@ -620,16 +620,17 @@ async function dumpOpenrindShellPtyBuffer(sessionId) {
 
 /**
  * Build the extra env forwarded into the Openrind Shell PTY at spawn time:
- * decrypted Anthropic / OpenrindGateway keys (so Claude Code auto-configures
+ * decrypted Anthropic / OpenRouter / OpenrindGateway keys (so Claude Code auto-configures
  * its provider on first run without an interactive prompt) plus COLUMNS /
  * LINES belt-and-suspenders alongside the stty call in openrind-shell-pty.mjs.
  * Shared by the openrindPtyOpen and openrindPtyAttachOrOpen handlers.
  *
- * @param {number | undefined} cols
- * @param {number | undefined} rows
+ * @param {number} [cols]
+ * @param {number} [rows]
+ * @param {string} [profile]
  * @returns {Promise<Record<string, string> | undefined>}
  */
-async function buildOpenrindShellPtyEnv(cols, rows) {
+async function buildOpenrindShellPtyEnv(cols, rows, profile) {
   const extraEnv = {};
   try {
     const anthropicApiKey =
@@ -639,11 +640,21 @@ async function buildOpenrindShellPtyEnv(cols, rows) {
     /* safeStorage may be unavailable in some test environments */
   }
   try {
+    const openrouterApiKey =
+      await openrindCredentials.getCredential("openrouterApiKey");
+    if (openrouterApiKey) extraEnv.OPENROUTER_API_KEY = openrouterApiKey;
+  } catch {
+    /* optional */
+  }
+  try {
     const openrindGatewayApiKey =
       await openrindCredentials.getCredential("openrindGatewayApiKey");
     if (openrindGatewayApiKey) extraEnv.OPENRIND_GATEWAY_API_KEY = openrindGatewayApiKey;
   } catch {
     /* optional — OpenrindGateway tracking only */
+  }
+  if (profile) {
+    extraEnv.OPENRIND_DESKTOP_PROFILE = profile;
   }
   const effectiveCols = Number.isFinite(cols) && cols > 0 ? cols : 120;
   const effectiveRows = Number.isFinite(rows) && rows > 0 ? rows : 32;
@@ -690,8 +701,8 @@ const openrindMarkerPending = new Set();
  */
 function openOpenrindShellPtySession(opts) {
   const { sandboxName, cols, rows, extraEnv, agentSessionId, profile } = opts;
-  if (profile !== "openrind-shell-claude") {
-    throw new Error("The primary FUSE runtime supports the Claude profile only.");
+  if (profile !== "openrind-shell-claude" && profile !== "openrind-shell-openclaw") {
+    throw new Error("The primary FUSE runtime supports the Claude and OpenClaw profiles only.");
   }
   // Follow the README contract: Desktop writes one consume-on-read marker and
   // then opens `openshell sandbox connect`. The login hook installed by
@@ -727,11 +738,18 @@ function openOpenrindShellPtySession(opts) {
       try {
         const gatewayApiKey = await openrindCredentials.getCredential("openrindGatewayApiKey");
         if (gatewayApiKey) {
-          await wslRun([
-            "-d", OPENSHELL_DISTRO_NAME, "--user", "banker", "--",
-            "openshell", "sandbox", "exec", "-n", sandboxName, "--",
-            "sh", "-c", `mkdir -p /sandbox/work/.openrind-shell && echo '${gatewayApiKey}' > /sandbox/work/.openrind-shell/gateway-api-key && chmod 600 /sandbox/work/.openrind-shell/gateway-api-key`
-          ], { timeout: 10_000 }).catch(() => undefined);
+          // Retry loop: wait up to 10 seconds for the sandbox to finish provisioning and reach Ready
+          // so `sandbox exec` does not fail with "sandbox is not ready".
+          for (let attempt = 0; attempt < 20; attempt++) {
+            const result = await wslRun([
+              "-d", OPENSHELL_DISTRO_NAME, "--user", "banker", "--",
+              "sh", "-c", `CID=\$(docker ps -q --filter "name=openshell-.*--${sandboxName}-" | head -n 1) && [ -n "\$CID" ] && docker exec -u root "\$CID" sh -c "echo '${gatewayApiKey}' > /sandbox/openrind-shell-gateway-api-key && chown sandbox:sandbox /sandbox/openrind-shell-gateway-api-key && chmod 600 /sandbox/openrind-shell-gateway-api-key"`
+            ], { timeout: 10_000 }).catch(() => null);
+            if (result && result.exitCode === 0) {
+              break;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 500));
+          }
         }
       } catch (err) {
         /* non-fatal */
@@ -2434,7 +2452,7 @@ async function handleDesktopInvoke(event, command, ...args) {
       const workspaceId = String(input.workspaceId ?? "").trim();
       const profile = String(input.profile ?? "").trim();
       if (!workspaceId) throw new Error("workspaceId is required");
-      if (profile !== "openrind-shell-claude") {
+      if (profile !== "openrind-shell-claude" && profile !== "openrind-shell-openclaw") {
         throw new Error(`Unsupported Openrind Shell profile: ${profile}`);
       }
       await assertOpenShellReady();
@@ -2574,7 +2592,7 @@ async function handleDesktopInvoke(event, command, ...args) {
       // auto-configure Claude Code's Anthropic provider on first run without
       // showing an interactive "enter API key" prompt that the user can't
       // see or respond to (especially when the terminal is still sizing up).
-      const extraEnv = await buildOpenrindShellPtyEnv(cols, rows);
+      const extraEnv = await buildOpenrindShellPtyEnv(cols, rows, profile);
 
       // Adopt-or-open via the per-sandbox serial chain: fresh connects bind
       // the agent to the selected session through the shared marker file,
@@ -2636,7 +2654,7 @@ async function handleDesktopInvoke(event, command, ...args) {
         };
       }
 
-      const extraEnv = await buildOpenrindShellPtyEnv(cols, rows);
+      const extraEnv = await buildOpenrindShellPtyEnv(cols, rows, profile);
       const result = await openOpenrindShellPtySession({
         sandboxName,
         cols,
@@ -2799,7 +2817,7 @@ async function handleDesktopInvoke(event, command, ...args) {
       const workspaceId = String(input.workspaceId ?? "").trim();
       const profile = String(input.profile ?? "").trim();
       if (!workspaceId) throw new Error("workspaceId is required");
-      if (profile !== "openrind-shell-claude") {
+      if (profile !== "openrind-shell-claude" && profile !== "openrind-shell-openclaw") {
         throw new Error(`Unsupported Openrind Shell profile: ${profile}`);
       }
       await assertOpenShellReady();

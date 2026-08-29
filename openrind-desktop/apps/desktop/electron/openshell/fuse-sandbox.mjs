@@ -195,6 +195,17 @@ async function resolvePrimaryProvider(onProgress) {
     getCredential("anthropicApiKey"),
   ]);
 
+  if (anthropicApiKey) {
+    onProgress?.({ phase: "provider", message: "Configuring gateway-managed Anthropic provider..." });
+    await ensureManagedProvider({
+      apiKey: anthropicApiKey,
+      envKey: "ANTHROPIC_API_KEY",
+      name: "claude",
+      type: "claude-code",
+    });
+    return { name: "claude", environment: [] };
+  }
+
   if (openrouterApiKey) {
     onProgress?.({ phase: "provider", message: "Configuring gateway-managed OpenRouter test provider..." });
     await ensureManagedProvider({
@@ -216,17 +227,6 @@ async function resolvePrimaryProvider(onProgress) {
         "CLAUDE_CODE_SUBAGENT_MODEL=openrouter/free",
       ],
     };
-  }
-
-  if (anthropicApiKey) {
-    onProgress?.({ phase: "provider", message: "Configuring gateway-managed Anthropic provider..." });
-    await ensureManagedProvider({
-      apiKey: anthropicApiKey,
-      envKey: "ANTHROPIC_API_KEY",
-      name: "claude",
-      type: "claude-code",
-    });
-    return { name: "claude", environment: [] };
   }
 
   throw new Error(
@@ -317,9 +317,9 @@ async function readFuseHealth(name) {
 export async function createPrimaryFuseSandbox(opts) {
   const { name, profile, onProgress } = opts ?? {};
   assertSandboxName(name);
-  if (profile !== "openrind-shell-claude") {
+  if (profile !== "openrind-shell-claude" && profile !== "openrind-shell-openclaw") {
     throw new Error(
-      "The primary FUSE runtime currently supports Claude only. Select the compatibility runtime for another agent.",
+      "The primary FUSE runtime currently supports Claude and OpenClaw only.",
     );
   }
 

@@ -1618,6 +1618,7 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
               startedAt={bootstrapStartedAt}
               existed={false}
               onAbort={handleAbort}
+              profile={props.profile}
             />
           </div>
         ) : null}
@@ -1799,6 +1800,7 @@ type BootstrapProgressProps = {
   events: BootstrapProgressEvent[];
   startedAt: number | null;
   existed: boolean;
+  profile: SandboxProfile;
   /** When provided, renders a "Cancel provisioning" link inside the card.
    *  Calling it sets userAborted=true so run() exits immediately, and the
    *  user can re-launch manually via the toolbar "Launch session" button. */
@@ -1849,6 +1851,18 @@ function BootstrapProgress(props: BootstrapProgressProps) {
     return () => window.clearInterval(timer);
   }, []);
 
+  const isClaw = props.profile === "openrind-shell-openclaw";
+  const steps = [
+    { id: "gateway", label: "Start OpenShell control plane", detail: "Local gateway and supervisor" },
+    { id: "database", label: "Check persistent workspace", detail: "Secure PostgreSQL configuration" },
+    { id: "image", label: "Verify local runtime image", detail: "Openrind Shell FUSE image" },
+    { id: "provider", label: isClaw ? "Configure OpenRouter provider" : "Configure Claude provider", detail: "Gateway-managed credential" },
+    { id: "create", label: "Create sandbox and mount FUSE", detail: "Container, mount, and one-time initialization" },
+    { id: "health", label: "Verify writable workspace", detail: "FUSE daemon writer lease" },
+    { id: "pty", label: "Connect secure terminal", detail: "OpenShell session and Linux PTY bridge" },
+    { id: "agent", label: isClaw ? "Start OpenClaw" : "Start Claude", detail: isClaw ? "Waiting for OpenClaw to paint its first screen" : "Waiting for Claude to paint its first screen" },
+  ];
+
   const eventStage = props.events.reduce(
     (highest, event) => Math.max(highest, bootstrapStageIndex(event.phase)),
     -1,
@@ -1868,7 +1882,7 @@ function BootstrapProgress(props: BootstrapProgressProps) {
               {props.existed ? "Reconnecting to Openrind Shell" : "Provisioning Openrind Shell"}
             </div>
             <div className="mt-1 text-xs text-gray-9">
-              Step {Math.min(currentStage + 1, BOOTSTRAP_STEPS.length)} of {BOOTSTRAP_STEPS.length} · {elapsed} elapsed
+              Step {Math.min(currentStage + 1, steps.length)} of {steps.length} · {elapsed} elapsed
             </div>
           </div>
         </div>
@@ -1881,7 +1895,7 @@ function BootstrapProgress(props: BootstrapProgressProps) {
           <div className="mt-1 break-words font-mono text-xs leading-5 text-gray-11">{currentMessage}</div>
         </div>
         <div className="space-y-1">
-          {BOOTSTRAP_STEPS.map((step, index) => {
+          {steps.map((step, index) => {
             const state = index < currentStage ? "done" : index === currentStage ? "active" : "pending";
             const detail = [...props.events].reverse().find((event) => bootstrapStageIndex(event.phase) === index)?.message;
             return (

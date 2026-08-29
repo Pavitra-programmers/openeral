@@ -19,6 +19,26 @@ export function readSandboxProfile(sandboxName: string): SandboxProfile {
   try {
     const value = localStorage.getItem(PROFILE_KEY_PREFIX + sandboxName);
     if (value === "openrind-shell-openclaw") return "openrind-shell-openclaw";
+    if (value === "openrind-shell-claude") return "openrind-shell-claude";
+
+    // Fallback: if sandboxName starts with "or-", scan localStorage keys for a match
+    if (sandboxName.startsWith("or-")) {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith(PROFILE_KEY_PREFIX)) {
+          const storedName = key.slice(PROFILE_KEY_PREFIX.length);
+          if (storedName.startsWith("openrind-shell-")) {
+            const suffix = storedName.slice("openrind-shell-".length);
+            const normalized = suffix.toLowerCase().replace(/[^a-z0-9_.-]+/g, "-").replace(/[_.]/g, "-");
+            const prefix = `or-${normalized.slice(0, 7)}-`;
+            if (sandboxName.startsWith(prefix) || sandboxName === suffix) {
+              const val = localStorage.getItem(key);
+              if (val === "openrind-shell-openclaw") return "openrind-shell-openclaw";
+            }
+          }
+        }
+      }
+    }
   } catch {
     // localStorage unavailable — fall through to the default.
   }

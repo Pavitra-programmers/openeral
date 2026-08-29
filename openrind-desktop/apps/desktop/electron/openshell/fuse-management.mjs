@@ -109,7 +109,7 @@ export async function probePrimaryFuseDatabase() {
     getCredential("anthropicApiKey"),
   ]);
   if (!databaseUrl) throw new Error("DATABASE_URL is not configured.");
-  const provider = openrouterApiKey ? "openrouter" : anthropicApiKey ? "claude" : null;
+  const provider = anthropicApiKey ? "claude" : openrouterApiKey ? "openrouter" : null;
   if (!provider) {
     throw new Error("Configure OPENROUTER_API_KEY or ANTHROPIC_API_KEY before testing the sandbox database connection.");
   }
