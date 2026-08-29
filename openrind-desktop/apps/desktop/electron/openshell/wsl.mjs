@@ -52,6 +52,7 @@ export async function wslRun(args, options = {}) {
     env,
     stdin,
     signal,
+    onOutput,
   } = options;
   const exe = resolveWslExe();
   const finalArgs = injectUser(args, user);
@@ -88,8 +89,17 @@ export async function wslRun(args, options = {}) {
       }
       chunks.push(chunk);
     };
-    child.stdout.on("data", (c) => collect(stdoutChunks, c));
-    child.stderr.on("data", (c) => collect(stderrChunks, c));
+    const handleOutput = (stream, chunks, chunk) => {
+      collect(chunks, chunk);
+      if (typeof onOutput !== "function" || !chunk?.length) return;
+      try {
+        onOutput({ stream, text: decodeWslOutput(chunk) });
+      } catch {
+        // A progress listener must never interfere with the control command.
+      }
+    };
+    child.stdout.on("data", (c) => handleOutput("stdout", stdoutChunks, c));
+    child.stderr.on("data", (c) => handleOutput("stderr", stderrChunks, c));
 
     let timedOut = false;
     const timer =
@@ -227,25 +237,53 @@ export async function distroState() {
 // lifetime. unref() so the handle never blocks app exit; on app quit the
 // keepalive dies with us and WSL may idle the distro normally.
 let keepaliveChild = null;
+let keepaliveReady = null;
 
+// Resolve only once wsl.exe itself has spawned. This is the point at which WSL
+// has registered an active client, which prevents an already-started idle
+// teardown from racing the gateway check/create that follows.
 export function ensureWslKeepalive() {
-  if (keepaliveChild && keepaliveChild.exitCode === null) return;
+  if (keepaliveChild && keepaliveChild.exitCode === null) {
+    return keepaliveReady ?? Promise.resolve(true);
+  }
   try {
     const exe = resolveWslExe();
-    keepaliveChild = spawn(
+    const child = spawn(
       exe,
       ["-d", DISTRO_NAME, "--", "sleep", "infinity"],
       { windowsHide: true, stdio: "ignore" },
     );
-    keepaliveChild.on("error", () => {
-      keepaliveChild = null;
+    keepaliveChild = child;
+    keepaliveReady = new Promise((resolve) => {
+      let settled = false;
+      const settle = (value) => {
+        if (!settled) {
+          settled = true;
+          resolve(value);
+        }
+      };
+      const clear = () => {
+        if (keepaliveChild === child) {
+          keepaliveChild = null;
+          keepaliveReady = null;
+        }
+      };
+      child.once("spawn", () => settle(true));
+      child.once("error", () => {
+        clear();
+        settle(false);
+      });
+      child.once("exit", () => {
+        clear();
+        settle(false);
+      });
     });
-    keepaliveChild.on("exit", () => {
-      keepaliveChild = null;
-    });
-    keepaliveChild.unref();
+    child.unref();
+    return keepaliveReady;
   } catch {
     keepaliveChild = null;
+    keepaliveReady = null;
+    return Promise.resolve(false);
   }
 }
 
@@ -257,14 +295,14 @@ export async function ensureDistroRunning() {
     );
   }
   if (state === "Running") {
-    ensureWslKeepalive();
+    await ensureWslKeepalive();
     return;
   }
   await wslRun(["-d", DISTRO_NAME, "--exec", "true"], { timeout: 30_000 });
   for (let i = 0; i < 30; i++) {
     state = await distroState();
     if (state === "Running") {
-      ensureWslKeepalive();
+      await ensureWslKeepalive();
       return;
     }
     await delay(500);

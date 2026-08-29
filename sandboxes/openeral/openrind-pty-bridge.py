@@ -659,6 +659,17 @@ def main():
         log("no command given")
         return 2
 
+    # Desktop-only marker: starts the bridge in framed mode and skips handshake detection.
+    framed_arg = False
+    if argv[0] == "--framed":
+        framed_arg = True
+        argv = argv[1:]
+        _mode = "framed"
+
+    if not argv:
+        log("no command given")
+        return 2
+
     # Silence our OWN stderr onto the log file. connect frequently gives an
     # entry command a single PTY for fd 0/1/2, so anything we print on fd 2
     # would land in the middle of the agent's screen.
@@ -671,6 +682,10 @@ def main():
         pass
 
     original_termios = make_raw(0)  # raw transport; no-op if fd 0 is a pipe
+
+    if framed_arg:
+        sys.stdout.buffer.write(b"\x00OPENRINDPTYREADY1\x00")
+        sys.stdout.buffer.flush()
 
     # ── Phase 1: try to read the handshake so the agent's FIRST paint is at the
     #    correct size. Mode is still ultimately decided by content, so a timeout

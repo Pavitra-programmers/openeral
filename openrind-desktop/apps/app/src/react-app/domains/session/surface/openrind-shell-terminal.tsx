@@ -2,7 +2,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
-  Clock,
   Copy,
   ExternalLink,
   FileText,
@@ -31,15 +30,15 @@ import "@xterm/xterm/css/xterm.css";
 
 import type { SandboxProfile } from "../../../../app/lib/desktop";
 import { Button } from "../../../design-system/button";
-import { deriveSandboxName } from "../sandbox-name";
 import { useVoiceInput } from "./composer/voice/use-voice-input";
+import { VoiceEngineMenu } from "./composer/voice/voice-engine-menu";
 import { formatBytes } from "../../../../app/utils";
 import { useStatusToasts } from "../../shell-feedback/status-toasts";
 
 // Shared flat "ghost" toolbar button, matching the chat session header so the
 // Openrind Shell terminal toolbar reads as the same product surface.
 const TOOLBAR_BTN =
-  "inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-[11px] font-medium text-dls-secondary transition-colors hover:bg-dls-hover hover:text-dls-text disabled:cursor-not-allowed disabled:opacity-60";
+  "flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[13px] font-medium text-gray-10 transition-colors hover:bg-gray-2/70 hover:text-dls-text disabled:cursor-not-allowed disabled:opacity-60";
 
 // The PTY connects (phase "connected") well before the agent's TUI actually
 // paints — setup.sh runs its DB restore/flush silently, then Claude/OpenClaw
@@ -161,10 +160,10 @@ type RendererPreference = "auto" | "webgl" | "dom";
  *
  *   localStorage.setItem("openrind-shell:renderer", "dom");  // then reconnect
  *
- * "webgl" is the production default. "auto" runs the WebGL2 probe first and
- * "dom" is an explicit recovery-only override.
+ * "auto" (default) uses WebGL only when probeWebgl2() clears it; "webgl" forces
+ * it past the probe; "dom" pins xterm's DOM renderer.
  */
-const RENDERER_PREF_KEY = "openrind-shell:renderer-v2";
+const RENDERER_PREF_KEY = "openrind-shell:renderer";
 
 function readRendererPreference(): RendererPreference {
   try {
@@ -173,7 +172,7 @@ function readRendererPreference(): RendererPreference {
   } catch {
     // localStorage blocked — fall through to the default.
   }
-  return "webgl";
+  return "auto";
 }
 
 /**
@@ -281,6 +280,13 @@ type SandboxWorkspaceFile = {
   modifiedAt: number;
 };
 
+type BootstrapProgressEvent = {
+  phase: string;
+  message: string;
+  timestamp: number;
+};
+};
+
 /**
  * Mirrors deriveOpenrindShellSandboxName() in openrind-shell-terminal.mjs.
  * Used to pre-populate lastKnownSandboxNameRef so deleteAndReconnect can
@@ -288,7 +294,15 @@ type SandboxWorkspaceFile = {
  * returning (i.e. before setSandboxName is ever called).
  */
 function deriveExpectedSandboxName(workspaceId: string): string {
-  return deriveSandboxName(workspaceId);
+  if (/^or-[a-z0-9]{1,7}-[a-f0-9]{8}$/.test(workspaceId)) {
+    return workspaceId;
+  }
+  const trimmed = workspaceId
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 50);
+  return `openrind-shell-${trimmed}`;
 }
 
 export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
@@ -340,6 +354,8 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
   // agent rendering.
   const [agentReady, setAgentReady] = useState(false);
   const [bootstrapMessage, setBootstrapMessage] = useState<string | null>(null);
+  const [bootstrapEvents, setBootstrapEvents] = useState<BootstrapProgressEvent[]>([]);
+  const [bootstrapStartedAt, setBootstrapStartedAt] = useState<number | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [popoutBusy, setPopoutBusy] = useState(false);
   const [popoutError, setPopoutError] = useState<string | null>(null);
@@ -596,6 +612,11 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
   // user can type immediately without having to click.
   useEffect(() => {
     if (phase !== "connected") return;
+    // During a fresh launch the bootstrap overlay still owns focus after the
+    // PTY connects. Focus again when the first agent paint (or its UI cap)
+    // removes that overlay; otherwise Claude's visible first-run prompt looks
+    // unresponsive until the user deliberately refocuses xterm.
+    if (isFreshBootstrap && !agentReady) return;
     setHasEverConnected(true);
     const raf = requestAnimationFrame(() => {
       try {
@@ -605,7 +626,7 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
       }
     });
     return () => cancelAnimationFrame(raf);
-  }, [phase]);
+  }, [phase, isFreshBootstrap, agentReady]);
 
   useEffect(() => {
     let cancelled = false;
@@ -613,13 +634,32 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
     let unsubExit: (() => void) | undefined;
     let unsubProgress: (() => void) | undefined;
 
-    // WebGL is the production renderer. Refresh it after the first complete
-    // agent burst, but do not infer failure from private texture-atlas timing:
-    // disposing the addon here caused the pixelated DOM fallback. Genuine
-    // context loss is still handled by the addon callback below.
+    // Self-heal a GPU renderer that activated cleanly but is not actually
+    // drawing. probeWebgl2() catches a hostile GPU stack up front, but a driver
+    // can still pass every capability check and then paint nothing — which
+    // presents as a completely blank pane, the worst outcome of the whole
+    // renderer change.
+    //
+    // The addon rasterises glyphs into a texture atlas on its first real paint,
+    // so once the agent has painted a full screen with no atlas in existence,
+    // the canvas is not being drawn to. Drop to the DOM renderer and repaint.
+    // A false positive here just costs GPU acceleration; a false negative costs
+    // the user their entire terminal, so this errs toward falling back.
     const verifyRendererPainted = () => {
       const term = termRef.current;
-      if (!term || !webglRef.current) return;
+      const webgl = webglRef.current;
+      if (!term || !webgl) return;
+      if (webgl.textureAtlas) return;
+      try {
+        webgl.dispose();
+      } catch {
+        // Already gone.
+      }
+      webglRef.current = null;
+      rendererRef.current = "dom (webgl drew nothing)";
+      console.warn(
+        "[openrindShellTerminal] WebGL renderer produced no glyphs — fell back to the DOM renderer.",
+      );
       try {
         term.refresh(0, term.rows - 1);
       } catch {
@@ -644,10 +684,9 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
       setAgentReady(true);
     };
 
-    // The cap prevents the provisioning overlay from obscuring a legitimate
-    // interactive prompt indefinitely. It is not an agent error boundary: slow
-    // first-run output remains owned by Claude and must not be injected into its
-    // terminal stream as synthetic text.
+    // Bridge readiness is authoritative. Claude can legitimately spend longer
+    // than this UI cap loading persisted state, so quiet output is not a PTY
+    // error and must not be injected into the agent's terminal byte stream.
     const markAgentReadyOnPaintTimeout = () => {
       if (!trackPaintRef.current) return;
       markAgentReady();
@@ -742,21 +781,6 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
       });
     };
 
-    const noteAgentPaint = (length: number) => {
-      if (trackPaintRef.current) {
-        paintBytesRef.current += length;
-        if (paintBytesRef.current >= AGENT_PAINT_MIN_BYTES) {
-          if (paintSettleTimerRef.current) {
-            clearTimeout(paintSettleTimerRef.current);
-          }
-          paintSettleTimerRef.current = setTimeout(
-            markAgentReady,
-            AGENT_PAINT_SETTLE_MS,
-          );
-        }
-      }
-    };
-
     const writeToTerm = (data: string) => {
       if (termRef.current) {
         writeCounted(termRef.current, data);
@@ -767,7 +791,18 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
       // output bytes; once a real render burst (≥ MIN) settles, reveal the
       // terminal. A tiny early paint stays under MIN so the overlay waits for
       // the full UI instead of flashing a half-drawn screen.
-      noteAgentPaint(data.length);
+      if (trackPaintRef.current) {
+        paintBytesRef.current += data.length;
+        if (paintBytesRef.current >= AGENT_PAINT_MIN_BYTES) {
+          if (paintSettleTimerRef.current) {
+            clearTimeout(paintSettleTimerRef.current);
+          }
+          paintSettleTimerRef.current = setTimeout(
+            markAgentReady,
+            AGENT_PAINT_SETTLE_MS,
+          );
+        }
+      }
     };
 
     const cleanup = async () => {
@@ -855,6 +890,13 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
         // ("Sandbox is Provisioning, waiting…") are visible instead of
         // being hidden behind a stale "ready" message.
         setBootstrapMessage(null);
+        const bootstrapStartedAt = Date.now();
+        setBootstrapStartedAt(bootstrapStartedAt);
+        setBootstrapEvents([{
+          phase: "starting",
+          message: "Preparing the Openrind Shell launch plan...",
+          timestamp: bootstrapStartedAt,
+        }]);
         // Reset per-run so switching between two Openrind Shell workspaces (the
         // component stays mounted, only props change) doesn't carry the prior
         // workspace's bootstrap flag into a lossless re-attach. The fresh
@@ -874,7 +916,14 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
         }
         unsubProgress = bridge?.openrindShell?.onSessionProgress?.((evt) => {
           if (cancelled) return;
-          if (evt.message) setBootstrapMessage(evt.message);
+          const message = String(evt.message ?? "").trim();
+          if (!message) return;
+          const timestamp = Date.now();
+          setBootstrapMessage(message);
+          setBootstrapEvents((previous) => {
+            const next = previous.concat({ phase: evt.phase, message, timestamp });
+            return next.length > 24 ? next.slice(-24) : next;
+          });
         });
 
         // 1. Subscribe to PTY events BEFORE opening/attaching the PTY so the
@@ -949,7 +998,7 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
 
         // NOTE: no `windowsPty`/ConPTY hint here. The PTY bytes now come raw
         // from a real Linux PTY inside the sandbox (openrind-pty-bridge.py),
-        // piped through wsl.exe without a second local ConPTY. Telling xterm the
+        // piped through wsl.exe WITHOUT node-pty/ConPTY. Telling xterm the
         // backend is ConPTY would make it apply ConPTY-specific input/reflow
         // handling to a stream that isn't ConPTY, re-introducing corruption.
         // Standard handling is correct for the raw Linux-PTY stream.
@@ -1165,6 +1214,7 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
             cols?: number;
             rows?: number;
             exited: boolean;
+            reused?: boolean;
           }>("openrindPtyAttachOrOpen", {
             sandboxName: expectedSandboxName,
             cols: term.cols,
@@ -1172,23 +1222,15 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
             sessionId: agentSessionId,
             profile: props.profile,
           });
-          if (cancelled) {
-            await invoke("openrindPtyDetach", attached.id).catch(() => {});
-            return;
-          }
+          if (cancelled) return;
           setSandboxName(expectedSandboxName);
           lastKnownSandboxNameRef.current = expectedSandboxName;
           // Set sessionIdRef BEFORE phase 2 so the onPtyData handler accepts
           // events the moment the main process starts streaming.
           sessionIdRef.current = attached.id;
-          // Wire stdin BEFORE replaying the buffered PTY bytes. Agent TUIs ask
-          // xterm terminal-capability questions during their first paint (for
-          // example cursor-position/device-status reports). Parsing that first
-          // burst makes xterm emit the answers through onData. If the listener
-          // is installed after replay, those answers are silently discarded
-          // and Claude waits forever with an otherwise healthy, blank PTY.
-          // Output remains paused in main until openrindPtyAttach below, so this
-          // does not reopen the first-paint race the two-phase handoff prevents.
+          // Input must be live before replay/attach exposes an interactive
+          // prompt. A slow replay must never leave a visible Claude screen with
+          // an unwired keyboard.
           wireTerminalIO();
           // Replay the buffered bytes at the geometry they were RECORDED at.
           // The buffer is the agent's raw PTY output: absolute cursor moves
@@ -1222,15 +1264,11 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
           if (cancelled) return;
           // Phase 2: wire live PTY streaming now that sessionIdRef is set.
           if (!attached.exited) {
-            await invoke("openrindPtyAttach", attached.id);
+            await invoke("openrindPtyAttach", attached.id, {
+              replayBuffered: attached.reused === false,
+            });
           }
-          if (cancelled) {
-            // cleanup() may have detached while the attach IPC was in flight.
-            // Detach once more so a late attach cannot keep streaming into a
-            // renderer that has already been disposed.
-            await invoke("openrindPtyDetach", attached.id).catch(() => {});
-            return;
-          }
+          if (cancelled) return;
           // Now fit to the actual container. For a live session the resize
           // frame reaches the agent's PTY (wireTerminalIO is up) and the agent
           // repaints the whole frame at the new size. A dead session stays at
@@ -1264,22 +1302,7 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
         // Open the PTY. Pass the current xterm size — now guaranteed to be the
         // result of a ResizeObserver-corrected fit() call.
         setPhase("connecting-pty");
-        // Claude can paint while the IPC response is in flight, so tracking
-        // must be armed before the transport starts rather than afterwards.
-        paintBytesRef.current = 0;
-        trackPaintRef.current = true;
-        if (paintCapTimerRef.current) clearTimeout(paintCapTimerRef.current);
-        paintCapTimerRef.current = setTimeout(
-          markAgentReadyOnPaintTimeout,
-          AGENT_PAINT_CAP_MS,
-        );
-        const pty = await invoke<{
-          id: string;
-          buffered: string;
-          cols?: number;
-          rows?: number;
-          exited: boolean;
-        }>("openrindPtyOpen", {
+        const pty = await invoke<{ id: string }>("openrindPtyOpen", {
           sandboxName: sandbox.sandboxName,
           cols: term.cols,
           rows: term.rows,
@@ -1291,52 +1314,25 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
           return;
         }
         sessionIdRef.current = pty.id;
-        // The buffered startup burst can contain terminal queries. Install the
-        // xterm -> PTY input path before parsing it so xterm's generated replies
-        // reach Claude instead of being lost during the two-phase output pause.
+        // Wire input immediately after PTY ownership is established, before
+        // buffered output can expose a prompt that appears unresponsive.
         wireTerminalIO();
-        if (pty.buffered) {
-          const recordedCols = pty.cols ?? term.cols;
-          const recordedRows = pty.rows ?? term.rows;
-          if (term.cols !== recordedCols || term.rows !== recordedRows) {
-            try {
-              term.resize(recordedCols, recordedRows);
-            } catch {
-              // A later fit asks Claude for a clean repaint.
-            }
-          }
-          noteAgentPaint(pty.buffered.length);
-          await new Promise<void>((resolve) =>
-            writeCounted(term, pty.buffered, resolve),
-          );
-        }
-        // Flush any renderer-side bytes queued while xterm was mounting.
-        // sessionIdRef is set first so flow control always targets this PTY.
+        // Start paint tracking only after provisioning, but before main attaches
+        // the output stream. Main then installs the handler and replays all bytes
+        // atomically, so Claude's first full-screen frame cannot race ahead of
+        // this session id.
+        paintBytesRef.current = 0;
+        trackPaintRef.current = true;
+        if (paintCapTimerRef.current) clearTimeout(paintCapTimerRef.current);
+        paintCapTimerRef.current = setTimeout(
+          markAgentReadyOnPaintTimeout,
+          AGENT_PAINT_CAP_MS,
+        );
+        await invoke("openrindPtyAttach", pty.id, { replayBuffered: true });
+        if (cancelled) return;
         await flushEarlyBuffer(term);
         if (cancelled) return;
-        if (!pty.exited) {
-          await invoke("openrindPtyAttach", pty.id);
-        }
-        if (cancelled) {
-          // See the re-attach path above: cleanup and the phase-two IPC can
-          // cross, so make the final state explicitly detached.
-          await invoke("openrindPtyDetach", pty.id).catch(() => {});
-          return;
-        }
-        // Keep the bootstrap overlay up until the agent actually paints its UI.
-        // The PTY transport can connect just before Claude's first complete
-        // TUI frame. markAgentReady fires on the first settled render burst;
-        // the cap guarantees the overlay never hangs if Claude produces none.
-        if (!pty.exited) {
-          try {
-            fitRef.current?.fit();
-          } catch {
-            // ResizeObserver will retry after the next layout change.
-          }
-        } else {
-          markAgentReady();
-        }
-        setPhase(pty.exited ? "exited" : "connected");
+        setPhase("connected");
       } catch (err) {
         if (cancelled) return;
         const message = err instanceof Error ? err.message : String(err);
@@ -1379,7 +1375,7 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
     if (!nameToDelete) return;
     const ok = window.confirm(
       `Delete sandbox "${nameToDelete}"?\n\n` +
-        "The PostgreSQL-backed /sandbox/work filesystem will remain, but this sandbox " +
+        "The Postgres-backed /home/agent will remain, but this sandbox " +
         "instance is gone. Reopening the workspace will create a fresh " +
         "sandbox and restore the home directory from PostgreSQL.",
     );
@@ -1473,6 +1469,36 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
         </div>
 
         <div className="flex shrink-0 items-center gap-1">
+          {phase === "connected" ? (
+            <TerminalMicButton
+              onText={(text) => {
+                const id = sessionIdRef.current;
+                if (!id) return;
+                // Flatten newlines so dictation never accidentally submits the
+                // prompt — the user reviews the text and presses Enter.
+                const flat = text.replace(/\r?\n/g, " ").trim();
+                if (!flat) return;
+                void invoke("openrindPtyWrite", { sessionId: id, data: flat });
+                try {
+                  termRef.current?.focus();
+                } catch {
+                  /* ignore */
+                }
+              }}
+              onError={(message) => {
+                // Surface failures directly in the terminal so they're not
+                // lost behind a tooltip.
+                try {
+                  termRef.current?.write(
+                    `\r\n\x1b[31m[voice] ${message}\x1b[0m\r\n`,
+                  );
+                } catch {
+                  /* ignore */
+                }
+              }}
+            />
+          ) : null}
+
           {phase === "exited" || phase === "error" ? (
             <button
               type="button"
@@ -1523,7 +1549,7 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
               title="Switch to the regular Openrind Desktop chat UI. The session keeps running — switch back to resume it instantly."
             >
               <MessageSquare size={16} />
-              <span>Chat</span>
+              <span className="hidden lg:inline">Chat</span>
             </button>
           ) : null}
 
@@ -1586,6 +1612,20 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
               />
             </>
           ) : null}
+
+          {phase === "connected" ? (
+            <button
+              type="button"
+              className={TOOLBAR_BTN}
+              aria-label="Files"
+              onClick={() => setFilesModalOpen(true)}
+              onMouseDown={(e) => e.preventDefault()}
+              title="View uploaded files"
+            >
+              <FileText size={16} />
+              <span className="hidden lg:inline">Files{uploadedFiles.length > 0 ? ` (${uploadedFiles.length})` : ""}</span>
+            </button>
+          ) : null}
         </div>
       </div>
       {popoutError ? (
@@ -1631,7 +1671,7 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
           <div ref={containerRef} className="h-full w-full" />
         </div>
         {errorMessage && phase === "error" ? (
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-dls-surface p-6">
+          <div className="absolute inset-0 z-10 flex items-start justify-center overflow-y-auto bg-dls-surface p-4 md:p-6 md:items-center">
             <BootstrapErrorCard
               message={errorMessage}
               profile={props.profile}
@@ -1651,12 +1691,15 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
           // (isFreshBootstrap === false) skips it so returning is instant.
           // "error" without an errorMessage (cleared by commitRename) falls
           // through here — don't show the spinner, just show the terminal.
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-dls-surface p-6">
+          <div className="absolute inset-0 z-10 flex items-start justify-center overflow-y-auto bg-dls-surface p-4 md:p-6 md:items-center">
             <BootstrapProgress
               phase={phase}
               bootstrapMessage={bootstrapMessage}
+              events={bootstrapEvents}
+              startedAt={bootstrapStartedAt}
               existed={false}
               onAbort={handleAbort}
+              profile={props.profile}
             />
           </div>
         ) : null}
@@ -1780,33 +1823,51 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
 
 /**
  * Microphone button for the terminal toolbar. Records speech, transcribes it
- * through ElevenLabs via the shared useVoiceInput hook, and hands the text to
- * onText, which writes it into the PTY so it lands in Claude Code's input box.
+ * on-device (Whisper, via the shared useVoiceInput hook), and hands the text
+ * to onText — which the terminal writes into the PTY so it lands in Claude
+ * Code's input box. Renders nothing when the runtime can't record/transcribe.
  */
 function TerminalMicButton(props: {
   onText: (text: string) => void;
   onError?: (message: string) => void;
   disabled?: boolean;
 }) {
-  const { status, error, start, stop } = useVoiceInput(props.onText, props.onError);
+  const { status, error, modelProgress, modelReady, start, stop } =
+    useVoiceInput(props.onText, props.onError);
   if (status === "unsupported") return null;
 
   const recording = status === "recording";
   const transcribing = status === "transcribing";
+  // First-run only: the model is still downloading/loading. Subsequent runs
+  // have modelReady === true and just show a brief spinner.
+  const loadingModel = transcribing && !modelReady;
+  const pct = modelProgress != null ? Math.round(modelProgress * 100) : null;
 
-  let title = "Dictate into the terminal";
+  let title = "Dictate into the terminal (on-device voice)";
   if (recording) title = "Stop recording";
+  else if (loadingModel)
+    title =
+      pct != null
+        ? `Downloading speech model… ${pct}%`
+        : "Loading speech model…";
   else if (transcribing) title = "Transcribing…";
   else if (status === "error" && error) title = `${error} — click to try again`;
 
   return (
-    <div className="flex items-center">
+    <div className="flex items-center gap-1.5">
+      {loadingModel ? (
+        <span className="whitespace-nowrap text-[11px] tabular-nums text-amber-11">
+          {pct != null
+            ? `Downloading speech model… ${pct}%`
+            : "Loading speech model…"}
+        </span>
+      ) : null}
       <button
         type="button"
-        className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+        className={`flex items-center justify-center rounded-md p-1.5 transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
           recording
             ? "bg-red-3 text-red-11 hover:bg-red-4"
-            : "text-dls-secondary hover:bg-dls-hover hover:text-dls-text"
+            : "text-gray-10 hover:bg-gray-2/70 hover:text-dls-text"
         }`}
         onClick={() => {
           if (props.disabled || transcribing) return;
@@ -1827,6 +1888,7 @@ function TerminalMicButton(props: {
           <Mic size={16} />
         )}
       </button>
+      <VoiceEngineMenu direction="down" align="right" />
     </div>
   );
 }
@@ -1834,76 +1896,145 @@ function TerminalMicButton(props: {
 type BootstrapProgressProps = {
   phase: Phase;
   bootstrapMessage: string | null;
+  events: BootstrapProgressEvent[];
+  startedAt: number | null;
   existed: boolean;
+  profile: SandboxProfile;
   /** When provided, renders a "Cancel provisioning" link inside the card.
    *  Calling it sets userAborted=true so run() exits immediately, and the
    *  user can re-launch manually via the toolbar "Launch session" button. */
   onAbort?: () => void;
 };
 
-function BootstrapProgress(props: BootstrapProgressProps) {
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+const BOOTSTRAP_STEPS = [
+  { id: "gateway", label: "Start OpenShell control plane", detail: "Local gateway and supervisor" },
+  { id: "database", label: "Check persistent workspace", detail: "Secure PostgreSQL configuration" },
+  { id: "image", label: "Verify local runtime image", detail: "Openrind Shell FUSE image" },
+  { id: "provider", label: "Configure Claude provider", detail: "Gateway-managed credential" },
+  { id: "create", label: "Create sandbox and mount FUSE", detail: "Container, mount, and one-time initialization" },
+  { id: "health", label: "Verify writable workspace", detail: "FUSE daemon writer lease" },
+  { id: "pty", label: "Connect secure terminal", detail: "OpenShell session and Linux PTY bridge" },
+  { id: "agent", label: "Start Claude", detail: "Waiting for Claude to paint its first screen" },
+] as const;
 
+function bootstrapStageIndex(phase: string): number {
+  switch (phase) {
+    case "database": return 1;
+    case "image": return 2;
+    case "provider": return 3;
+    case "create": return 4;
+    case "health": return 5;
+    case "ready":
+    case "mounting-terminal":
+    case "connecting-pty": return 6;
+    case "connected": return 7;
+    case "gateway":
+    case "starting":
+    case "ensuring":
+    case "ensuring-sandbox": return 0;
+    default: return -1;
+  }
+}
+
+function formatBootstrapElapsed(milliseconds: number): string {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1_000));
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return minutes > 0 ? `${minutes}m ${String(remainder).padStart(2, "0")}s` : `${remainder}s`;
+}
+
+function BootstrapProgress(props: BootstrapProgressProps) {
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    const timer = setInterval(() => {
-      setElapsedSeconds((prev) => prev + 1);
-    }, 1000);
-    return () => clearInterval(timer);
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
   }, []);
 
-  const formatTime = (totalSeconds: number): string => {
-    const mins = Math.floor(totalSeconds / 60);
-    const secs = totalSeconds % 60;
-    return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
-  };
+  const isClaw = props.profile === "openrind-shell-openclaw";
+  const steps = [
+    { id: "gateway", label: "Start OpenShell control plane", detail: "Local gateway and supervisor" },
+    { id: "database", label: "Check persistent workspace", detail: "Secure PostgreSQL configuration" },
+    { id: "image", label: "Verify local runtime image", detail: "Openrind Shell FUSE image" },
+    { id: "provider", label: isClaw ? "Configure OpenRouter provider" : "Configure Claude provider", detail: "Gateway-managed credential" },
+    { id: "create", label: "Create sandbox and mount FUSE", detail: "Container, mount, and one-time initialization" },
+    { id: "health", label: "Verify writable workspace", detail: "FUSE daemon writer lease" },
+    { id: "pty", label: "Connect secure terminal", detail: "OpenShell session and Linux PTY bridge" },
+    { id: "agent", label: isClaw ? "Start OpenClaw" : "Start Claude", detail: isClaw ? "Waiting for OpenClaw to paint its first screen" : "Waiting for Claude to paint its first screen" },
+  ];
 
-  const phaseActivityMap: Record<Phase, string> = {
-    starting: "Initializing session...",
-    "ensuring-sandbox": "Creating sandbox environment...",
-    "mounting-terminal": "Mounting terminal workspace...",
-    "connecting-pty": "Connecting terminal session...",
-    connected: "Starting agent...",
-    exited: "Session exited",
-    error: "Error occurred",
-  };
-
-  const liveActivityText =
-    props.bootstrapMessage || phaseActivityMap[props.phase] || "Initializing session...";
+  const eventStage = props.events.reduce(
+    (highest, event) => Math.max(highest, bootstrapStageIndex(event.phase)),
+    -1,
+  );
+  const currentStage = Math.max(eventStage, bootstrapStageIndex(props.phase), 0);
+  const elapsed = props.startedAt ? formatBootstrapElapsed(now - props.startedAt) : "0s";
+  const activities = props.events.slice(-6).reverse();
+  const currentMessage = props.bootstrapMessage ?? "Waiting for the next OpenShell event...";
 
   return (
-    <div className="w-full max-w-md space-y-4 rounded-3xl border border-dls-border bg-dls-surface p-6 shadow-xl">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2.5">
-          <Loader2 size={16} className="animate-spin text-dls-accent" />
-          <h3 className="text-sm font-medium text-dls-text">
-            Starting Openrind Shell session
-          </h3>
+    <div className="w-full max-w-2xl rounded-2xl border border-dls-border bg-dls-surface shadow-2xl">
+      <div className="flex items-start justify-between gap-4 border-b border-dls-border px-6 py-5">
+        <div className="flex items-center gap-3">
+          <Loader2 size={18} className="animate-spin text-amber-10" />
+          <div>
+            <div className="text-sm font-semibold text-gray-12">
+              {props.existed ? "Reconnecting to Openrind Shell" : "Provisioning Openrind Shell"}
+            </div>
+            <div className="mt-1 text-xs text-gray-9">
+              Step {Math.min(currentStage + 1, steps.length)} of {steps.length} · {elapsed} elapsed
+            </div>
+          </div>
         </div>
-        <div className="flex items-center gap-1.5 rounded-full border border-dls-border bg-dls-hover px-2.5 py-1 font-mono text-xs text-dls-secondary tabular-nums">
-          <Clock size={12} className="shrink-0 text-dls-secondary" />
-          <span className="text-dls-secondary">{formatTime(elapsedSeconds)}</span>
-        </div>
+        <span className="rounded-full border border-amber-8/40 bg-amber-3/20 px-2.5 py-1 text-[11px] font-medium text-amber-11">In progress</span>
       </div>
 
-      <div className="flex items-start gap-3 rounded-xl border border-dls-border bg-dls-hover p-4 font-mono text-[12px] text-dls-text leading-relaxed">
-        <span className="relative flex h-2 w-2 shrink-0 mt-1.5 items-center justify-center">
-          <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-500/50 animate-ping" />
-          <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
-        </span>
-        <span className="flex-1 break-all">{liveActivityText}</span>
-      </div>
-
-      {props.onAbort ? (
-        <div className="flex justify-center pt-1">
-          <button
-            type="button"
-            className="text-xs text-dls-secondary hover:text-dls-text transition-colors underline-offset-2 hover:underline"
-            onClick={props.onAbort}
-          >
-            Cancel provisioning
-          </button>
+      <div className="space-y-4 p-6">
+        <div className="rounded-xl border border-amber-8/30 bg-amber-2/15 px-4 py-3" aria-live="polite">
+          <div className="text-[11px] font-medium uppercase tracking-wide text-amber-11">Current activity</div>
+          <div className="mt-1 break-words font-mono text-xs leading-5 text-gray-11">{currentMessage}</div>
         </div>
-      ) : null}
+        <div className="space-y-1">
+          {steps.map((step, index) => {
+            const state = index < currentStage ? "done" : index === currentStage ? "active" : "pending";
+            const detail = [...props.events].reverse().find((event) => bootstrapStageIndex(event.phase) === index)?.message;
+            return (
+              <div key={step.id} className="flex gap-3 rounded-lg px-2 py-2">
+                <div className="flex w-4 shrink-0 justify-center pt-1">
+                  <div className={`h-2.5 w-2.5 rounded-full ${state === "done" ? "bg-green-9" : state === "active" ? "animate-pulse bg-amber-9 ring-4 ring-amber-8/15" : "bg-gray-6"}`} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className={`text-xs font-medium ${state === "pending" ? "text-gray-8" : "text-gray-11"}`}>{step.label}</div>
+                  <div className="mt-0.5 truncate text-[11px] text-gray-9">{state === "active" ? detail ?? step.detail : step.detail}</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {activities.length > 0 ? (
+          <div className="rounded-xl border border-dls-border bg-gray-1/40 px-4 py-3">
+            <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-gray-9">Live activity</div>
+            <div className="max-h-32 space-y-1 overflow-y-auto font-mono text-[11px] leading-4 text-gray-10">
+              {activities.map((event, index) => (
+                <div key={`${event.timestamp}-${index}`} className="flex gap-3">
+                  <span className="shrink-0 tabular-nums text-gray-8">+{formatBootstrapElapsed(event.timestamp - (props.startedAt ?? event.timestamp))}</span>
+                  <span className="break-words">{event.message}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        {props.onAbort ? (
+          <div className="flex justify-center pt-1">
+            <button
+              type="button"
+              className="text-xs text-gray-8 underline-offset-2 transition-colors hover:text-gray-11 hover:underline"
+              onClick={props.onAbort}
+            >
+              Cancel provisioning
+            </button>
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }

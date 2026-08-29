@@ -44,7 +44,7 @@ fi
 # Keep successful marker verification out of Claude's terminal. The command's
 # diagnostics are still surfaced verbatim when initialization is missing or
 # stale, but a healthy reconnect paints Claude as the first application output.
-ENSURE_LOG="${RUNTIME_DIR}/claude-init-ensure.log"
+ENSURE_LOG="/tmp/claude-init-ensure.log"
 set +e
 openrind-shell init --ensure >"$ENSURE_LOG" 2>&1
 ENSURE_STATUS=$?
