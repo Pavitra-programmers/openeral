@@ -219,7 +219,20 @@ export async function ensureManagedFuseGateway({ onProgress } = {}) {
 
       await ensureDistroRunning();
       const existing = await gatewayInfo(runtime, endpoint);
-      if (existing.exitCode === 0) return { endpoint, reused: true };
+      
+      let upToDate = false;
+      if (existing.exitCode === 0) {
+        const sourceId = runtimeId(runtime);
+        const checkInstall = await wslRun(
+          ["-d", DISTRO_NAME, "--", "sh", "-c", `cat ${RUNTIME_DIR}/source-id 2>/dev/null || true`],
+          { timeout: 5000 }
+        ).catch(() => null);
+        if (checkInstall && checkInstall.exitCode === 0 && checkInstall.stdout.trim() === sourceId) {
+          upToDate = true;
+        }
+      }
+
+      if (upToDate) return { endpoint, reused: true };
 
       onProgress?.({
         phase: "gateway",

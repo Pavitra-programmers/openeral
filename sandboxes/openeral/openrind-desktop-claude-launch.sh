@@ -50,11 +50,6 @@ esac
 
 export OPENRIND_DESKTOP_CLAUDE_LAUNCH=1
 
-# If ANTHROPIC_API_KEY is not set but OPENROUTER_API_KEY is, alias them so
-# the agent (which expects ANTHROPIC_API_KEY) can authenticate seamlessly.
-if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -n "${OPENROUTER_API_KEY:-}" ]; then
-  export ANTHROPIC_API_KEY="$OPENROUTER_API_KEY"
-fi
 FAST_FIRST_LAUNCH_MARKER="$RUNTIME_DIR/desktop-fast-first-launch"
 if [ -f "$FAST_FIRST_LAUNCH_MARKER" ]; then
   rm -f "$FAST_FIRST_LAUNCH_MARKER"
@@ -65,12 +60,34 @@ unset FAST_FIRST_LAUNCH_MARKER
 # Run Openrind Gateway proxy configuration on session launch!
 node /opt/openrind-shell/configure-openrind-gateway.mjs || true
 
-if [ -f "$RUNTIME_DIR/anthropic-base-url" ]; then
-  export ANTHROPIC_BASE_URL="$(cat "$RUNTIME_DIR/anthropic-base-url" 2>/dev/null | tr -d '\r\n ')"
+# If ANTHROPIC_API_KEY is not set but OPENROUTER_API_KEY is, alias them so
+# the agent (which expects ANTHROPIC_API_KEY) can authenticate seamlessly.
+if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -n "${OPENROUTER_API_KEY:-}" ]; then
+  export ANTHROPIC_API_KEY="$OPENROUTER_API_KEY"
 fi
 
+# Validate marker profile against the canonical agent variable from session.env
+expected_profile="openrind-shell-claude"
+if [ "${OPENRIND_SHELL_AGENT:-}" = "openclaw" ]; then
+  expected_profile="openrind-shell-openclaw"
+fi
+if [ "$profile" != "$expected_profile" ]; then
+  echo "Openrind Shell: launch profile mismatch (marker: $profile, expected: $expected_profile)."
+  exit 64
+fi
+
+# Set proxy configuration for Claude, unset for OpenClaw
+if [ "${OPENRIND_SHELL_AGENT:-}" = "openclaw" ]; then
+  unset ANTHROPIC_BASE_URL
+else
+  if [ -f "$RUNTIME_DIR/anthropic-base-url" ]; then
+    export ANTHROPIC_BASE_URL="$(cat "$RUNTIME_DIR/anthropic-base-url" 2>/dev/null | tr -d '\r\n ')"
+  fi
+fi
+
+# Select binary based solely on the canonical variable
 AGENT_BIN="/usr/local/bin/claude"
-if [ "$profile" = "openrind-shell-openclaw" ]; then
+if [ "${OPENRIND_SHELL_AGENT:-}" = "openclaw" ]; then
   if command -v openclaw >/dev/null 2>&1; then
     AGENT_BIN="openclaw"
   elif [ -x /usr/local/bin/openclaw ]; then

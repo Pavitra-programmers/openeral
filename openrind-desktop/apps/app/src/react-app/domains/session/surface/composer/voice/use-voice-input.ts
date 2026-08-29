@@ -200,6 +200,8 @@ export function useVoiceInput(
         if (text) onTranscriptRef.current(text);
         setStatus("idle");
       } catch (err) {
+        if (pendingIdRef.current !== id) return; // superseded or cancelled
+        pendingIdRef.current = null;
         const raw = err instanceof Error ? err.message : String(err);
         // Strip Electron's "Error invoking remote method '...': Error: " wrapper.
         fail(raw.replace(/^Error invoking remote method '[^']*':\s*Error:\s*/, ""));

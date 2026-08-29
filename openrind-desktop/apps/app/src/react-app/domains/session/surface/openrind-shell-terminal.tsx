@@ -515,10 +515,24 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
   // Derived sandbox name from workspaceId — available immediately without
   // waiting for openrindEnsureSandbox to return. Shown in the header from
   // the very first render so the user never sees "(no sandbox)".
-  const expectedSandboxName = useMemo(
-    () => deriveExpectedSandboxName(props.workspaceId),
-    [props.workspaceId],
+  const [expectedSandboxName, setExpectedSandboxName] = useState<string>(() =>
+    deriveExpectedSandboxName(props.workspaceId)
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    window.__OPENRIND_DESKTOP_ELECTRON__.invokeDesktop(
+      "openrindDeriveSandboxName",
+      props.workspaceId
+    ).then((name) => {
+      if (!cancelled && name) {
+        setExpectedSandboxName(name);
+      }
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [props.workspaceId]);
 
   // Stable callback for "reconnect" so the user can rebuild a dead PTY
   // without rerendering the whole component.
@@ -874,10 +888,12 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
         // openrindEnsureSandbox throws before returning (sandbox in error
         // state, stuck-provisioning, etc.) — i.e. before setSandboxName
         // is ever called. Only set if not already known from a prior run.
+        const authoritativeName = await window.__OPENRIND_DESKTOP_ELECTRON__.invokeDesktop(
+          "openrindDeriveSandboxName",
+          props.workspaceId,
+        );
         if (!lastKnownSandboxNameRef.current) {
-          lastKnownSandboxNameRef.current = deriveExpectedSandboxName(
-            props.workspaceId,
-          );
+          lastKnownSandboxNameRef.current = authoritativeName;
         }
 
         // 0. Subscribe to bootstrap progress events BEFORE calling
@@ -1195,7 +1211,7 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
             >("openrindPtyList");
           liveSession = sessionsList.some(
             (s) =>
-              s.sandboxName === expectedSandboxName &&
+              s.sandboxName === authoritativeName &&
               (s.agentSessionId ?? null) === agentSessionId,
           );
         } catch {
@@ -1215,15 +1231,18 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
             exited: boolean;
             reused?: boolean;
           }>("openrindPtyAttachOrOpen", {
-            sandboxName: expectedSandboxName,
+            sandboxName: authoritativeName,
             cols: term.cols,
             rows: term.rows,
             sessionId: agentSessionId,
             profile: props.profile,
           });
-          if (cancelled) return;
-          setSandboxName(expectedSandboxName);
-          lastKnownSandboxNameRef.current = expectedSandboxName;
+          if (cancelled) {
+            void invoke("openrindPtyDetach", attached.id).catch(() => {});
+            return;
+          }
+          setSandboxName(authoritativeName);
+          lastKnownSandboxNameRef.current = authoritativeName;
           // Set sessionIdRef BEFORE phase 2 so the onPtyData handler accepts
           // events the moment the main process starts streaming.
           sessionIdRef.current = attached.id;
@@ -1256,18 +1275,27 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
               term.write(attached.buffered, resolve),
             );
           }
-          if (cancelled) return;
+          if (cancelled) {
+            void invoke("openrindPtyDetach", attached.id).catch(() => {});
+            return;
+          }
           // Same await rationale as the replay above: the fit() further down
           // must not resize while these are still queued.
           await flushEarlyBuffer(term);
-          if (cancelled) return;
+          if (cancelled) {
+            void invoke("openrindPtyDetach", attached.id).catch(() => {});
+            return;
+          }
           // Phase 2: wire live PTY streaming now that sessionIdRef is set.
           if (!attached.exited) {
             await invoke("openrindPtyAttach", attached.id, {
               replayBuffered: attached.reused === false,
             });
           }
-          if (cancelled) return;
+          if (cancelled) {
+            void invoke("openrindPtyDetach", attached.id).catch(() => {});
+            return;
+          }
           // Now fit to the actual container. For a live session the resize
           // frame reaches the agent's PTY (wireTerminalIO is up) and the agent
           // repaints the whole frame at the new size. A dead session stays at
