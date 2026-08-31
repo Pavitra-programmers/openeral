@@ -214,12 +214,130 @@ unlinkSync(path);
 NODE
 echo "setup-fuse.sh: mounted durability verified"
 
+sync_bundled_skills() {
+  local src="$1"
+  local dst="$2"
+  [ -d "$src" ] || return 0
+  node - "$src" "$dst" << 'EOF'
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+
+const [,, srcBase, dstBase] = process.argv;
+if (!srcBase || !dstBase || !fs.existsSync(srcBase)) process.exit(0);
+
+function hashFile(filePath) {
+  try {
+    return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+try {
+  fs.mkdirSync(dstBase, { recursive: true });
+  const entries = fs.readdirSync(srcBase, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const skillName = entry.name;
+    const srcDir = path.join(srcBase, skillName);
+    const dstDir = path.join(dstBase, skillName);
+    const manifestPath = path.join(dstDir, '.managed-manifest.json');
+
+    let oldManifest = {};
+    if (fs.existsSync(manifestPath)) {
+      try {
+        oldManifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+      } catch {
+        oldManifest = {};
+      }
+    }
+
+    if (!fs.existsSync(dstDir)) {
+      fs.mkdirSync(dstDir, { recursive: true });
+    }
+
+    const newManifest = {};
+
+    function syncDir(currentSrc, currentDst, relPrefix = '') {
+      fs.mkdirSync(currentDst, { recursive: true });
+      const items = fs.readdirSync(currentSrc, { withFileTypes: true });
+      for (const item of items) {
+        if (item.name === '.managed-manifest.json' || item.name === '.git') continue;
+        const srcItemPath = path.join(currentSrc, item.name);
+        const dstItemPath = path.join(currentDst, item.name);
+        const relPath = relPrefix ? `${relPrefix}/${item.name}` : item.name;
+
+        if (item.isDirectory()) {
+          syncDir(srcItemPath, dstItemPath, relPath);
+        } else if (item.isFile()) {
+          const srcHash = hashFile(srcItemPath);
+          if (!srcHash) continue;
+          newManifest[relPath] = srcHash;
+
+          if (!fs.existsSync(dstItemPath)) {
+            fs.copyFileSync(srcItemPath, dstItemPath);
+          } else {
+            const dstHash = hashFile(dstItemPath);
+            if (dstHash !== srcHash) {
+              const prevHash = oldManifest[relPath];
+              if (!prevHash || dstHash === prevHash) {
+                fs.copyFileSync(srcItemPath, dstItemPath);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    syncDir(srcDir, dstDir);
+    fs.writeFileSync(manifestPath, JSON.stringify(newManifest, null, 2) + '\n');
+  }
+} catch (err) {
+  console.error('sync_bundled_skills warning:', err.message);
+}
+EOF
+}
+
 if [ "$OPENRIND_SHELL_AGENT" = claude ]; then
   # Claude creates settings and trust state from the user's interactive choices.
   echo "setup-fuse.sh: persistent Claude home ready"
+  if [ -d /opt/openrind-shell/skills ]; then
+    for target_skills_dir in "$OPENRIND_SHELL_CLAUDE_HOME/.claude/skills" "$OPENRIND_SHELL_HOME/.claude/skills"; do
+      sync_bundled_skills /opt/openrind-shell/skills "$target_skills_dir"
+    done
+  fi
   HOME="$OPENRIND_SHELL_HOME" node /opt/openrind-shell/configure-openrind-gateway.mjs
+  # Warm the immutable executable and its dynamic loader while provisioning is
+  # still showing progress. This does not create trust or onboarding state.
+  HOME="$OPENRIND_SHELL_CLAUDE_HOME" /usr/local/bin/claude-real --version >/dev/null 2>&1 || true
 else
   echo "setup-fuse.sh: persistent OpenClaw home ready"
+  if [ -d /opt/openrind-shell/skills ]; then
+    for target_skills_dir in "$OPENRIND_SHELL_OPENCLAW_HOME/.openclaw/skills" "$OPENRIND_SHELL_OPENCLAW_HOME/.claude/skills" "$OPENRIND_SHELL_HOME/.claude/skills"; do
+      sync_bundled_skills /opt/openrind-shell/skills "$target_skills_dir"
+    done
+  fi
+  # Configuration and bundled-skill staging belong to provisioning, not the
+  # interactive launch path.
+  HOME="$OPENRIND_SHELL_OPENCLAW_HOME" \
+    /usr/bin/node /opt/openrind-shell/configure-openclaw-fuse.mjs
+
+  # OpenClaw's first TUI import is its expensive cold-start path. Prime those
+  # immutable modules during provisioning into the exact compile cache used by
+  # the real launcher. `tui --help` loads the command without starting an agent,
+  # opening a network connection, or creating a conversation.
+  OPENRIND_OPENCLAW_COMPILE_CACHE=/tmp/openrind-openclaw-compile-cache
+  install -d -m 0700 "$OPENRIND_OPENCLAW_COMPILE_CACHE"
+  (
+    cd "$OPENRIND_SHELL_HOME"
+    HOME="$OPENRIND_SHELL_OPENCLAW_HOME" \
+      NODE_COMPILE_CACHE="$OPENRIND_OPENCLAW_COMPILE_CACHE" \
+      OPENCLAW_NO_RESPAWN=1 OPENCLAW_SKIP_CHANNELS=1 \
+      OPENCLAW_SKIP_CANVAS_HOST=1 OPENCLAW_SKIP_GMAIL_WATCHER=1 \
+      OPENCLAW_DISABLE_BONJOUR=1 OPENCLAW_EXEC_SHELL_SNAPSHOT=0 \
+      /usr/bin/node /usr/lib/node_modules/openclaw/openclaw.mjs tui --help
+  ) >/dev/null 2>&1 || true
 fi
 
 OPENRIND_SHELL_NPMRC="$OPENRIND_SHELL_RUNTIME_DIR/npmrc"
