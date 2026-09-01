@@ -36,12 +36,14 @@ export type TimeSeriesDataPoint = {
   input_tokens?: number;
   output_tokens?: number;
   total_tokens?: number;
+  cost?: number;
 };
 
 export type UsageStats = {
   total_requests: number;
   total_input_tokens: number;
   total_output_tokens: number;
+  total_cost?: number;
   daily_stats?: TimeSeriesDataPoint[];
   daily_usage?: TimeSeriesDataPoint[];
   history?: TimeSeriesDataPoint[];
@@ -151,6 +153,7 @@ export function GatewayBillingProvider({ children }: GatewayBillingProviderProps
     try {
       const statusRes = await invoke<any>("openrindCredentialStatus");
       const isSet = statusRes.openrindGatewayApiKey === "set";
+      console.log("[billing-provider-debug] refreshStatus: statusRes.openrindGatewayApiKey =", statusRes.openrindGatewayApiKey, "isSet =", isSet);
       setApiKeySet(isSet);
       if (isSet) {
         const storedStatus = localStorage.getItem("openrind_gateway_billing_status") as BillingStatus;
@@ -170,8 +173,25 @@ export function GatewayBillingProvider({ children }: GatewayBillingProviderProps
   const refreshStats = useCallback(async () => {
     if (!apiKeySet) return;
     try {
-      const statsRes = await invoke<UsageStats>("openrindGatewayGetStats");
+      const statsRes = await invoke<any>("openrindGatewayGetStats");
+      console.log("[billing-provider-debug] refreshStats statsRes:", statsRes);
       setStats(statsRes);
+
+      // Dynamically update the profile and billing state from the authorized API key details
+      if (statsRes.email) {
+        setUserEmail(statsRes.email);
+        localStorage.setItem("openrind_gateway_email", statsRes.email);
+      }
+      if (statsRes.name) {
+        setUserName(statsRes.name);
+        localStorage.setItem("openrind_gateway_name", statsRes.name);
+      }
+      if (statsRes.billing_status) {
+        setBillingStatus(statsRes.billing_status);
+        localStorage.setItem("openrind_gateway_billing_status", statsRes.billing_status);
+        localStorage.setItem("openrind_gateway_billing_status_set_at", Date.now().toString());
+      }
+
       setError(null);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
