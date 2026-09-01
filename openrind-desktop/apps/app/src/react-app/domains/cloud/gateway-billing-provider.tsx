@@ -30,10 +30,19 @@ import { Button } from "../../design-system/button";
 
 export type BillingStatus = "unpaid" | "paid" | "none";
 
+export type DailyUsageStats = {
+  date: string;
+  requests: number;
+  input_tokens: number;
+  output_tokens: number;
+  tokens: number;
+};
+
 export type UsageStats = {
   total_requests: number;
   total_input_tokens: number;
   total_output_tokens: number;
+  daily_stats?: DailyUsageStats[];
 };
 
 export type GatewayBillingStore = {
