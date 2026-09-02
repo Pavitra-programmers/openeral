@@ -159,7 +159,10 @@ async function ensureGatewayProvider(openrindGatewayApiKey, onProgress) {
     ["provider", "list", "-o", "json"],
     { ensure: false, env, timeout: 20_000 },
   );
-  if (listed.exitCode !== 0) return "openrind-gateway";
+  if (listed.exitCode !== 0) {
+    console.error(`[ensureGatewayProvider] provider list failed with exit code ${listed.exitCode}: ${listed.stderr}`);
+    return null;
+  }
 
   const current = normalizeProviderRows(listed.stdout).find(
     (row) => row.name === "openrind-gateway" || row.name === "stringcost",
@@ -184,7 +187,7 @@ async function ensureGatewayProvider(openrindGatewayApiKey, onProgress) {
       ? "Refreshing the Openrind Gateway credential..."
       : "Configuring the Openrind Gateway provider...",
   });
-  await runFuseOpenShell(command, {
+  const configured = await runFuseOpenShell(command, {
     ensure: false,
     env: buildFuseWslEnv({
       [credentialKey]: openrindGatewayApiKey,
@@ -192,6 +195,10 @@ async function ensureGatewayProvider(openrindGatewayApiKey, onProgress) {
     }),
     timeout: 20_000,
   });
+  if (configured.exitCode !== 0) {
+    console.error(`[ensureGatewayProvider] provider configuration failed with exit code ${configured.exitCode}: ${configured.stderr}`);
+    return null;
+  }
   return providerName;
 }
 

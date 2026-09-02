@@ -306,10 +306,14 @@ export function useOpenShellState(options: { active: boolean } = { active: false
             localStorage.setItem("openrind_gateway_billing_status", "custom");
             localStorage.setItem("openrind_gateway_email", "Custom API Key");
             localStorage.setItem("openrind_gateway_name", "Individual User");
-            window.dispatchEvent(new CustomEvent("openrind-shell-credentials-changed"));
           }
         }
         if (isMountedRef.current) setCredentialStatus(status);
+        if (key === "openrindGatewayApiKey") {
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(new CustomEvent("openrind-shell-credentials-changed"));
+          }
+        }
       } catch (err) {
         setActionError(err instanceof Error ? err.message : String(err));
         throw err;
@@ -331,10 +335,14 @@ export function useOpenShellState(options: { active: boolean } = { active: false
             localStorage.removeItem("openrind_gateway_billing_status");
             localStorage.removeItem("openrind_gateway_email");
             localStorage.removeItem("openrind_gateway_name");
-            window.dispatchEvent(new CustomEvent("openrind-shell-credentials-changed"));
           }
         }
         if (isMountedRef.current) setCredentialStatus(status);
+        if (key === "openrindGatewayApiKey") {
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(new CustomEvent("openrind-shell-credentials-changed"));
+          }
+        }
       } catch (err) {
         setActionError(err instanceof Error ? err.message : String(err));
         throw err;

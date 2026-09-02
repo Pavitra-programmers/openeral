@@ -235,7 +235,9 @@ export function GatewayBillingPanel() {
                 <p className="text-xs text-dls-secondary">
                   {billingStatus === "paid"
                     ? "Your gateway subscription is active. AI usage metering and routing are enabled."
-                    : "Please complete your subscription to activate full gateway routing and telemetry."}
+                    : billingStatus === "custom"
+                      ? "Connected with custom Gateway credentials."
+                      : "Please complete your subscription to activate full gateway routing and telemetry."}
                 </p>
               </div>
 
@@ -252,7 +254,9 @@ export function GatewayBillingPanel() {
                   />
                   <span>Refresh</span>
                 </Button>
-                {billingStatus === "paid" ? (
+                {billingStatus === "custom" ? (
+                  null
+                ) : billingStatus === "paid" ? (
                   <Button
                     variant="outline"
                     className="h-8 rounded-lg px-3 text-xs text-dls-secondary hover:text-dls-text"

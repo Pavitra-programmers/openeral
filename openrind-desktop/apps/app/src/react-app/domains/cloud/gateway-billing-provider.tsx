@@ -28,7 +28,13 @@ import { parseGatewayAuthDeepLink } from "../../../app/lib/openrind-desktop-link
 import { isDesktopRuntime } from "../../../app/utils";
 import { Button } from "../../design-system/button";
 
-export type BillingStatus = "unpaid" | "paid" | "none";
+export type BillingStatus = "unpaid" | "paid" | "none" | "custom";
+
+export type GatewayStatsResponse = UsageStats & {
+  email?: string;
+  name?: string;
+  billing_status?: BillingStatus;
+};
 
 export type TimeSeriesDataPoint = {
   date: string;
@@ -149,7 +155,7 @@ export function GatewayBillingProvider({ children }: GatewayBillingProviderProps
   const [userName, setUserName] = useState<string>("");
 
   const refreshStatus = useCallback(async () => {
-    if (!isDesktopRuntime()) return;
+    if (!isDesktopRuntime()) return false;
     try {
       const statusRes = await invoke<any>("openrindCredentialStatus");
       const isSet = statusRes.openrindGatewayApiKey === "set";
@@ -164,16 +170,32 @@ export function GatewayBillingProvider({ children }: GatewayBillingProviderProps
         setBillingStatus("none");
         setUserEmail("");
         setUserName("");
+        setStats(null);
+        setError(null);
       }
+      return isSet;
     } catch (err) {
       console.error("Error refreshing credential status:", err);
+      return false;
     }
   }, []);
 
   const refreshStats = useCallback(async () => {
     if (!apiKeySet) return;
     try {
-      const statsRes = await invoke<any>("openrindGatewayGetStats");
+      // Direct query check first to ensure the key is still set (prevent calling on stale closure)
+      const statusRes = await invoke<any>("openrindCredentialStatus");
+      if (statusRes.openrindGatewayApiKey !== "set") {
+        setApiKeySet(false);
+        setBillingStatus("none");
+        setUserEmail("");
+        setUserName("");
+        setStats(null);
+        setError(null);
+        return;
+      }
+
+      const statsRes = await invoke<GatewayStatsResponse>("openrindGatewayGetStats");
       console.log("[billing-provider-debug] refreshStats statsRes:", statsRes);
       setStats(statsRes);
 
@@ -298,9 +320,11 @@ export function GatewayBillingProvider({ children }: GatewayBillingProviderProps
   // Listen to manual credential changes
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const handler = () => {
-      void refreshStatus();
-      void refreshStats();
+    const handler = async () => {
+      const isSet = await refreshStatus();
+      if (isSet) {
+        await refreshStats();
+      }
     };
     window.addEventListener("openrind-shell-credentials-changed", handler);
     return () => window.removeEventListener("openrind-shell-credentials-changed", handler);
