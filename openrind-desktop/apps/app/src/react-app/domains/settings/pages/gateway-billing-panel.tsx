@@ -235,9 +235,7 @@ export function GatewayBillingPanel() {
                 <p className="text-xs text-dls-secondary">
                   {billingStatus === "paid"
                     ? "Your gateway subscription is active. AI usage metering and routing are enabled."
-                    : billingStatus === "unpaid"
-                      ? "Please complete your subscription to activate full gateway routing and telemetry."
-                      : "Connected with custom Gateway credentials."}
+                    : "Please complete your subscription to activate full gateway routing and telemetry."}
                 </p>
               </div>
 
@@ -254,7 +252,16 @@ export function GatewayBillingPanel() {
                   />
                   <span>Refresh</span>
                 </Button>
-                {billingStatus === "unpaid" ? (
+                {billingStatus === "paid" ? (
+                  <Button
+                    variant="outline"
+                    className="h-8 rounded-lg px-3 text-xs text-dls-secondary hover:text-dls-text"
+                    onClick={openPortal}
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    <span>Manage Plan</span>
+                  </Button>
+                ) : (
                   <Button
                     variant="primary"
                     className="h-8 rounded-lg px-3.5 text-xs font-semibold"
@@ -267,15 +274,6 @@ export function GatewayBillingPanel() {
                       <CreditCard className="h-3.5 w-3.5" />
                     )}
                     <span>Subscribe ($10/mo)</span>
-                  </Button>
-                ) : (
-                  <Button
-                    variant="outline"
-                    className="h-8 rounded-lg px-3 text-xs text-dls-secondary hover:text-dls-text"
-                    onClick={openPortal}
-                  >
-                    <ExternalLink className="h-3.5 w-3.5" />
-                    <span>Manage Plan</span>
                   </Button>
                 )}
               </div>

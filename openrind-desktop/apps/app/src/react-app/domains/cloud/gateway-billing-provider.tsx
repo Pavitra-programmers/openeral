@@ -262,10 +262,10 @@ export function GatewayBillingProvider({ children }: GatewayBillingProviderProps
         key: "openrindGatewayApiKey",
         value: pastedKey.trim(),
       });
-      localStorage.setItem("openrind_gateway_billing_status", "unpaid");
+      localStorage.setItem("openrind_gateway_billing_status", "custom");
       localStorage.setItem("openrind_gateway_email", "Custom API Key");
       localStorage.setItem("openrind_gateway_name", "Individual User");
-      setBillingStatus("unpaid");
+      setBillingStatus("custom");
       setApiKeySet(true);
       setShowOnboardingModal(false);
       setPasteMode(false);
@@ -294,6 +294,17 @@ export function GatewayBillingProvider({ children }: GatewayBillingProviderProps
       return () => clearInterval(interval);
     }
   }, [apiKeySet, refreshStats]);
+
+  // Listen to manual credential changes
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handler = () => {
+      void refreshStatus();
+      void refreshStats();
+    };
+    window.addEventListener("openrind-shell-credentials-changed", handler);
+    return () => window.removeEventListener("openrind-shell-credentials-changed", handler);
+  }, [refreshStatus, refreshStats]);
 
   // Listen to deep links - SECURITY FIX: Handle secure token exchange
   useEffect(() => {
