@@ -20,7 +20,7 @@ import {
 } from "./fuse-runtime.mjs";
 import { DISTRO_NAME, ensureWslKeepalive, wslRun, wslSpawn } from "./wsl.mjs";
 
-const IMAGE_CONTRACT = "fuse-haloop-required-v27";
+const IMAGE_CONTRACT = "fuse-haloop-required-v28-openhands";
 const SESSION_MARKER = "/var/lib/openrind-shell/runtime/desktop-session";
 const CLAUDE_HOME_MOUNT = "/sandbox/claude-home";
 const CLAUDE_HOME_VOLUME_PREFIX = "openrind-claude-home-";
@@ -41,17 +41,27 @@ async function optionalHaloopUpstreamApiKey() {
 }
 
 const AGENTS = {
+  "openrind-shell-openhands": {
+    id: "openhands", label: "OpenHands CLI", homeMount: "/sandbox/openhands-home",
+    volumePrefix: "openrind-openhands-home-", mode: "cli",
+  },
+  "openrind-shell-openhands-script": {
+    id: "openhands", label: "OpenHands Script", homeMount: "/sandbox/openhands-home",
+    volumePrefix: "openrind-openhands-home-", mode: "script",
+  },
   "openrind-shell-claude": {
     id: "claude",
     label: "Claude Code",
     homeMount: CLAUDE_HOME_MOUNT,
     volumePrefix: CLAUDE_HOME_VOLUME_PREFIX,
+    mode: "cli",
   },
   "openrind-shell-openclaw": {
     id: "openclaw",
     label: "OpenClaw",
     homeMount: OPENCLAW_HOME_MOUNT,
     volumePrefix: OPENCLAW_HOME_VOLUME_PREFIX,
+    mode: "cli",
   },
 };
 
@@ -231,7 +241,7 @@ async function prepareRequiredHaloop({
   onProgress,
   issueConversation = false,
   agentSessionId = null,
-  haloopContextId,
+  haloopContextId = null,
 }) {
   const anthropicApiKey = await requiredHaloopUpstreamApiKey();
   const runtime = await ensureHaloopRuntime({
@@ -254,12 +264,17 @@ async function prepareRequiredHaloop({
 
 export async function ensureOpenrindShellHaloop(options = {}) {
   const name = String(options.name ?? "").trim();
-  const workspaceId = String(options.workspaceId ?? "").trim();
+  const requestedWorkspaceId = String(options.workspaceId ?? "").trim();
   const profile = String(options.profile ?? "").trim();
-  if (!name || !workspaceId) {
+  if (!name || !requestedWorkspaceId) {
     throw new Error("A sandbox name and workspace id are required for Haloop.");
   }
   const agent = agentForProfile(profile);
+  const workspaceId = await resolveOpenrindShellSandboxWorkspaceId({
+    name,
+    profile,
+    fallbackWorkspaceId: requestedWorkspaceId,
+  });
   await ensureFuseRuntime({ onProgress: options.onProgress });
   return prepareRequiredHaloop({
     name,
@@ -457,6 +472,48 @@ function resolveAgentHomeVolumeName(sandboxName, agent) {
   return `${agent.volumePrefix}${value}`;
 }
 
+function validatedWorkspaceId(value) {
+  const workspaceId = String(value ?? "").trim();
+  return workspaceId &&
+    workspaceId !== "<no value>" &&
+    workspaceId !== "<nil>" &&
+    workspaceId.length <= 512 &&
+    !/[\u0000-\u001f\u007f]/.test(workspaceId)
+    ? workspaceId
+    : null;
+}
+
+/**
+ * Recover the immutable workspace identity recorded when a sandbox's agent
+ * home volume was first created. Navigation knows the compact sandbox name,
+ * not necessarily the original workspace id; substituting the name would
+ * silently switch Haloop to a different, empty trace project.
+ */
+export async function resolveOpenrindShellSandboxWorkspaceId(options = {}) {
+  const sandboxName = String(options.name ?? options.sandboxName ?? "").trim();
+  const agent = agentForProfile(String(options.profile ?? "").trim());
+  const fallback = validatedWorkspaceId(options.fallbackWorkspaceId ?? options.workspaceId);
+  const volumeName = resolveAgentHomeVolumeName(sandboxName, agent);
+  const inspected = await wslRun(
+    [
+      "-d",
+      DISTRO_NAME,
+      "--",
+      "docker",
+      "volume",
+      "inspect",
+      volumeName,
+      "--format",
+      `{{ index .Labels "com.openrind.desktop.workspace" }}`,
+    ],
+    { timeout: 15_000 },
+  ).catch(() => null);
+  const recorded = inspected?.exitCode === 0 ? validatedWorkspaceId(inspected.stdout) : null;
+  if (recorded) return recorded;
+  if (fallback) return fallback;
+  throw new Error("The sandbox's original workspace identity is unavailable.");
+}
+
 async function ensureAgentHomeVolume(sandboxName, workspaceId, agent) {
   const volumeName = resolveAgentHomeVolumeName(sandboxName, agent);
   const result = await wslRun(
@@ -523,7 +580,7 @@ async function existingFuseSandboxIsWritable(name, agent) {
       "--",
       "sh",
       "-c",
-      `test "$(cat /opt/openrind-shell/desktop-contract 2>/dev/null)" = ${shellQuote(IMAGE_CONTRACT)} && test -x /opt/openrind-shell/openrind-pty-bridge.py && test -r /var/lib/openrind-shell/runtime/session.env && . /var/lib/openrind-shell/runtime/session.env && test "\${OPENRIND_SHELL_AGENT:-}" = ${shellQuote(agent.id)} && exec openrind-shell-fused health`,
+      `test "$(cat /opt/openrind-shell/desktop-contract 2>/dev/null)" = ${shellQuote(IMAGE_CONTRACT)} && test -x /opt/openrind-shell/openrind-pty-bridge.py && test -r /var/lib/openrind-shell/runtime/session.env && . /var/lib/openrind-shell/runtime/session.env && test "\${OPENRIND_SHELL_AGENT:-}" = ${shellQuote(agent.id)} && test "\${OPENRIND_SHELL_OPENHANDS_MODE:-cli}" = ${shellQuote(agent.mode)} && exec openrind-shell-fused health`,
     ],
     { ensure: false, timeout: 15_000 },
   );
@@ -588,9 +645,15 @@ function streamCreate({ script, env, databaseUrl, timeoutMs, onProgress }) {
  */
 async function provisionOpenrindShellSandbox(options) {
   const { name, profile, onProgress } = options ?? {};
-  const workspaceId = String(options?.workspaceId ?? name ?? "").trim();
-  if (!name || !workspaceId) throw new Error("A sandbox name and workspace id are required.");
+  const requestedWorkspaceId = String(options?.workspaceId ?? name ?? "").trim();
+  if (!name || !requestedWorkspaceId) throw new Error("A sandbox name and workspace id are required.");
   const agent = agentForProfile(profile);
+
+  const workspaceId = await resolveOpenrindShellSandboxWorkspaceId({
+    name,
+    profile,
+    fallbackWorkspaceId: requestedWorkspaceId,
+  });
 
   ensureWslKeepalive();
   onProgress?.({ phase: "control-plane", message: "Checking the paired OpenShell FUSE gateway…" });
@@ -665,6 +728,8 @@ async function provisionOpenrindShellSandbox(options) {
     `OPENRIND_SHELL_WORKSPACE_ID=${workspaceId}`,
     "--env",
     `OPENRIND_SHELL_AGENT=${agent.id}`,
+    "--env",
+    `OPENRIND_SHELL_OPENHANDS_MODE=${agent.mode || "cli"}`,
     "--no-tty",
     "--",
     "openrind-shell-init",
@@ -888,7 +953,7 @@ function formatUuid(bytes) {
 
 export function resolveAgentSessionValue(profile, sessionId) {
   const value = String(sessionId ?? "").trim();
-  if (!value) return "default";
+  if (!value || profile === "openrind-shell-openhands" || profile === "openrind-shell-openhands-script") return "default";
   if (profile === "openrind-shell-openclaw") {
     const normalized = value
       .replace(/[^A-Za-z0-9._-]+/g, "-")

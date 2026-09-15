@@ -40,6 +40,7 @@ let mockInfo = null;
 
 /**
  * @typedef {Object} CliInfo
+ * @property {Record<string, string[]>} [parentSubcommands]
  * @property {boolean} available     True iff `openshell --help` exited 0
  * @property {string|null} version   Parsed from `openshell --version` (best-effort)
  * @property {string} rawHelp        Raw `openshell --help` output (or stderr if it failed)

@@ -25,6 +25,7 @@ const viteProbeUrls = explicitStartUrl
 
 function run(command, args, options = {}) {
   const useShell = process.platform === "win32" && /\.(cmd|bat)$/i.test(command);
+  /** @type {import('node:child_process').SpawnOptions} */
   const spawnOptions = {
     stdio: "inherit",
     ...options,
@@ -39,6 +40,7 @@ function run(command, args, options = {}) {
 
 function runSync(command, args, options = {}) {
   const useShell = process.platform === "win32" && /\.(cmd|bat)$/i.test(command);
+  /** @type {import('node:child_process').SpawnSyncOptions} */
   const spawnOptions = {
     stdio: "inherit",
     ...options,

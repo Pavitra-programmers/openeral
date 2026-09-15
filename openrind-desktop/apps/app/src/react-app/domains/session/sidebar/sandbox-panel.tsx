@@ -93,6 +93,7 @@ export function SandboxPanel(props: SandboxPanelProps) {
   const [expandedAgents, setExpandedAgents] = useState<Record<string, boolean>>({
     claude: true,
     openclaw: true,
+    openhands: true,
   });
 
   const toggleAgentExpanded = (agentId: string) => {
@@ -102,17 +103,20 @@ export function SandboxPanel(props: SandboxPanelProps) {
     }));
   };
 
-  const { claudeRows, openclawRows } = useMemo(() => {
+  const { claudeRows, openclawRows, openhandsRows } = useMemo(() => {
     const claude: SandboxListRow[] = [];
     const openclaw: SandboxListRow[] = [];
+    const openhands: SandboxListRow[] = [];
     for (const row of filtered) {
       if (row.profile === "openrind-shell-openclaw") {
         openclaw.push(row);
+      } else if (row.profile === "openrind-shell-openhands" || row.profile === "openrind-shell-openhands-script") {
+        openhands.push(row);
       } else {
         claude.push(row);
       }
     }
-    return { claudeRows: claude, openclawRows: openclaw };
+    return { claudeRows: claude, openclawRows: openclaw, openhandsRows: openhands };
   }, [filtered]);
 
   const renderSandboxRow = (row: SandboxListRow) => {
@@ -227,7 +231,7 @@ export function SandboxPanel(props: SandboxPanelProps) {
     );
   };
 
-  const renderAgentSection = (agentId: "claude" | "openclaw", title: string, color: string, sectionRows: SandboxListRow[]) => {
+  const renderAgentSection = (agentId: "claude" | "openclaw" | "openhands", title: string, color: string, sectionRows: SandboxListRow[]) => {
     const isExpanded = expandedAgents[agentId];
     return (
       <div className="space-y-1 pb-3">
@@ -378,6 +382,7 @@ export function SandboxPanel(props: SandboxPanelProps) {
           <div className="flex flex-col gap-0.5">
             {renderAgentSection("claude", "Claude Code", "#f97316", claudeRows)}
             {renderAgentSection("openclaw", "OpenClaw", "#2563eb", openclawRows)}
+            {renderAgentSection("openhands", "OpenHands", "#a855f7", openhandsRows)}
           </div>
         )}
       </div>

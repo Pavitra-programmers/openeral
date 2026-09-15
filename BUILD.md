@@ -333,3 +333,16 @@ relay the tunnel; Node/Rust then require and verify PostgreSQL TLS end to end.
 
 The detailed contract and rejected alternatives are in
 [FUSE-DESIGN.md](./FUSE-DESIGN.md) and [FUSE.md](./FUSE.md).
+# Required production image publication
+
+Before packaging Desktop, publish the sandbox image and run the root
+`Publish matched Haloop images` workflow with a reviewed full commit SHA from
+`openrind/w8-haloop`. Configure `HALOOP_SOURCE_READ_TOKEN` as a read-only repository
+secret because that fork is private. Both Haloop image labels must match the
+Desktop contract and pinned version before either image is pushed.
+
+Set the three GHCR packages (`sandbox`, `haloop-gateway`, `haloop-collector`) to
+public in their package settings. Publishing does not change package visibility.
+The workflow and Desktop packaging commands verify anonymous manifests; a failed
+check blocks packaging. Do not ship an installer while this check fails. No
+customer registry login or direct-provider fallback is required or supported.

@@ -19,7 +19,7 @@ argument-hint: [optional: path to .xlsx or .csv file(s)]
 - **Zero External Dependencies**: Standard `python3` (built-in `zipfile`, `xml.etree.ElementTree`, `csv`, `math`, `statistics`, `json`, `datetime`) is used directly.
 - **Never probe or search for tools**: Do NOT execute `which libreoffice`, `which csvkit`, `which unzip`, or `apt list`.
 - **Never run network package installs**: Do NOT run `pip install`, `uv pip install`, or attempt downloading external packages. The built-in Python script parses `.xlsx` OpenXML and `.csv` natively, offline, and in milliseconds.
-- **Generic for ANY File**: Works on any user-provided `.xlsx` or `.csv` files regardless of schema, number of sheets, column types, or missing values.
+- **Bounded input**: Reject files over 10 MiB, ZIP expansion over 32 MiB, members over 8 MiB, more than 128 members, 10,000 rows, 256 columns, or 250,000 dense cells per sheet. Do not retry rejected files without splitting them first.
 - **Privacy & Security Gate**: Strictly prohibit exposing secrets, credentials (tokens, passwords, API keys, private keys, database URLs), and unnecessary personal data (PII, SSNs, credit card numbers). Redact sensitive columns and values (`[REDACTED]`). Row-level samples must be redacted, and do not dump raw row-level data or full reports in chat when row-level or sensitive records are present.
 
 ## Step 1: Locate Target Files
@@ -54,6 +54,18 @@ import sys, os, zipfile, csv, json, re, math, statistics, datetime, io
 from pathlib import Path
 import xml.etree.ElementTree as ET
 from collections import Counter
+
+MAX_FILE = 10 * 1024 * 1024
+MAX_ROWS, MAX_COLS, MAX_CELLS = 10000, 256, 250000
+csv.field_size_limit(65536)
+
+def check_file(path):
+    if Path(path).stat().st_size > MAX_FILE:
+        raise ValueError('Input exceeds the 10 MiB safety limit')
+
+def check_shape(rows, cols):
+    if rows > MAX_ROWS or cols > MAX_COLS or rows * cols > MAX_CELLS:
+        raise ValueError('Sheet exceeds safe row, column, or cell limits')
 
 def col_letter_to_index(col_str):
     idx = 0
@@ -106,8 +118,13 @@ def format_excel_date(serial, is_1904=False):
     return dt.strftime('%Y-%m-%d %H:%M:%S')
 
 def read_xlsx(file_path):
+    check_file(file_path)
     sheets_data = {}
     with zipfile.ZipFile(file_path, 'r') as z:
+        members = z.infolist()
+        if (len(members) > 128 or sum(m.file_size for m in members) > 32 * 1024 * 1024
+                or any(m.file_size > 8 * 1024 * 1024 or m.file_size > max(1, m.compress_size) * 200 for m in members)):
+            raise ValueError('Workbook exceeds ZIP expansion safety limits')
         is_1904 = False
         if 'xl/workbook.xml' in z.namelist():
             wb_tree = ET.fromstring(z.read('xl/workbook.xml'))
@@ -244,10 +261,12 @@ def read_xlsx(file_path):
                     if ref:
                         col_idx, _ = parse_cell_ref(ref)
                     if col_idx is not None:
+                        check_shape(len(rows_data) + 1, col_idx + 1)
                         row_dict[col_idx] = val
                         if col_idx + 1 > max_col:
                             max_col = col_idx + 1
                 rows_data.append(row_dict)
+                check_shape(len(rows_data), max_col)
 
             matrix = []
             for r in rows_data:
@@ -259,6 +278,7 @@ def read_xlsx(file_path):
     return sheets_data
 
 def read_csv(file_path):
+    check_file(file_path)
     encodings = ['utf-8-sig', 'utf-8', 'latin-1', 'cp1252']
     raw_bytes = Path(file_path).read_bytes()
     text = None
@@ -278,6 +298,7 @@ def read_csv(file_path):
     reader = csv.reader(io.StringIO(text), delimiter=delimiter)
     matrix = []
     for row in reader:
+        check_shape(len(matrix) + 1, len(row))
         converted = []
         for cell in row:
             val = cell.strip()
@@ -310,7 +331,9 @@ def analyze_matrix(matrix):
             seen_header_counts[h] = 1
             unique_keys.append(h)
 
-    sensitive_cols = {col_idx for col_idx, col_name in enumerate(raw_headers) if is_sensitive_name(col_name)}
+    # Default-deny value disclosure: arbitrary notes, identifiers, and numeric
+    # account/card values cannot be reliably classified using header names.
+    sensitive_cols = set(range(len(raw_headers)))
     redacted_sample = []
     for r in data_rows[:5]:
         redacted_sample.append([('[REDACTED]' if c_idx in sensitive_cols else (r[c_idx] if c_idx < len(r) else None)) for c_idx in range(len(raw_headers))])
@@ -340,7 +363,9 @@ def analyze_matrix(matrix):
             'missing_pct': round(null_pct, 2),
             'unique_count': unique_count
         }
-        if is_numeric and numeric_vals:
+        if col_idx in sensitive_cols:
+            col_info['values_withheld'] = True
+        elif is_numeric and numeric_vals:
             numeric_vals.sort()
             n = len(numeric_vals)
             mean_val = statistics.mean(numeric_vals)

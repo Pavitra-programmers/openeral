@@ -5,7 +5,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -13,6 +13,10 @@ import { dirname, join } from "node:path";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MOCK_WSL = join(__dirname, "mock-wsl.sh");
 const MOCK_PWSH = join(__dirname, "mock-pwsh.sh");
+if (process.platform !== "win32") {
+  chmodSync(MOCK_WSL, 0o755);
+  chmodSync(MOCK_PWSH, 0o755);
+}
 
 let workDir;
 let wslLog;

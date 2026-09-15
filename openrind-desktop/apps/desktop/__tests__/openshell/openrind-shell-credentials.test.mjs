@@ -35,6 +35,16 @@ test.afterEach(() => {
 
 const creds = await import("../../electron/openshell/openrind-shell-credentials.mjs");
 
+test("staged Haloop registration does not persist before a healthy route commits", async () => {
+  const options = { sandboxName: "sandbox-review", workspaceId: "workspace-review", agentId: "claude" };
+  const staged = await creds.registerHaloopClientProfile({ ...options, deferCommit: true });
+  const registry = join(testDir, "haloop-client-profiles.json");
+  assert.equal(existsSync(registry), false);
+  await staged.commit();
+  const saved = JSON.parse(readFileSync(registry, "utf8"));
+  assert.equal(saved.profiles[staged.current.scopeId].clientToken, staged.current.clientToken);
+});
+
 // ── setCredential ──────────────────────────────────────────────────────
 
 test("setCredential: rejects unknown keys", async () => {
@@ -358,6 +368,6 @@ test("Haloop profile registration rejects unsupported agents", async () => {
       workspaceId: "workspace-1",
       agentId: "generic",
     }),
-    /Claude and OpenClaw only/,
+    /Claude, OpenClaw, and OpenHands only/,
   );
 });

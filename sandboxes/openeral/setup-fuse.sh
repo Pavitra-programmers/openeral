@@ -12,6 +12,8 @@ export OPENRIND_SHELL_INIT_MARKER="$OPENRIND_SHELL_RUNTIME_DIR/init.done"
 export OPENRIND_SHELL_HOME=/sandbox/work
 export OPENRIND_SHELL_CLAUDE_HOME=/sandbox/claude-home
 export OPENRIND_SHELL_OPENCLAW_HOME=/sandbox/openclaw-home
+export OPENRIND_SHELL_OPENHANDS_HOME=/sandbox/openhands-home
+export OPENRIND_SHELL_OPENHANDS_MODE="${OPENRIND_SHELL_OPENHANDS_MODE:-cli}"
 export OPENRIND_SHELL_AGENT="${OPENRIND_SHELL_AGENT:-claude}"
 export OPENRIND_SHELL_REQUIRE_POSTGRES_TLS=1
 # Legacy aliases are exported for user scripts and older library builds.
@@ -52,6 +54,15 @@ case "$OPENRIND_SHELL_AGENT" in
     fi
     chmod 700 "$OPENRIND_SHELL_OPENCLAW_HOME"
     install -d -m 0700 "$OPENRIND_SHELL_OPENCLAW_HOME/.openclaw"
+    ;;
+  openhands)
+    case "$OPENRIND_SHELL_OPENHANDS_MODE" in cli|script) ;; *) exit 64 ;; esac
+    [ -d "$OPENRIND_SHELL_OPENHANDS_HOME" ] && [ -w "$OPENRIND_SHELL_OPENHANDS_HOME" ] || {
+      echo "setup-fuse.sh: persistent OpenHands home is missing or not writable" >&2
+      exit 1
+    }
+    chmod 700 "$OPENRIND_SHELL_OPENHANDS_HOME"
+    install -d -m 0700 "$OPENRIND_SHELL_OPENHANDS_HOME/.openhands"
     ;;
   *)
     echo "setup-fuse.sh: unsupported agent '$OPENRIND_SHELL_AGENT'" >&2
@@ -313,7 +324,7 @@ if [ "$OPENRIND_SHELL_AGENT" = claude ]; then
   # Warm the immutable executable and its dynamic loader while provisioning is
   # still showing progress. This does not create project trust state.
   HOME="$OPENRIND_SHELL_CLAUDE_HOME" /usr/local/bin/claude-real --version >/dev/null 2>&1 || true
-else
+elif [ "$OPENRIND_SHELL_AGENT" = openclaw ]; then
   echo "setup-fuse.sh: persistent OpenClaw home ready"
   if [ -d /opt/openrind-shell/skills ]; then
     for target_skills_dir in "$OPENRIND_SHELL_OPENCLAW_HOME/.openclaw/skills" "$OPENRIND_SHELL_OPENCLAW_HOME/.claude/skills" "$OPENRIND_SHELL_HOME/.claude/skills"; do
@@ -342,6 +353,8 @@ else
       OPENCLAW_DISABLE_BONJOUR=1 OPENCLAW_EXEC_SHELL_SNAPSHOT=0 \
       /usr/bin/node /usr/lib/node_modules/openclaw/openclaw.mjs tui --help
   ) >/dev/null 2>&1 || true
+else
+  echo "setup-fuse.sh: persistent OpenHands home ready"
 fi
 
 OPENRIND_SHELL_NPMRC="$OPENRIND_SHELL_RUNTIME_DIR/npmrc"
@@ -384,6 +397,10 @@ case "$-" in
 
     if [ "$_openrind_desktop_launch" -eq 1 ] && [ -z "${OPENRIND_DESKTOP_AGENT_LAUNCHED:-}" ]; then
       export OPENRIND_DESKTOP_AGENT_LAUNCHED=1
+      if [ "${OPENRIND_SHELL_AGENT:-claude}" = openhands ]; then
+        echo "OpenHands requires a signed Desktop launch. Reconnect from Desktop."
+        exit 64
+      fi
       if [ "${OPENRIND_SHELL_AGENT:-claude}" = openclaw ]; then
         _openrind_desktop_openclaw_args=()
         case "$_openrind_desktop_sid" in
@@ -443,6 +460,8 @@ SESSION_ENV="$OPENRIND_SHELL_RUNTIME_DIR/session.env"
   printf 'export OPENRIND_SHELL_HOME='; shell_quote "$OPENRIND_SHELL_HOME"; printf '\n'
   printf 'export OPENRIND_SHELL_CLAUDE_HOME='; shell_quote "$OPENRIND_SHELL_CLAUDE_HOME"; printf '\n'
   printf 'export OPENRIND_SHELL_OPENCLAW_HOME='; shell_quote "$OPENRIND_SHELL_OPENCLAW_HOME"; printf '\n'
+  printf 'export OPENRIND_SHELL_OPENHANDS_HOME='; shell_quote "$OPENRIND_SHELL_OPENHANDS_HOME"; printf '\n'
+  printf 'export OPENRIND_SHELL_OPENHANDS_MODE='; shell_quote "$OPENRIND_SHELL_OPENHANDS_MODE"; printf '\n'
   printf 'export OPENRIND_SHELL_AGENT='; shell_quote "$OPENRIND_SHELL_AGENT"; printf '\n'
   printf 'export OPENRIND_SHELL_RUNTIME_DIR='; shell_quote "$OPENRIND_SHELL_RUNTIME_DIR"; printf '\n'
   printf 'export OPENRIND_SHELL_STATE_DIR='; shell_quote "$OPENRIND_SHELL_RUNTIME_DIR"; printf '\n'
@@ -477,6 +496,11 @@ chmod 600 "$SESSION_ENV"
 if [ "$OPENRIND_SHELL_AGENT" = claude ]; then
   command -v claude-real >/dev/null 2>&1 || {
     echo "setup-fuse.sh: claude-real is missing from the image" >&2
+    exit 1
+  }
+elif [ "$OPENRIND_SHELL_AGENT" = openhands ]; then
+  [ -x /usr/local/bin/openrind-openhands-agent ] && [ -x /opt/openrind-openhands/bin/python3.12 ] || {
+    echo "setup-fuse.sh: OpenHands runtime is missing from the image" >&2
     exit 1
   }
 else

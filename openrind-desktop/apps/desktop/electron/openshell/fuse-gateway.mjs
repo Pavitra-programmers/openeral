@@ -59,10 +59,23 @@ export function resolveManagedFuseRuntime(env = process.env) {
 }
 
 function runtimeId(runtime) {
+  if (runtime.sourceId) return runtime.sourceId;
   return RUNTIME_NAMES.map((name) => {
     const stat = statSync(join(runtime.dir, name));
     return `${name}:${stat.size}:${Math.trunc(stat.mtimeMs)}`;
   }).join("|");
+}
+
+// Packaged Windows builds carry the patched binaries inside the imported rootfs.
+async function resolveDistroRuntime(run = wslRun) {
+  const result = await run(
+    ["-d", DISTRO_NAME, "--", "sh", "-c", RUNTIME_NAMES.map((name) =>
+      `test -x ${shellQuote(`${RUNTIME_DIR}/${name}`)}`).join(" && ") +
+      ` && sha256sum ${RUNTIME_NAMES.map((name) => shellQuote(`${RUNTIME_DIR}/${name}`)).join(" ")}`],
+    { timeout: 15_000 },
+  );
+  if (result.exitCode !== 0) throw new Error("The bundled OpenShell FUSE runtime is missing from the managed distro. Reinstall Openrind Desktop.");
+  return { dir: RUNTIME_DIR, cli: `${RUNTIME_DIR}/openshell`, gateway: `${RUNTIME_DIR}/openshell-gateway`, supervisor: `${RUNTIME_DIR}/openshell-sandbox`, sourceId: result.stdout.trim() };
 }
 
 function resolvedEndpoint() {
@@ -210,14 +223,24 @@ async function waitForGateway(runtime, endpoint) {
  * separate from the stock `openshell-gateway.service`, so the compatibility
  * runtime remains untouched.
  */
+/** @param {{ onProgress?: (progress: {phase: string, message: string}) => void }} options */
 export async function ensureManagedFuseGateway({ onProgress } = {}) {
   if (!startupPromise) {
     startupPromise = (async () => {
-      const runtime = resolveManagedFuseRuntime();
+      await ensureDistroRunning();
+      let runtime;
+      if (process.resourcesPath && !process.env.OPENRIND_DESKTOP_FUSE_RUNTIME_DIR) {
+        runtime = await resolveDistroRuntime();
+      } else {
+        try { runtime = resolveManagedFuseRuntime(); }
+        catch (error) {
+          if (process.env.OPENRIND_DESKTOP_FUSE_RUNTIME_DIR) throw error;
+          runtime = await resolveDistroRuntime();
+        }
+      }
       const endpoint = resolvedEndpoint();
       activateRuntime(runtime, endpoint);
 
-      await ensureDistroRunning();
       const existing = await gatewayInfo(runtime, endpoint);
       
       let upToDate = false;
@@ -249,6 +272,7 @@ export async function ensureManagedFuseGateway({ onProgress } = {}) {
 }
 
 export const __testing = {
+  resolveDistroRuntime,
   gatewayToml,
   resolvedEndpoint,
   systemdUnit,

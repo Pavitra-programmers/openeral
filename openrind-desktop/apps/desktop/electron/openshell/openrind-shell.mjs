@@ -22,6 +22,7 @@ export {
   downloadWorkspaceFile,
   ensureOpenrindShellHaloop,
   listWorkspaceFiles,
+  resolveOpenrindShellSandboxWorkspaceId,
   restoreOpenrindShellHaloopIncumbent,
   revokeOpenrindShellHaloopIntegration,
   revokeOpenrindShellHaloopForSandbox,
@@ -34,12 +35,18 @@ export {
   probePrimaryFuseDatabase as probeDatabaseUrl,
 } from "./fuse-management.mjs";
 export {
+  activateExistingHaloopRoute,
   buildHaloopAgentLifecycleEvent,
+  getHaloopCaptureStatus,
+  exportHaloopTraces,
+  exportHaloopEvalCases,
+  exportHaloopHarborDataset,
   generateHaloopEvalCases,
   getHaloopAnalysisStatus,
   getHaloopRuntimeActiveRoute,
   getHaloopRuntimeStatus,
   loadHaloopAnalysisReport,
+  loadHaloopEvalCases,
   recordHaloopApplicationSpans,
   resolveHaloopUpstreamApiKey,
   restartHaloopRuntime,
@@ -60,9 +67,9 @@ const HALOOP_SESSION_ASSERTION_PATTERN =
   /^v1\.[0-9a-f]{32}\.[1-9][0-9]{9,15}\.[1-9][0-9]{9,15}\.[0-9a-f]{64}$/;
 
 export function imageForProfile(profile) {
-  if (profile !== "openrind-shell-claude" && profile !== "openrind-shell-openclaw") {
+  if (!["openrind-shell-claude", "openrind-shell-openclaw", "openrind-shell-openhands", "openrind-shell-openhands-script"].includes(profile)) {
     throw new Error(
-      `The primary FUSE runtime supports the Claude and OpenClaw profiles only; received ${JSON.stringify(profile)}.`,
+      `The primary FUSE runtime supports Claude, OpenClaw, and OpenHands profiles only; received ${JSON.stringify(profile)}.`,
     );
   }
   return process.env.OPENRIND_DESKTOP_SANDBOX_IMAGE?.trim() || FUSE_IMAGE;
@@ -93,8 +100,8 @@ function deriveClaudeSessionUuid(sessionId) {
  * transcript for a selected desktop session.
  */
 export function resolveAgentSessionValue(profile, agentSessionId, haloopSessionAssertion) {
-  if (profile !== "openrind-shell-claude" && profile !== "openrind-shell-openclaw") {
-    throw new Error("The primary FUSE runtime supports the Claude and OpenClaw profiles only.");
+  if (!["openrind-shell-claude", "openrind-shell-openclaw", "openrind-shell-openhands", "openrind-shell-openhands-script"].includes(profile)) {
+    throw new Error("The primary FUSE runtime supports Claude, OpenClaw, and OpenHands profiles only.");
   }
   const sessionId = String(agentSessionId ?? "").trim();
   const value = sessionId ? deriveClaudeSessionUuid(sessionId) : "auto";
@@ -148,7 +155,7 @@ export async function writeCurrentSessionMarker(name, value) {
   if (
     marker &&
     !new RegExp(
-      `^(?:openrind-shell-claude|openrind-shell-openclaw):(?:auto|[0-9a-f]{8}-[0-9a-f-]{27}):${HALOOP_SESSION_ASSERTION_PATTERN.source.slice(1, -1)}$`,
+      `^(?:openrind-shell-claude|openrind-shell-openclaw|openrind-shell-openhands|openrind-shell-openhands-script):(?:auto|[0-9a-f]{8}-[0-9a-f-]{27}):${HALOOP_SESSION_ASSERTION_PATTERN.source.slice(1, -1)}$`,
     ).test(marker)
   ) {
     throw new Error("Invalid desktop Claude session marker.");
