@@ -5,11 +5,25 @@
 - **Status:** In progress
 - **Priority:** High
 - **Owners:** TBD
-- **Repositories:** `openeral` / `openrind-desktop`, `w8-haloop-main`
+- **Repositories:** `openeral` / `openrind-desktop`, `w8-haloop`
 - **Suggested labels:** `integration`, `openshell`, `fuse`, `haloop`, `claude`, `openclaw`, `security`, `observability`
 - **Target:** Required Haloop-backed inference for Claude and OpenClaw launched in OpenShell FUSE sandboxes
 
 ## Progress summary
+
+### 2026-09-14 responsibility change (supersedes earlier Desktop analysis UX)
+
+- Desktop captures traces, shows capture health/counts, and exports source evidence only.
+- The authenticated `w8-haloop` web app imports traces and owns explicit analysis,
+  report viewing/download, and Harbor task generation. Refresh/navigation never starts analysis.
+- Generated evals are Harbor task archives: instructions, starting files,
+  environment/Dockerfile, task.toml, solution/solve.sh, and tests/test.sh producing
+  `/logs/verifier/reward.txt`. JSONL remains internal trace evidence, not the eval deliverable.
+- Generated tasks are unvalidated diagnostics until reviewed and run with Harbor.
+  Packaging must never execute generated verifier code in Desktop or the web server.
+- [ ] Validate real Desktop trace import and paid web analysis/generation end to end.
+- [ ] Review a generated task and validate its environment, oracle, and agent run in Harbor.
+
 
 - [ ] Phase 0: Confirm architecture, ownership, and threat model
 - [ ] Phase 1: Build a secure routing-only MVP
@@ -20,7 +34,55 @@
 - [ ] Complete live end-to-end validation for Claude and OpenClaw
 - [ ] Complete security review and rollback exercise
 
+## Remaining work snapshot (2026-09-11)
+
+- Complete the live Claude/OpenClaw matrix: new and resumed sessions, streaming,
+  tool round-trips, provider failures, cancellation, Haloop restart, collector
+  outage, and FUSE durability.
+- Finalize the product policy for client-token lifetime/automatic rotation and
+  trace retention, redaction, deletion, and local access control.
+- Keep candidate traffic at zero until the candidate model, starting weight,
+  quality/latency/completeness/cost gates, and operator review workflow are
+  approved.
+- Exercise packaged upgrade/downgrade and full application rollback, then run
+  the remaining Rust, Python, Docker/loop, and real FUSE validations in their
+  supported Linux environments.
+
 ## Implementation log
+
+### 2026-09-11 — authoritative Haloop checkout alignment
+
+- Confirmed `C:\Users\ANKUR\Projects\w8-haloop` on branch `halo` is the
+  authoritative Haloop repository; the similarly named `w8-haloop-main`
+  directory is not used for implementation or validation.
+- Verified the authoritative branch already contains the Openrind profile,
+  Anthropic streaming reconstruction, non-blocking HALO analysis, strict
+  citation checks, and private eval-artifact preview contract expected by the
+  Desktop integration.
+- Made the static fork-contract checks for the pinned NetBird version and the
+  catalog integration Dockerfile tolerant of Windows CRLF checkouts. On the
+  authoritative branch, the edge suite passes 41/41, the Halo plugin suite
+  passes 18/18, and the static fork contract passes in Ubuntu WSL.
+
+### 2026-09-11 — durable Desktop navigation and incumbent-safe lifecycle
+
+- Preserved the latest Haloop analysis report and eval preview across Settings
+  navigation, and recover the latest durable analysis project from the private
+  collector when Electron no longer has an in-memory route.
+- Sandbox navigation now reattaches an existing live PTY and reactivates its
+  route identity without repeating Haloop runtime, credential, provider, or
+  sandbox provisioning work.
+- A failed later launch no longer replaces a healthy private collector merely
+  because the requested analysis credential hash changed. Authentication probes
+  also leave a reused gateway running; only services started by the failing
+  operation are cleaned up.
+- Public route callbacks now expose only profile/provider/sandbox/workspace/
+  agent identity, not internal upstream or analysis configuration fields.
+- Focused validation passes: Desktop Haloop runtime 19/19, Desktop integration
+  contract 25/25, Haloop edge 41/41, and Halo plugin 18/18. The static fork
+  contract passes in Ubuntu WSL, and a credential-shaped secret scan found no
+  real upstream key in either source tree. The focused Python suite remains
+  unverified locally because the Ubuntu environment does not have `pytest`.
 
 ### 2026-09-09 — operator-reviewed rollout proposals
 
@@ -482,7 +544,7 @@
 
 ## Summary
 
-Integrate `w8-haloop-main` as the required Anthropic-compatible inference gateway for Claude and OpenClaw sessions launched inside Openrind Shell's OpenShell FUSE sandbox.
+Integrate `w8-haloop` as the required Anthropic-compatible inference gateway for Claude and OpenClaw sessions launched inside Openrind Shell's OpenShell FUSE sandbox.
 
 Haloop must run outside the sandbox. The sandbox should reach only Haloop's authenticated edge through the OpenShell proxy and an endpoint-bound credential. Haloop should retain the real upstream provider credentials, select one configured model target per request, and keep its collector private.
 
@@ -630,8 +692,8 @@ These are the proposed defaults. Any change should be documented in this issue b
 
 ### Exit criteria
 
-- [ ] Architecture and threat-model decisions are recorded in this issue.
-- [ ] The credential owner, route-profile owner, session identity source, and rollback behavior are unambiguous.
+- [x] Architecture and threat-model decisions are recorded in this issue.
+- [x] The credential owner, route-profile owner, session identity source, and rollback behavior are unambiguous.
 - [x] No implementation depends on secrets supplied through sandbox-controlled routing JSON.
 
 ## Phase 1: Secure routing-only MVP
@@ -693,13 +755,13 @@ These are the proposed defaults. Any change should be documented in this issue b
 
 - [ ] Claude completes a real streaming `/v1/messages` request through Haloop.
 - [ ] OpenClaw completes a real streaming `/v1/messages` request through Haloop.
-- [ ] The actual upstream target is selected by the server-owned route profile.
-- [ ] A sandbox-controlled route/header cannot change the upstream provider or host.
-- [ ] No upstream provider credential exists in the sandbox environment, Claude settings, OpenClaw config, FUSE workspace, or logs.
-- [ ] The scoped Haloop credential fails against non-Haloop endpoints.
-- [ ] An unauthorized executable cannot use the Haloop credential.
+- [x] The actual upstream target is selected by the server-owned route profile.
+- [x] A sandbox-controlled route/header cannot change the upstream provider or host.
+- [x] No upstream provider credential exists in the sandbox environment, Claude settings, OpenClaw config, FUSE workspace, or logs.
+- [x] The scoped Haloop credential fails against non-Haloop endpoints.
+- [x] An unauthorized executable cannot use the Haloop credential.
 - [x] Haloop recovery or incumbent-only route rollback does not recreate or lose the FUSE workspace.
-- [ ] Routing is described as one selected target per request; no shadow-traffic claim is made.
+- [x] Routing is described as one selected target per request; no shadow-traffic claim is made.
 
 ## Phase 2: Complete Anthropic LLM capture
 
@@ -716,7 +778,7 @@ These are the proposed defaults. Any change should be documented in this issue b
   - [x] response ID and model.
 - [x] Map `usage.input_tokens`, `usage.output_tokens`, total tokens, and supported cache-token fields.
 - [x] Preserve tool-result input blocks without flattening away identifiers or structured content.
-- [ ] Add fixtures for text-only, tool-use, tool-result, mixed-content, and error-shaped responses.
+- [x] Add fixtures for text-only, tool-use, tool-result, mixed-content, and error-shaped responses.
 
 ### 2B. Streaming reconstruction
 
@@ -726,7 +788,7 @@ These are the proposed defaults. Any change should be documented in this issue b
 - [x] Define and enforce a maximum capture size.
 - [x] Record a visible observability gap if stream reconstruction fails while allowing user traffic to follow the chosen fail-open/fail-closed policy.
 - [x] Capture client cancellation, provider timeout, and truncated streams as explicit incomplete/error telemetry where possible.
-- [ ] Do not claim complete failure telemetry while the HTTP-200-only after-hook limitation remains.
+- [x] Do not claim complete failure telemetry while the HTTP-200-only after-hook limitation remains.
 
 ### 2C. Trace identity and validation
 
@@ -736,7 +798,7 @@ These are the proposed defaults. Any change should be documented in this issue b
   `parent_span_id` from trusted session state.
 - [x] Keep project names server-owned and non-empty.
 - [x] Validate every produced trace with Haloop's trace validator before analysis.
-- [ ] Confirm `halo.mark` and `halo.export` timing correlation cannot be corrupted by duplicate IDs.
+- [x] Confirm `halo.mark` and `halo.export` timing correlation cannot be corrupted by duplicate IDs.
 - [x] Confirm missing collector availability blocks new/resumed sessions, remains visible as distinct health, and does not leak secrets.
 
 ### Phase 2 acceptance criteria
@@ -749,7 +811,7 @@ These are the proposed defaults. Any change should be documented in this issue b
 - [x] TypeScript and Python span builders pass cross-language parity tests.
 - [x] Trace validation passes with project, model, provider, message, usage, and latency fields present where supported.
 - [x] No captured response content is changed before reaching the agent.
-- [ ] Known missing visibility for non-200/timeouts is documented until implemented.
+- [x] Known missing visibility for non-200/timeouts is documented until implemented.
 
 ## Phase 3: Trusted AGENT/TOOL span capture
 
@@ -794,7 +856,7 @@ These are the proposed defaults. Any change should be documented in this issue b
 - [ ] One OpenClaw tool-use session produces the same hierarchy.
 - [x] Resumed session contexts retain their trace while unrelated contexts
   receive different canonical trace IDs at the edge.
-- [ ] The sandbox cannot post arbitrary spans directly to the collector.
+- [x] The sandbox cannot post arbitrary spans directly to the collector.
 - [ ] Sensitive content follows the documented redaction and retention policy.
 - [ ] A collector outage blocks new/resumed sessions but does not alter model traffic already in flight after Haloop selected the required route.
 
@@ -889,7 +951,7 @@ These are the proposed defaults. Any change should be documented in this issue b
 | Credential storage/UI | Existing Desktop credential store and Environment settings domain |
 | Contract tests | `openrind-desktop/apps/desktop/__tests__/openshell/` and sandbox policy/config tests |
 
-### `w8-haloop-main`
+### `w8-haloop`
 
 | Concern | Existing or proposed location |
 | --- | --- |
@@ -912,7 +974,7 @@ These are the proposed defaults. Any change should be documented in this issue b
 - [x] Claude base URL is exactly the required Haloop origin.
 - [x] OpenClaw provider uses `anthropic-messages`, the expected base URL, and explicit model registration.
 - [x] No conflicting Anthropic provider attachment is present.
-- [ ] No upstream provider key or real routing secret appears in tracked files.
+- [x] No upstream provider key or real routing secret appears in tracked files.
 - [x] Haloop rejects public `x-portkey-*` headers.
 - [x] Haloop rejects client route/profile override attempts.
 - [x] Anthropic and OpenAI span mappings remain behaviorally compatible with their fixtures.
@@ -930,8 +992,8 @@ These are the proposed defaults. Any change should be documented in this issue b
 ### Haloop focused checks
 
 - [x] Dockerized `git-pre-push` target: formatting, edge/plugin tests, fork contract, and PM2 resilience/shutdown probes.
-- [ ] `make build && make test-plugins`
-- [ ] `npm run test:contract`
+- [x] `make build && make test-plugins`
+- [x] `npm run test:contract`
 - [ ] `make loop-test`
 - [ ] `make loop-test-e2e`
 - [ ] `make sample-traffic-smoke`
@@ -995,7 +1057,7 @@ These are the proposed defaults. Any change should be documented in this issue b
 
 ## Open questions
 
-- [x] Packaged Desktop selects the fixed GHCR gateway/collector tags for `w8-haloop-openrind-v4-eval-export`; release scripts build, verify, and publish both together.
+- [x] Packaged Desktop selects the fixed GHCR gateway/collector tags for `w8-haloop-openrind-v6-durable-analysis`; release scripts build, verify, and publish both together.
 - [x] The initial routing-only deployment is a Desktop-managed local container.
 - [x] Rotation is an explicit confirmed action on the active route; it ends
   tracked in-app sessions and requires all affected agents to relaunch.
@@ -1023,13 +1085,13 @@ These are the proposed defaults. Any change should be documented in this issue b
 - [x] Haloop is required for all new-phase Claude/OpenClaw FUSE inference and has no supported direct-provider bypass.
 - [x] Haloop recovery and incumbent-only route rollback preserve FUSE workspace data.
 - [ ] Claude and OpenClaw both stream real Anthropic Messages traffic through the authenticated Haloop edge.
-- [ ] OpenShell injects only an endpoint-bound, scoped Haloop credential for fixed trusted executables.
-- [ ] Upstream provider credentials never enter the sandbox or client-controlled routing configuration.
+- [x] OpenShell injects only an endpoint-bound, scoped Haloop credential for fixed trusted executables.
+- [x] Upstream provider credentials never enter the sandbox or client-controlled routing configuration.
 - [x] Routing configuration, project identity, and canonical trace/root/session
   derivation are server-owned.
 - [ ] Anthropic text, tool use, tool results, streaming output, model identity, and token usage produce validated LLM spans.
-- [ ] Trusted AGENT/TOOL spans connect to the same trace without exposing collector ingestion to the sandbox.
-- [ ] Collector and core remain private according to their contracts.
+- [x] Trusted AGENT/TOOL spans connect to the same trace without exposing collector ingestion to the sandbox.
+- [x] Collector and core remain private according to their contracts.
 - [ ] Claude and OpenClaw pass the live validation matrix, including resume, tool use, failures, and rollback.
 - [ ] Haloop validation, contract, plugin, loop, and relevant Docker tests pass.
 - [ ] Openrind provider, policy, image, configuration, and real FUSE E2E checks pass.
