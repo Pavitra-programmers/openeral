@@ -3,6 +3,9 @@
 .gemini
 .agents
 .codex
+.pytest_cache
+**/__pycache__
+openrind-desktop
 target
 agent-task.txt
 sandboxes
