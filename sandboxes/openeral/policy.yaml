@@ -83,6 +83,7 @@ network_policies:
       - { path: /usr/local/bin/claude }
       - { path: /usr/local/bin/claude-real }
       - { path: /usr/local/bin/openrind-openclaw-agent }
+      - { path: /usr/local/bin/openrind-openhands-agent }
 
   # --- Claude telemetry and static resources (no inference credential) ---
   claude_support:
