@@ -21,6 +21,7 @@ const {
   FRAME_DATA,
   FRAME_RESIZE,
   HANDSHAKE_MAGIC,
+  READY_MAGIC,
 } = pty.__testing;
 
 // ── Reference decoder — a faithful JS mirror of the Python bridge's
@@ -181,15 +182,16 @@ function makeFakeChild() {
   return child;
 }
 
-test("makePipePty: sends the handshake immediately with the initial size", () => {
+test("makePipePty: waits for the bridge marker before sending the initial size", () => {
   const child = makeFakeChild();
   makePipePty(child, 100, 40);
-  // The very first write is the handshake, sent before any output/input.
+  assert.equal(child.stdin.writes.length, 0);
+  child.stdout.emit("data", READY_MAGIC);
   assert.equal(child.stdin.writes.length, 1);
-  assert.deepEqual(child.stdin.writes[0], encodeHandshake(100, 40));
+  assert.deepEqual(child.stdin.writes[0], encodeResizeFrame(100, 40));
 });
 
-test("makePipePty: buffers FRAMES until first output, then flushes in order", () => {
+test("makePipePty: buffers FRAMES until the bridge marker, then flushes in order", () => {
   const child = makeFakeChild();
   const term = makePipePty(child, 80, 24);
   // writes[0] is the handshake; drop it so we only assert on frames.
@@ -200,15 +202,18 @@ test("makePipePty: buffers FRAMES until first output, then flushes in order", ()
   assert.equal(child.stdin.writes.length, 0, "frames must not write before first output");
 
   child.stdout.emit("data", Buffer.from("banner"));
+  assert.equal(child.stdin.writes.length, 0, "ordinary output must not activate framing");
+  child.stdout.emit("data", READY_MAGIC);
 
   // Both queued frames flush, in order, once the bridge has proven it's live.
   const decoded = decodeFrames(Buffer.concat(child.stdin.writes));
   assert.deepEqual(
     decoded.frames.map((f) => f.type),
-    ["resize", "data"],
+    ["resize", "resize", "data"],
   );
-  assert.equal(decoded.frames[0].cols, 90);
-  assert.equal(decoded.frames[1].payload.toString("utf8"), "x");
+  assert.equal(decoded.frames[0].cols, 80);
+  assert.equal(decoded.frames[1].cols, 90);
+  assert.equal(decoded.frames[2].payload.toString("utf8"), "x");
 
   // After ready, further writes go straight through.
   child.stdin.writes.length = 0;
@@ -221,6 +226,7 @@ test("makePipePty: onData decodes UTF-8 across chunk boundaries", () => {
   const term = makePipePty(child, 80, 24);
   const chunks = [];
   term.onData((text) => chunks.push(text));
+  child.stdout.emit("data", READY_MAGIC);
 
   // "€" (U+20AC) is 0xE2 0x82 0xAC — split it across two stdout chunks.
   const euro = Buffer.from("€", "utf8");
@@ -230,7 +236,7 @@ test("makePipePty: onData decodes UTF-8 across chunk boundaries", () => {
   assert.equal(chunks.join(""), "€", "multi-byte glyph must not be corrupted");
 });
 
-test("makePipePty: onExit reports the child's exit code", () => {
+test("makePipePty: onExit reports the child's exit code and rejects premature readiness", async () => {
   const child = makeFakeChild();
   const term = makePipePty(child, 80, 24);
   let seen = null;
@@ -238,6 +244,7 @@ test("makePipePty: onExit reports the child's exit code", () => {
     seen = event;
   });
   child.emit("exit", 7, null);
+  await assert.rejects(term.ready, /exited before the framed PTY bridge became ready/);
   assert.deepEqual(seen, { exitCode: 7, signal: undefined });
 });
 

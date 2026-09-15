@@ -89,7 +89,7 @@ function appendToBuffer(session, data) {
  * @property {(cols: number, rows: number) => void} resize
  * @property {(signal?: string) => void} kill
  * @property {(handler: DataHandler) => { dispose: () => void }} onData
- * @property {(handler: (event: { exitCode: number; signal?: number | undefined }) => void) => { dispose: () => void }} onExit
+ * @property {(handler: (event: { exitCode: number; signal?: string | number }) => void) => { dispose: () => void }} onExit
  * @property {number | undefined} pid
  * @property {(() => void)} [pause]   Stop draining the transport (backpressure)
  * @property {(() => void)} [resume]  Resume draining the transport
@@ -98,6 +98,7 @@ function appendToBuffer(session, data) {
 
 /**
  * @typedef {Object} Session
+ * @property {{cause: string, requestedAt: number} | null} closeRequest
  * @property {string} id
  * @property {string} sandboxName
  * @property {string | null} agentSessionId  Openrind Desktop session id this PTY runs
@@ -393,7 +394,7 @@ function makePipePty(child, cols, rows) {
     },
     kill(signal) {
       try {
-        child.kill(signal);
+        child.kill(/** @type {NodeJS.Signals} */ (signal));
       } catch {
         /* already gone */
       }
@@ -448,8 +449,9 @@ function makePipePty(child, cols, rows) {
  * (if ugly) terminal without a rebuild. The container-side bridge still runs;
  * with no handshake it just transparently passes bytes through.
  */
-async function legacyConptySpawn({ sandboxName, cols, rows, extraEnv }) {
-  const pty = await import("node-pty");
+async function legacyConptySpawn({ sandboxName, cols, rows, extraEnv = null }) {
+  const optionalModule = String("node-pty");
+  const pty = await import(optionalModule);
   const quotedName = `'${sandboxName.replace(/'/g, "'\\''")}'`;
   const shellCmd =
     `stty cols ${cols} rows ${rows} -icanon -echo min 1 time 0 2>/dev/null; ` +

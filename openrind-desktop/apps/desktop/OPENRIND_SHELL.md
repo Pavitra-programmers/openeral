@@ -11,6 +11,11 @@ for image creation, persistence, initialization, and security.
    **Settings -> Environment**.
 3. Create an **Openrind Shell - Claude Code** or **Openrind Shell - OpenClaw** sandbox.
 4. Use the selected agent through the required Haloop route in the embedded WebGL terminal.
+5. In **Settings -> Haloop**, inspect capture counts or download source traces.
+   Import that file in the authenticated w8-haloop web app's **Traces & Harbor** page.
+   Analysis, reports, and Harbor task generation now belong to the web app;
+   earlier Desktop analysis controls described below are superseded. Eval outputs
+   are complete Harbor task archives, while JSONL remains trace evidence.
 
 The user does not start a gateway, run `claude`, upload a credential manually,
 or mount a filesystem manually. Openrind Desktop owns those steps.
@@ -27,9 +32,9 @@ Source checkouts use `openrind-shell-fuse:local`, `haloop-gateway:local`, and
 dedicated OpenShell WSL Docker daemon, not only in the host Docker Desktop daemon.
 Packaged builds use `ghcr.io/openrind/openrind-shell/sandbox:fuse` plus the
 version-pinned
-`ghcr.io/openrind/openrind-shell/haloop-gateway:w8-haloop-openrind-v4-eval-export`
+`ghcr.io/openrind/openrind-shell/haloop-gateway:w8-haloop-openrind-v6-durable-analysis`
 and
-`ghcr.io/openrind/openrind-shell/haloop-collector:w8-haloop-openrind-v4-eval-export`
+`ghcr.io/openrind/openrind-shell/haloop-collector:w8-haloop-openrind-v6-durable-analysis`
 images. They are pulled into the dedicated daemon only when absent; mutable
 `latest` tags are never selected.
 The FUSE image must expose the desktop contract recorded in
@@ -59,7 +64,7 @@ node openrind-desktop/apps/desktop/scripts/build-openshell-runtime-images.mjs --
 ```
 
 The production tags are accepted only when both images report
-`w8-haloop-openrind-v4-eval-export`. A pull-only release verification is
+`w8-haloop-openrind-v6-durable-analysis`. A pull-only release verification is
 available through the desktop package's
 `verify:openshell-haloop-images:production` script.
 

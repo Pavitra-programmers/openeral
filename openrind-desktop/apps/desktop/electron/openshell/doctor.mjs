@@ -668,6 +668,7 @@ async function checkOpenShellGateway() {
 // component result. The format is a "Server Status" header followed by
 // indented "Key: Value" lines; ANSI escape sequences from the CLI's
 // colour output have to be stripped before regex matching.
+/** @returns {OpenShellComponent} */
 function classifyPlainStatus(text) {
   const clean = String(text || "")
     // Strip ANSI CSI escape sequences (colour codes) emitted by the CLI.

@@ -214,8 +214,8 @@ function normalizeHaloopProfileInput(options) {
   if (!workspaceId || workspaceId.length > 512 || /[\u0000-\u001f\u007f]/.test(workspaceId)) {
     throw new Error("A valid workspace id is required for Haloop registration.");
   }
-  if (agentId !== "claude" && agentId !== "openclaw") {
-    throw new Error("Haloop registration supports Claude and OpenClaw only.");
+  if (agentId !== "claude" && agentId !== "openclaw" && agentId !== "openhands") {
+    throw new Error("Haloop registration supports Claude, OpenClaw, and OpenHands only.");
   }
   const scopeId = createHash("sha256")
     .update("openrind-haloop-profile-v1\0")
@@ -252,7 +252,24 @@ function publicRevokedHaloopProfile(entry) {
   };
 }
 
-async function registerTestHaloopProfile(input) {
+/**
+ * Deterministic public identity for a Haloop route. This contains no token and
+ * lets Desktop reactivate an already-running PTY's route without touching the
+ * encrypted registry or rebuilding the gateway configuration.
+ */
+export function resolveHaloopClientProfileIdentity(options) {
+  const input = normalizeHaloopProfileInput(options);
+  return {
+    scopeId: input.scopeId,
+    id: `openrind-${input.scopeId.slice(0, 32)}`,
+    providerName: `haloop-${input.scopeId.slice(0, 16)}`,
+    sandboxName: input.sandboxName,
+    workspaceId: input.workspaceId,
+    agentId: input.agentId,
+  };
+}
+
+async function registerTestHaloopProfile(input, deferCommit = false) {
   const directory = testCredentialsDir();
   const profilePath = path.join(directory, HALOOP_TEST_PROFILES_FILE);
   await mkdir(directory, { recursive: true });
@@ -273,10 +290,18 @@ async function registerTestHaloopProfile(input) {
   if (Object.keys(document.profiles).length > MAX_HALOOP_PROFILES) {
     throw new Error(`Haloop profile registry is full (${MAX_HALOOP_PROFILES} profiles). Revoke an unused profile before retrying.`);
   }
-  await atomicWriteFile(profilePath, `${JSON.stringify(document, null, 2)}\n`);
-  return Object.values(document.profiles).map((entry) =>
+  const commit = async () => {
+    let latest = { version: 1, profiles: {} };
+    try { latest = JSON.parse(await readFile(profilePath, "utf8")); } catch {}
+    latest.profiles[input.scopeId] = document.profiles[input.scopeId];
+    if (Object.keys(latest.profiles).length > MAX_HALOOP_PROFILES) throw new Error("Haloop profile registry is full.");
+    await atomicWriteFile(profilePath, `${JSON.stringify(latest, null, 2)}\n`);
+  };
+  if (!deferCommit) await commit();
+  const profiles = Object.values(document.profiles).map((entry) =>
     publicHaloopProfile(entry, entry.clientToken),
   );
+  return Object.assign(profiles, { commit });
 }
 
 async function rotateTestHaloopProfile(input) {
@@ -357,7 +382,7 @@ async function revokeAllTestHaloopProfiles(beforePersist) {
   return { revoked, profiles: [], unreadableProfiles: 0 };
 }
 
-async function registerProductionHaloopProfile(input) {
+async function registerProductionHaloopProfile(input, deferCommit = false) {
   const safeStorage = await getSafeStorage();
   if (!safeStorage.isEncryptionAvailable()) {
     throw new Error(
@@ -386,7 +411,13 @@ async function registerProductionHaloopProfile(input) {
   if (Object.keys(blob.haloopProfiles).length > MAX_HALOOP_PROFILES) {
     throw new Error(`Haloop profile registry is full (${MAX_HALOOP_PROFILES} profiles). Revoke an unused profile before retrying.`);
   }
-  await saveBlob(blob);
+  const commit = async () => {
+    const latest = await loadBlob();
+    latest.haloopProfiles = { ...latest.haloopProfiles, [input.scopeId]: blob.haloopProfiles[input.scopeId] };
+    if (Object.keys(latest.haloopProfiles).length > MAX_HALOOP_PROFILES) throw new Error("Haloop profile registry is full.");
+    await saveBlob(latest);
+  };
+  if (!deferCommit) await commit();
 
   const profiles = [];
   for (const entry of Object.values(blob.haloopProfiles)) {
@@ -403,7 +434,7 @@ async function registerProductionHaloopProfile(input) {
       // its sandbox will fail closed until that exact profile is registered again.
     }
   }
-  return profiles;
+  return Object.assign(profiles, { commit });
 }
 
 async function rotateProductionHaloopProfile(input) {
@@ -518,13 +549,18 @@ export function registerHaloopClientProfile(options) {
   const input = normalizeHaloopProfileInput(options);
   const operation = haloopRegistrationQueue.then(() =>
     testCredentialsDir()
-      ? registerTestHaloopProfile(input)
-      : registerProductionHaloopProfile(input),
+      ? registerTestHaloopProfile(input, options.deferCommit)
+      : registerProductionHaloopProfile(input, options.deferCommit),
   );
   haloopRegistrationQueue = operation.catch(() => undefined);
   return operation.then((profiles) => ({
     current: profiles.find((profile) => profile.scopeId === input.scopeId),
     profiles,
+    commit: () => {
+      const commitOperation = haloopRegistrationQueue.then(profiles.commit);
+      haloopRegistrationQueue = commitOperation.catch(() => undefined);
+      return commitOperation;
+    },
   }));
 }
 

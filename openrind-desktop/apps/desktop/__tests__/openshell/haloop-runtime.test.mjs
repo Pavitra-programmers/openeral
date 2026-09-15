@@ -23,6 +23,7 @@ import {
   resolveHaloopImageConfig,
 } from "../../electron/openshell/haloop-runtime.mjs";
 
+const CAPTURE_CONFIG_HASH = createHash("sha256").update("W8_DESKTOP_CAPTURE_ONLY=1\n").digest("hex");
 const CONTEXT_ID = "12".repeat(16);
 const OPENSHELL_BRIDGE_IP = "172.30.0.1";
 const OPENSHELL_BRIDGE_IPAM = `${JSON.stringify([{ Gateway: OPENSHELL_BRIDGE_IP }])}\n`;
@@ -231,6 +232,7 @@ test("managed lifecycle stages profiles through stdin and requires authenticated
   let reportPrunes = 0;
   let evalArtifact = null;
   let evalExtractions = 0;
+  const evalCopies = [];
   const run = async (args, options = {}) => {
     calls.push({ args, options });
     const command = args.join(" ");
@@ -250,9 +252,8 @@ test("managed lifecycle stages profiles through stdin and requires authenticated
     }
     if (command.includes("bash -lc")) {
       assert.equal(options.user, "root");
-      assert.match(options.stdin, /sk-ant-upstream/);
-      if (options.stdin.startsWith("ANTHROPIC_API_KEY=")) {
-        assert.equal(options.stdin, "ANTHROPIC_API_KEY=sk-ant-upstream\n");
+      if (options.stdin.startsWith("W8_DESKTOP_CAPTURE_ONLY=")) {
+        assert.equal(options.stdin, "W8_DESKTOP_CAPTURE_ONLY=1\n");
       } else {
         assert.match(options.stdin, /halo\.mark/);
         assert.match(options.stdin, /halo\.export/);
@@ -278,7 +279,7 @@ test("managed lifecycle stages profiles through stdin and requires authenticated
         if (!collector) return { exitCode: 1, stdout: "", stderr: "not found" };
         return {
           exitCode: 0,
-          stdout: `true|healthy||sha256:collector-a|true|${__testing.COLLECTOR_ANALYSIS_CONTRACT}\n`,
+          stdout: `true|healthy||sha256:collector-a|true|${__testing.COLLECTOR_ANALYSIS_CONTRACT}|${CAPTURE_CONFIG_HASH}\n`,
           stderr: "",
         };
       }
@@ -418,6 +419,21 @@ test("managed lifecycle stages profiles through stdin and requires authenticated
           },
         };
       }
+      if (request.requestPath.startsWith(`/evals/artifacts/${"a".repeat(12)}/preview?project=`)) {
+        return {
+          status: 200,
+          body: {
+            artifact_id: evalArtifact.artifact_id,
+            project: evalArtifact.project,
+            halo_run_id: evalArtifact.halo_run_id,
+            total_cases: 4,
+            shown_cases: 1,
+            truncated: true,
+            contains_sensitive_content: true,
+            cases: [{ id: "case-1", request: { messages: [{ role: "user", content: "hello" }] } }],
+          },
+        };
+      }
       if (request.requestPath.startsWith("/evals/artifacts?project=")) {
         return { status: 200, body: { artifacts: evalArtifact ? [evalArtifact] : [] } };
       }
@@ -469,6 +485,9 @@ test("managed lifecycle stages profiles through stdin and requires authenticated
     },
     pruneReports: async () => {
       reportPrunes += 1;
+    },
+    copyEvalArtifact: async (_run, input) => {
+      evalCopies.push(input);
     },
   });
 
@@ -575,6 +594,18 @@ test("managed lifecycle stages profiles through stdin and requires authenticated
   assert.equal(generatedEval.replaySurface, "chat-completions");
   assert.deepEqual(generatedEval.sourceProviders, ["anthropic"]);
   assert.equal(evalExtractions, 1);
+  const evalPreview = await manager.loadEvalCases("a".repeat(12));
+  assert.equal(evalPreview.totalCases, 4);
+  assert.equal(evalPreview.shownCases, 1);
+  assert.equal(evalPreview.truncated, true);
+  assert.equal(evalPreview.cases[0].id, "case-1");
+  await manager.exportEvalCases("a".repeat(12), "/mnt/c/Users/ANKUR/Downloads/evals.jsonl");
+  assert.deepEqual(evalCopies, [
+    {
+      artifactId: `eval-cases-${"a".repeat(12)}.jsonl`,
+      destinationPath: "/mnt/c/Users/ANKUR/Downloads/evals.jsonl",
+    },
+  ]);
   const analysisWithEval = await manager.analysisStatus();
   assert.deepEqual(analysisWithEval.evalArtifact, generatedEval);
   traceValidationValid = false;
@@ -607,6 +638,7 @@ test("managed lifecycle stages profiles through stdin and requires authenticated
   const restarted = await manager.restart({ anthropicApiKey: "sk-ant-upstream" });
   assert.equal(restarted.providerName, scopedProfile.providerName);
   assert.deepEqual(registrations.at(-1), {
+    deferCommit: true,
     sandboxName: "sandbox-a",
     workspaceId: "workspace-a",
     agentId: "claude",
@@ -906,7 +938,7 @@ test("agent lifecycle distinguishes completion, crash, cancellation, deletion, a
   assert.equal(shutdown.attributes["openrind.lifecycle"], "app-shutdown");
   assert.throws(
     () => buildHaloopAgentLifecycleEvent("openrind-shell-claude", { ...base, exitCode: 0 }),
-    /OPENRIND_SHELL_AGENT must be claude or openclaw/,
+    /OPENRIND_SHELL_AGENT must be claude, openclaw, or openhands/,
   );
 });
 
@@ -933,6 +965,153 @@ test("post-route Desktop capture is fail-open and reports dropped spans", async 
     duplicates: 0,
     error: "collector restarted",
   });
+});
+
+test("reactivating an existing live route performs no runtime or credential work", async () => {
+  let runtimeCalls = 0;
+  let registrations = 0;
+  const manager = createHaloopRuntimeManager({
+    run: async () => {
+      runtimeCalls += 1;
+      throw new Error("route reactivation must not invoke WSL or Docker");
+    },
+    registerProfile: async () => {
+      registrations += 1;
+      throw new Error("route reactivation must not touch credentials");
+    },
+  });
+
+  const route = await manager.activateExistingRoute({
+    sandboxName: "sandbox-a",
+    workspaceId: "workspace-a",
+    agentId: "claude",
+  });
+
+  assert.equal(route.sandboxName, "sandbox-a");
+  assert.equal(route.workspaceId, "workspace-a");
+  assert.equal(route.agentId, "claude");
+  assert.match(route.profileId, /^openrind-[0-9a-f]{32}$/);
+  assert.match(route.providerName, /^haloop-[0-9a-f]{16}$/);
+  assert.equal(runtimeCalls, 0);
+  assert.equal(registrations, 0);
+});
+
+test("capture status reads counts only and trace export rejects arbitrary paths", async () => {
+  const requests = [];
+  const manager = createHaloopRuntimeManager({
+    run: async () => ({ exitCode: 0, stdout: "true|healthy||sha256:collector|true\n", stderr: "" }),
+    collectorRequest: async (_run, request) => {
+      requests.push(request.requestPath);
+      return { status: 200, body: { spans: 12, errors: 1, by_observation_kind: { LLM: 8 }, by_model: { test: 8 } } };
+    },
+  });
+  await manager.activateExistingRoute({ sandboxName: "sandbox-a", workspaceId: "workspace-a", agentId: "claude" });
+  const snapshot = await manager.traceCaptureStatus();
+  assert.equal(snapshot.stats.spans, 12);
+  assert.equal(snapshot.stats.byObservationKind.LLM, 8);
+  assert.equal(snapshot.run, null);
+  assert.equal(snapshot.evalArtifact, null);
+  assert.deepEqual(requests, [`/stats?project=${snapshot.project}`]);
+  await assert.rejects(manager.exportTraces(snapshot.project, "/mnt/c/../private"), /destination is invalid/);
+  await assert.rejects(manager.exportTraces("../other", "/mnt/c/exports/traces.jsonl"), /project changed/);
+});
+
+test("analysis status recovers the latest durable project without an in-memory route", async () => {
+  const project = `openrind-${"c".repeat(24)}`;
+  const manager = createHaloopRuntimeManager({
+    run: async (args) => {
+      const command = args.join(" ");
+      if (
+        command.includes("docker container inspect") &&
+        command.includes(HALOOP_COLLECTOR_CONTAINER_NAME)
+      ) {
+        return {
+          exitCode: 0,
+          stdout: "true|healthy||sha256:collector|true|openrind-halo-analysis-v2|config-hash\n",
+          stderr: "",
+        };
+      }
+      return { exitCode: 1, stdout: "", stderr: "not found" };
+    },
+    collectorRequest: async (_run, request) => {
+      if (request.requestPath === "/halo/runs") {
+        return {
+          status: 200,
+          body: {
+            runs: [{
+              project,
+              run_id: "d".repeat(12),
+              status: "running",
+              provider: "anthropic",
+              model: "analysis-model",
+              started_at: 2_000,
+            }],
+          },
+        };
+      }
+      if (request.requestPath === `/stats?project=${project}`) {
+        return {
+          status: 200,
+          body: { spans: 9, errors: 0, by_observation_kind: { LLM: 4 }, by_model: {} },
+        };
+      }
+      throw new Error(`Unexpected collector request: ${request.requestPath}`);
+    },
+  });
+
+  const recovered = await manager.analysisStatus();
+  assert.equal(recovered.project, project);
+  assert.equal(recovered.state, "running");
+  assert.equal(recovered.stats.spans, 9);
+  assert.equal(recovered.run.runId, "d".repeat(12));
+});
+
+test("completed durable analysis is not selected as a new automatic run", async () => {
+  const project = `openrind-${"e".repeat(24)}`;
+  const completed = {
+    project,
+    run_id: "f".repeat(12),
+    status: "done",
+    provider: "anthropic",
+    model: "analysis-model",
+    started_at: 2_000,
+    finished_at: 3_000,
+    report_available: true,
+  };
+  const manager = createHaloopRuntimeManager({
+    run: async (args) => {
+      const command = args.join(" ");
+      if (
+        command.includes("docker container inspect") &&
+        command.includes(HALOOP_COLLECTOR_CONTAINER_NAME)
+      ) {
+        return {
+          exitCode: 0,
+          stdout: "true|healthy||sha256:collector|true|openrind-halo-analysis-v2|config-hash\n",
+          stderr: "",
+        };
+      }
+      return { exitCode: 1, stdout: "", stderr: "not found" };
+    },
+    collectorRequest: async (_run, request) => {
+      if (request.requestPath === "/halo/runs") {
+        return { status: 200, body: { runs: [completed] } };
+      }
+      if (request.requestPath === `/stats?project=${project}`) {
+        return {
+          status: 200,
+          body: { spans: 9, errors: 0, by_observation_kind: { LLM: 4 }, by_model: {} },
+        };
+      }
+      throw new Error(`Unexpected collector request: ${request.requestPath}`);
+    },
+  });
+
+  const status = await manager.analysisStatus();
+  assert.equal(status.project, project);
+  assert.equal(status.state, "ready");
+  assert.equal(status.stats.spans, 9);
+  assert.equal(status.run, null);
 });
 
 test("shutdown is a no-op when this Desktop process never started Haloop", async () => {
@@ -963,7 +1142,6 @@ test("shutdown is a no-op when this Desktop process never started Haloop", async
     manager.rotate({ anthropicApiKey: "sk-ant-upstream" }),
     /no active Desktop route to rotate/,
   );
-  assert.equal(calls, 0);
 });
 
 test("managed lifecycle rejects an image without a safe diagnostic version", async () => {
@@ -1068,6 +1246,7 @@ test("container inspection recognizes a managed container that never reached hea
     imageId: "sha256:image-a",
     managed: true,
     analysisContract: null,
+    analysisConfigHash: null,
   });
 });
 
@@ -1099,7 +1278,7 @@ test("managed lifecycle reports a fixed-port conflict without choosing another e
       if (args.includes(HALOOP_COLLECTOR_CONTAINER_NAME) && collectorRunning) {
         return {
           exitCode: 0,
-          stdout: `true|healthy||sha256:collector-a|true|${__testing.COLLECTOR_ANALYSIS_CONTRACT}\n`,
+          stdout: `true|healthy||sha256:collector-a|true|${__testing.COLLECTOR_ANALYSIS_CONTRACT}|${CAPTURE_CONFIG_HASH}\n`,
           stderr: "",
         };
       }
@@ -1177,7 +1356,7 @@ test("managed lifecycle blocks launch when the gateway cannot reach the collecto
         return collectorRunning
           ? {
               exitCode: 0,
-              stdout: `true|healthy||sha256:collector-a|true|${__testing.COLLECTOR_ANALYSIS_CONTRACT}\n`,
+              stdout: `true|healthy||sha256:collector-a|true|${__testing.COLLECTOR_ANALYSIS_CONTRACT}|${CAPTURE_CONFIG_HASH}\n`,
               stderr: "",
             }
           : { exitCode: 1, stdout: "", stderr: "not found" };
@@ -1275,7 +1454,7 @@ test("a failed new launch does not interrupt an already-running Haloop route", a
       return args.includes(HALOOP_COLLECTOR_CONTAINER_NAME)
         ? {
             exitCode: 0,
-            stdout: `true|healthy||sha256:collector-a|true|${__testing.COLLECTOR_ANALYSIS_CONTRACT}\n`,
+            stdout: `true|healthy||sha256:collector-a|true|${__testing.COLLECTOR_ANALYSIS_CONTRACT}|${CAPTURE_CONFIG_HASH}\n`,
             stderr: "",
           }
         : {

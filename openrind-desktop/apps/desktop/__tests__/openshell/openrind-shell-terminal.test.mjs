@@ -7,7 +7,8 @@ const { deriveOpenrindShellSandboxName } = await import(
 
 test("sandbox names satisfy OpenShell's 19-character contract", () => {
   const name = deriveOpenrindShellSandboxName("My Workspace / Q3 + analysis");
-  assert.match(name, /^or-[a-z0-9]{1,8}-[0-9a-f]{7}$/);
+  assert.match(name, /^or-[a-z0-9-]{1,7}-[0-9a-f]{8}$/);
+  assert.equal(deriveOpenrindShellSandboxName(name), name);
   assert.ok(name.length <= 19);
 });
 

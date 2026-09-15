@@ -67,7 +67,7 @@ export type GatewayBillingStore = {
   userEmail: string;
   userName: string;
   refreshStats: () => Promise<void>;
-  refreshStatus: () => Promise<void>;
+  refreshStatus: () => Promise<boolean>;
   logout: () => Promise<void>;
 };
 
@@ -335,7 +335,11 @@ export function GatewayBillingProvider({ children }: GatewayBillingProviderProps
     if (typeof window === "undefined") return;
 
     // Persistent token tracking using localStorage to prevent duplicate exchanges across page loads
-    const PROCESSED_TOKENS_KEY = 'openrind_processed_auth_tokens';
+    localStorage.removeItem('openrind_processed_auth_tokens');
+    const PROCESSED_TOKENS_KEY = 'openrind_processed_auth_token_hashes';
+    const tokenFingerprint = async (token: string) => Array.from(new Uint8Array(
+      await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token))
+    ), (byte) => byte.toString(16).padStart(2, '0')).join('');
     const TOKEN_EXPIRY_MS = 10 * 60 * 1000; // 10 minutes
     
     const getProcessedTokens = (): Map<string, number> => {
@@ -354,18 +358,18 @@ export function GatewayBillingProvider({ children }: GatewayBillingProviderProps
       }
     };
     
-    const markTokenProcessed = (token: string): void => {
+    const markTokenProcessed = async (token: string): Promise<void> => {
       try {
         const processed = getProcessedTokens();
-        processed.set(token, Date.now());
+        processed.set(await tokenFingerprint(token), Date.now());
         localStorage.setItem(PROCESSED_TOKENS_KEY, JSON.stringify([...processed]));
       } catch {
         // Ignore localStorage errors
       }
     };
     
-    const isTokenProcessed = (token: string): boolean => {
-      return getProcessedTokens().has(token);
+    const isTokenProcessed = async (token: string): Promise<boolean> => {
+      return getProcessedTokens().has(await tokenFingerprint(token));
     };
 
     const handleUrls = async (urls: readonly string[]) => {
@@ -381,29 +385,16 @@ export function GatewayBillingProvider({ children }: GatewayBillingProviderProps
           const isSecureFlow = !!parsed.token;
           const isLegacyFlow = !!parsed.apiKey;
 
-          // Allow status updates even if credentials exist (after payment completion)
-          // Only skip if we're trying to set the SAME token again (duplicate prevention)
-          if (isSecureFlow && apiKeySet) {
-            console.log("[Gateway Auth] Credentials already set, but checking if this is a status update...");
-            
-            // If status changed from unpaid to paid, allow the update through
-            const currentStatus = localStorage.getItem("openrind_gateway_billing_status");
-            if (currentStatus === "unpaid" && parsed.status === "paid") {
-              console.log("[Gateway Auth] Status update detected: unpaid → paid, processing...");
-              // Continue with token exchange to verify and update status
-            } else if (currentStatus === parsed.status) {
-              console.log("[Gateway Auth] Status unchanged, ignoring duplicate auth deep link");
-              continue;
-            }
-          }
+          // Only deduplicate a successfully exchanged token, never a status
+          // supplied by the URL: another account can have the same status.
 
           // Prevent duplicate processing of one-time tokens (persists across page loads)
-          if (isSecureFlow && isTokenProcessed(parsed.token)) {
+          if (isSecureFlow && await isTokenProcessed(parsed.token)) {
             console.log("[Gateway Auth] Token already processed, skipping duplicate");
             continue;
           }
 
-          let finalApiKey: string;
+          let finalApiKey = "";
           let effectiveStatus: string = parsed.status;
           let isNewAccount = false;
 
@@ -421,18 +412,22 @@ export function GatewayBillingProvider({ children }: GatewayBillingProviderProps
             try {
               const exchangeResult = await invoke<{
                 success: boolean;
-                apiKey: string;
+                canceled?: boolean;
                 organizationId: number;
                 status: string;
                 isNewAccount: boolean;
               }>("openrindGatewayExchangeToken", { token: parsed.token });
               
-              finalApiKey = exchangeResult.apiKey;
+              if (exchangeResult.canceled || !exchangeResult.success) {
+                inFlightTokens.delete(parsed.token);
+                continue;
+              }
               effectiveStatus = exchangeResult.status || parsed.status;
               isNewAccount = exchangeResult.isNewAccount;
               
               // Persist processed token ONLY after success!
-              markTokenProcessed(parsed.token);
+              await markTokenProcessed(parsed.token);
+              inFlightTokens.delete(parsed.token);
               console.log("[Gateway Auth] Token exchange successful, status:", effectiveStatus, "isNewAccount:", isNewAccount);
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);
@@ -458,7 +453,7 @@ export function GatewayBillingProvider({ children }: GatewayBillingProviderProps
 
           // P1 Protection: Ask for explicit user confirmation before silently replacing their credentials
           // BUT: Don't ask if we're just updating status (it's the same account)
-          if (isNewAccount) {
+          if (isNewAccount && isLegacyFlow) {
             const confirmReplace = window.confirm(
               `An API Key from Openrind Gateway was received${parsed.email ? ` for ${parsed.email}` : ""}. Would you like to connect this key to your local shell application?`
             );
@@ -480,7 +475,7 @@ export function GatewayBillingProvider({ children }: GatewayBillingProviderProps
 
           try {
             // Normalize status: backend returns "active"/"trialing"/"unpaid", desktop expects "paid"/"unpaid"/"none"
-            const normalizedStatus = (effectiveStatus === "active" || effectiveStatus === "trialing") 
+            const normalizedStatus = (effectiveStatus === "paid" || effectiveStatus === "active" || effectiveStatus === "trialing")
               ? "paid" 
               : "unpaid";
             

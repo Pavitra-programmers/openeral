@@ -89,7 +89,7 @@ export type HaloopRuntimeStatus = {
     profileId: string;
     providerName: string;
     sandboxName: string;
-    agentId: "claude" | "openclaw";
+    agentId: "claude" | "openclaw" | "openhands";
   } | null;
   detail: string;
   lastConnectionError: string | null;
@@ -175,6 +175,21 @@ export type HaloopEvalArtifact = {
   containsSensitiveContent: true;
 };
 
+export type HaloopEvalPreview = {
+  artifactId: string;
+  haloRunId: string;
+  totalCases: number;
+  shownCases: number;
+  truncated: boolean;
+  containsSensitiveContent: true;
+  cases: Record<string, unknown>[];
+};
+
+export type HaloopDownloadResult = {
+  canceled: boolean;
+  path?: string;
+};
+
 export type HaloopAnalysisReport = {
   runId: string;
   report: string;
@@ -185,6 +200,25 @@ export type HaloopAnalysisReport = {
     missing: 0;
   };
 };
+
+// SettingsRoute unmounts when the user returns to a sandbox. Retain only the
+// already-rendered private Haloop view model in renderer memory so coming back
+// does not replace it with a blank screen while the collector refreshes.
+let retainedHaloopStatus: HaloopRuntimeStatus | null = null;
+let retainedHaloopAnalysisStatus: HaloopAnalysisStatus | null = null;
+let retainedHaloopAnalysisReport: HaloopAnalysisReport | null = null;
+let retainedHaloopEvalPreview: HaloopEvalPreview | null = null;
+
+function mergeHaloopAnalysisSnapshot(
+  previous: HaloopAnalysisStatus | null,
+  incoming: HaloopAnalysisStatus,
+): HaloopAnalysisStatus {
+  if (!previous || (incoming.project !== null && incoming.project !== previous.project)) return incoming;
+  // A temporary unavailable read or lower count must not erase captured evidence.
+  const stats = previous.stats && (!incoming.stats || incoming.stats.spans < previous.stats.spans)
+    ? previous.stats : incoming.stats;
+  return { ...incoming, project: incoming.project ?? previous.project, stats, run: null, evalArtifact: null };
+}
 
 export type OpenrindShellSessionProgress = {
   sandboxName?: string;
@@ -229,9 +263,18 @@ export function useOpenShellState(
   const [progressLog, setProgressLog] = useState<OpenShellInstallProgress[]>([]);
   const [policies, setPolicies] = useState<string[]>([]);
   const [credentialStatus, setCredentialStatus] = useState<OpenrindShellCredentialStatus | null>(null);
-  const [haloopStatus, setHaloopStatus] = useState<HaloopRuntimeStatus | null>(null);
-  const [haloopAnalysisStatus, setHaloopAnalysisStatus] = useState<HaloopAnalysisStatus | null>(null);
-  const [haloopAnalysisReport, setHaloopAnalysisReport] = useState<HaloopAnalysisReport | null>(null);
+  const [haloopStatus, setHaloopStatus] = useState<HaloopRuntimeStatus | null>(
+    () => retainedHaloopStatus,
+  );
+  const [haloopAnalysisStatus, setHaloopAnalysisStatus] = useState<HaloopAnalysisStatus | null>(
+    () => retainedHaloopAnalysisStatus,
+  );
+  const [haloopAnalysisReport, setHaloopAnalysisReport] = useState<HaloopAnalysisReport | null>(
+    () => retainedHaloopAnalysisReport,
+  );
+  const [haloopEvalPreview, setHaloopEvalPreview] = useState<HaloopEvalPreview | null>(
+    () => retainedHaloopEvalPreview,
+  );
   const [sessionProgress, setSessionProgress] = useState<OpenrindShellSessionProgress[]>([]);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
@@ -242,6 +285,26 @@ export function useOpenShellState(
     return () => {
       isMountedRef.current = false;
     };
+  }, []);
+
+  const rememberHaloopStatus = useCallback((status: HaloopRuntimeStatus | null) => {
+    retainedHaloopStatus = status;
+    if (isMountedRef.current) setHaloopStatus(status);
+  }, []);
+
+  const rememberHaloopAnalysisStatus = useCallback((status: HaloopAnalysisStatus | null) => {
+    retainedHaloopAnalysisStatus = status;
+    if (isMountedRef.current) setHaloopAnalysisStatus(status);
+  }, []);
+
+  const rememberHaloopAnalysisReport = useCallback((report: HaloopAnalysisReport | null) => {
+    retainedHaloopAnalysisReport = report;
+    if (isMountedRef.current) setHaloopAnalysisReport(report);
+  }, []);
+
+  const rememberHaloopEvalPreview = useCallback((preview: HaloopEvalPreview | null) => {
+    retainedHaloopEvalPreview = preview;
+    if (isMountedRef.current) setHaloopEvalPreview(preview);
   }, []);
 
   const refreshDoctor = useCallback(async () => {
@@ -297,32 +360,53 @@ export function useOpenShellState(
     if (!isElectronRuntime()) return;
     try {
       const status = await invoke<HaloopRuntimeStatus>("openrindHaloopStatus");
-      if (isMountedRef.current) setHaloopStatus(status);
+      rememberHaloopStatus(status);
     } catch {
       // Keep the last known snapshot; launch failures surface through the
       // session flow and the runtime status itself carries sanitized details.
     }
-  }, []);
+  }, [rememberHaloopStatus]);
 
   const refreshHaloopAnalysisStatus = useCallback(async () => {
     if (!isElectronRuntime()) return;
     try {
-      const status = await invoke<HaloopAnalysisStatus>("openrindHaloopAnalysisStatus");
-      if (isMountedRef.current) {
-        setHaloopAnalysisStatus(status);
-        if (
-          haloopAnalysisReport &&
-          (!status.run || status.run.runId !== haloopAnalysisReport.runId)
-        ) {
-          setHaloopAnalysisReport(null);
-        }
+      const status = await invoke<HaloopAnalysisStatus>("openrindHaloopCaptureStatus");
+      const previous = retainedHaloopAnalysisStatus;
+      const projectReplaced = Boolean(
+        status.project !== null && previous !== null && status.project !== previous.project,
+      );
+      rememberHaloopAnalysisStatus(mergeHaloopAnalysisSnapshot(previous, status));
+
+      // Only positive replacement evidence invalidates rendered artifacts.
+      // A transient null from the collector must not erase them on navigation.
+      if (
+        retainedHaloopAnalysisReport &&
+        (projectReplaced ||
+          (status.run !== null && status.run.runId !== retainedHaloopAnalysisReport.runId))
+      ) {
+        rememberHaloopAnalysisReport(null);
+      }
+      if (
+        retainedHaloopEvalPreview &&
+        (projectReplaced ||
+          (status.evalArtifact !== null &&
+            status.evalArtifact.haloRunId !== retainedHaloopEvalPreview.haloRunId) ||
+          (status.run !== null &&
+            status.run.runId !== retainedHaloopEvalPreview.haloRunId))
+      ) {
+        rememberHaloopEvalPreview(null);
       }
     } catch (err) {
       if (isMountedRef.current && actionBusy) {
         setActionError(err instanceof Error ? err.message : String(err));
       }
     }
-  }, [actionBusy, haloopAnalysisReport]);
+  }, [
+    actionBusy,
+    rememberHaloopAnalysisReport,
+    rememberHaloopAnalysisStatus,
+    rememberHaloopEvalPreview,
+  ]);
 
   // Listen for external credential changes (e.g., from gateway billing deep link)
   useEffect(() => {
@@ -453,7 +537,7 @@ export function useOpenShellState(
     setActionError(null);
     try {
       const status = await invoke<HaloopRuntimeStatus>("openrindHaloopRestart");
-      if (isMountedRef.current) setHaloopStatus(status);
+      rememberHaloopStatus(status);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (isMountedRef.current) setActionError(message);
@@ -461,7 +545,7 @@ export function useOpenShellState(
     } finally {
       if (isMountedRef.current) setActionBusy(false);
     }
-  }, []);
+  }, [rememberHaloopStatus]);
 
   const restoreHaloopIncumbent = useCallback(
     async (): Promise<HaloopIncumbentRollbackResult> => {
@@ -479,7 +563,7 @@ export function useOpenShellState(
             expectedSandboxName: route.sandboxName,
           },
         );
-        if (isMountedRef.current) setHaloopStatus(result.status);
+        rememberHaloopStatus(result.status);
         return result;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -489,7 +573,7 @@ export function useOpenShellState(
         if (isMountedRef.current) setActionBusy(false);
       }
     },
-    [haloopStatus],
+    [haloopStatus, rememberHaloopStatus],
   );
 
   const rotateHaloopToken = useCallback(async (): Promise<HaloopTokenRotationResult> => {
@@ -504,7 +588,7 @@ export function useOpenShellState(
         expectedProfileId: route.profileId,
         expectedSandboxName: route.sandboxName,
       });
-      if (isMountedRef.current) setHaloopStatus(result.status);
+      rememberHaloopStatus(result.status);
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -513,64 +597,16 @@ export function useOpenShellState(
     } finally {
       if (isMountedRef.current) setActionBusy(false);
     }
-  }, [haloopStatus]);
+  }, [haloopStatus, rememberHaloopStatus]);
 
-  const startHaloopAnalysis = useCallback(async (): Promise<HaloopAnalysisStatus> => {
+  const downloadHaloopTraces = useCallback(async (): Promise<HaloopDownloadResult> => {
     setActionBusy(true);
-    setActionError(null);
-    setHaloopAnalysisReport(null);
     try {
-      const status = await invoke<HaloopAnalysisStatus>("openrindHaloopAnalysisStart");
-      if (isMountedRef.current) setHaloopAnalysisStatus(status);
-      return status;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (isMountedRef.current) setActionError(message);
-      throw err;
+      return await invoke<HaloopDownloadResult>("openrindHaloopTracesDownload");
     } finally {
-      if (isMountedRef.current) setActionBusy(false);
+      setActionBusy(false);
     }
   }, []);
-
-  const loadHaloopAnalysisReport = useCallback(async (): Promise<HaloopAnalysisReport> => {
-    const runId = haloopAnalysisStatus?.run?.runId;
-    if (!runId) throw new Error("No completed HALO analysis report is available.");
-    setActionBusy(true);
-    setActionError(null);
-    try {
-      const report = await invoke<HaloopAnalysisReport>("openrindHaloopAnalysisReport", {
-        runId,
-      });
-      if (isMountedRef.current) setHaloopAnalysisReport(report);
-      return report;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (isMountedRef.current) setActionError(message);
-      throw err;
-    } finally {
-      if (isMountedRef.current) setActionBusy(false);
-    }
-  }, [haloopAnalysisStatus]);
-
-  const generateHaloopEvalCases = useCallback(async (): Promise<HaloopEvalArtifact> => {
-    const runId = haloopAnalysisStatus?.run?.runId;
-    if (!runId) throw new Error("No completed HALO analysis is available for eval generation.");
-    setActionBusy(true);
-    setActionError(null);
-    try {
-      const artifact = await invoke<HaloopEvalArtifact>("openrindHaloopEvalGenerate", {
-        runId,
-      });
-      await refreshHaloopAnalysisStatus();
-      return artifact;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (isMountedRef.current) setActionError(message);
-      throw err;
-    } finally {
-      if (isMountedRef.current) setActionBusy(false);
-    }
-  }, [haloopAnalysisStatus, refreshHaloopAnalysisStatus]);
 
   const openPoliciesFolder = useCallback(async () => {
     setActionError(null);
@@ -647,7 +683,7 @@ export function useOpenShellState(
   const startOpenrindShellSession = useCallback(
     async (
       workspaceId: string,
-      profile: "openrind-shell-claude" | "openrind-shell-openclaw",
+      profile: "openrind-shell-claude" | "openrind-shell-openclaw" | "openrind-shell-openhands" | "openrind-shell-openhands-script",
     ): Promise<OpenrindShellSessionResult> => {
       setActionBusy(true);
       setActionError(null);
@@ -711,16 +747,24 @@ export function useOpenShellState(
         await refreshInstallStatus();
         setProgressLog([]);
         setSessionProgress([]);
-        setHaloopStatus(null);
-        setHaloopAnalysisStatus(null);
-        setHaloopAnalysisReport(null);
+        rememberHaloopStatus(null);
+        rememberHaloopAnalysisStatus(null);
+        rememberHaloopAnalysisReport(null);
+        rememberHaloopEvalPreview(null);
       }
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
       setActionBusy(false);
     }
-  }, [refreshDoctor, refreshInstallStatus]);
+  }, [
+    refreshDoctor,
+    refreshInstallStatus,
+    rememberHaloopAnalysisReport,
+    rememberHaloopAnalysisStatus,
+    rememberHaloopEvalPreview,
+    rememberHaloopStatus,
+  ]);
 
   return {
     doctor,
@@ -735,6 +779,7 @@ export function useOpenShellState(
     haloopStatus,
     haloopAnalysisStatus,
     haloopAnalysisReport,
+    haloopEvalPreview,
     sessionProgress,
     startInstall,
     cancelInstall,
@@ -742,9 +787,7 @@ export function useOpenShellState(
     restartHaloop,
     restoreHaloopIncumbent,
     rotateHaloopToken,
-    startHaloopAnalysis,
-    loadHaloopAnalysisReport,
-    generateHaloopEvalCases,
+    downloadHaloopTraces,
     resetDistro,
     openPoliciesFolder,
     setCredential,

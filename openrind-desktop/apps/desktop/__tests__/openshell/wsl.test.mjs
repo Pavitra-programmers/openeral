@@ -4,13 +4,14 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MOCK_WSL = join(__dirname, "mock-wsl.sh");
+if (process.platform !== "win32") chmodSync(MOCK_WSL, 0o755);
 
 let workDir;
 let logPath;
