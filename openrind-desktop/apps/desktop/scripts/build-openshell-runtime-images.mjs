@@ -11,14 +11,14 @@ import { fileURLToPath } from "node:url";
 
 const DISTRO_NAME = "openrind-desktop-openshell";
 const FUSE_IMAGE = "openrind-shell-fuse:local";
-const FUSE_CONTRACT = "fuse-haloop-required-v27";
+const FUSE_CONTRACT = "fuse-haloop-required-v28-openhands";
 const OPENSHELL_BASE_IMAGE = "ghcr.io/nvidia/openshell-community/sandboxes/base:latest";
 const CLAUDE_CODE_PACKAGE = "@anthropic-ai/claude-code";
 const HALOOP_LOCAL_IMAGE = "haloop-gateway:local";
 const HALOOP_CONTRACT = "openrind-haloop-v2";
 const HALOOP_LOCAL_COLLECTOR_IMAGE = "haloop-collector:local";
 const HALOOP_COLLECTOR_CONTRACT = "openrind-haloop-collector-v1";
-const HALOOP_VERSION = "w8-haloop-openrind-v4-eval-export";
+const HALOOP_VERSION = "w8-haloop-openrind-v6-durable-analysis";
 const HALOOP_PRODUCTION_IMAGE =
   `ghcr.io/openrind/openrind-shell/haloop-gateway:${HALOOP_VERSION}`;
 const HALOOP_PRODUCTION_COLLECTOR_IMAGE =
@@ -29,7 +29,7 @@ const desktopRoot = path.resolve(scriptDirectory, "..");
 const repositoryRoot = path.resolve(desktopRoot, "../../..");
 const haloopRoot = path.resolve(
   process.env.OPENRIND_DESKTOP_HALOOP_SOURCE?.trim() ||
-    path.join(repositoryRoot, "..", "w8-haloop-main"),
+    path.join(repositoryRoot, "..", "w8-haloop"),
 );
 
 function fail(message) {
@@ -180,7 +180,7 @@ if (!verifyOnly && includeHaloop) {
   const dockerfile = path.join(haloopRoot, "Dockerfile");
   if (!existsSync(dockerfile)) {
     fail(
-      `Haloop Dockerfile not found at ${dockerfile}. Set OPENRIND_DESKTOP_HALOOP_SOURCE to the w8-haloop-main checkout.`,
+      `Haloop Dockerfile not found at ${dockerfile}. Set OPENRIND_DESKTOP_HALOOP_SOURCE to the w8-haloop checkout.`,
     );
   }
   console.log(`[runtime-images] building ${haloopImage} in ${DISTRO_NAME}...`);
