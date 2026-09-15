@@ -107,6 +107,16 @@ import { needsUserAttention } from "../domains/session/sidebar/sandbox-status";
 import { sandboxStatusLabel } from "../domains/session/sidebar/sandbox-status-labels";
 import type { SidebarTab } from "../domains/session/sidebar/sidebar-tabs";
 
+type SelectedSandbox = {
+  name: string;
+  profile: SandboxProfile;
+};
+
+// Route navigation unmounts SessionRoute, but it must not turn a settings visit
+// into a new sandbox launch. Keep the selection for this renderer lifetime only
+// (a full app launch still starts on the normal chat interface).
+let retainedSandboxSelection: SelectedSandbox | null = null;
+
 type RouteWorkspace = OpenrindDesktopWorkspaceInfo & {
   displayNameResolved: string;
 };
@@ -352,7 +362,9 @@ async function draftToParts(draft: ComposerDraft, workspaceRoot: string) {
 function isChatWorkspace(workspace: RouteWorkspace): boolean {
   return (
     workspace.sandboxProfile !== "openrind-shell-claude" &&
-    workspace.sandboxProfile !== "openrind-shell-openclaw"
+    workspace.sandboxProfile !== "openrind-shell-openclaw" &&
+    workspace.sandboxProfile !== "openrind-shell-openhands" &&
+    workspace.sandboxProfile !== "openrind-shell-openhands-script"
   );
 }
 
@@ -904,8 +916,8 @@ export function SessionRoute() {
   // decoupled from workspaces (workspaces are always the regular chat UI).
   // Selecting one swaps the session surface for that sandbox's terminal.
   // The /sandboxes manager hands off a freshly created/opened sandbox via
-  // location.state so it lands here already selected. Selection is NOT
-  // persisted: opening the app always starts on the chat interface.
+  // location.state so it lands here already selected. Selection is retained
+  // only while this renderer is alive; opening the app still starts on chat.
   // Which object type the sidebar is showing. Owned here rather than in the
   // page so a deep link, the palette, and the sandbox handoff below can all
   // reveal the sandbox they just selected.
@@ -929,15 +941,18 @@ export function SessionRoute() {
   // Selecting one swaps the session surface for that sandbox's terminal.
   // The /sandboxes manager hands off a freshly created/opened sandbox via
   // location.state so it lands here already selected.
-  const [selectedSandbox, setSelectedSandbox] = React.useState<{
-    name: string;
-    profile: SandboxProfile;
-  } | null>(null);
+  const [selectedSandbox, setSelectedSandbox] = React.useState<SelectedSandbox | null>(
+    () => retainedSandboxSelection,
+  );
 
   const handleSetSelectedSandbox = React.useCallback((
-    sandbox: { name: string; profile: SandboxProfile } | null | ((current: { name: string; profile: SandboxProfile } | null) => { name: string; profile: SandboxProfile } | null)
+    sandbox: SelectedSandbox | null | ((current: SelectedSandbox | null) => SelectedSandbox | null)
   ) => {
-    setSelectedSandbox(sandbox);
+    setSelectedSandbox((current) => {
+      const next = typeof sandbox === "function" ? sandbox(current) : sandbox;
+      retainedSandboxSelection = next;
+      return next;
+    });
   }, []);
 
   // One poller shared by the sidebar panel, the command palette and the
@@ -974,8 +989,8 @@ export function SessionRoute() {
     handleSetSelectedSandbox({
       name: handoff.name,
       profile:
-        handoff.profile === "openrind-shell-openclaw"
-          ? "openrind-shell-openclaw"
+        handoff.profile === "openrind-shell-openclaw" || handoff.profile === "openrind-shell-openhands" || handoff.profile === "openrind-shell-openhands-script"
+          ? handoff.profile
           : "openrind-shell-claude",
     });
     // Consume the handoff so refresh / back never re-selects the sandbox.

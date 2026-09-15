@@ -19,6 +19,7 @@ export function readSandboxProfile(sandboxName: string): SandboxProfile {
   try {
     const value = localStorage.getItem(PROFILE_KEY_PREFIX + sandboxName);
     if (value === "openrind-shell-openclaw") return "openrind-shell-openclaw";
+    if (value === "openrind-shell-openhands" || value === "openrind-shell-openhands-script") return value;
     if (value === "openrind-shell-claude") return "openrind-shell-claude";
 
     // Fallback: if sandboxName starts with "or-", scan localStorage keys for a match
@@ -33,6 +34,7 @@ export function readSandboxProfile(sandboxName: string): SandboxProfile {
             const prefix = `or-${normalized.slice(0, 7)}-`;
             if (sandboxName.startsWith(prefix) || sandboxName === suffix) {
               const val = localStorage.getItem(key);
+              if (val === "openrind-shell-openhands" || val === "openrind-shell-openhands-script") return val;
               if (val === "openrind-shell-openclaw") return "openrind-shell-openclaw";
             }
           }

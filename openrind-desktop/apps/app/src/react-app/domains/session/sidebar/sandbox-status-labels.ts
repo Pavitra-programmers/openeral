@@ -36,6 +36,8 @@ export function sandboxStatusLabel(status: SandboxStatus): string {
 }
 
 export function sandboxAgentLabel(profile: SandboxProfile): string {
+  if (profile === "openrind-shell-openhands") return "OpenHands CLI";
+  if (profile === "openrind-shell-openhands-script") return "OpenHands Script";
   return profile === "openrind-shell-openclaw"
     ? t("sandbox.agent_openclaw")
     : t("sandbox.agent_claude");

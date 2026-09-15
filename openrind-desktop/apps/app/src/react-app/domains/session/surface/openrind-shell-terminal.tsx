@@ -293,7 +293,7 @@ type BootstrapProgressEvent = {
  * returning (i.e. before setSandboxName is ever called).
  */
 function deriveExpectedSandboxName(workspaceId: string): string {
-  if (/^or-[a-z0-9]{1,7}-[a-f0-9]{8}$/.test(workspaceId)) {
+  if (/^or-(?:[a-z0-9-]{1,7}-[a-f0-9]{8}|[a-z0-9-]{1,8}-[a-f0-9]{7})$/.test(workspaceId)) {
     return workspaceId;
   }
   const trimmed = workspaceId

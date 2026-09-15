@@ -431,7 +431,7 @@ export function CreateWorkspaceModal(props: CreateWorkspaceModalProps) {
     // Openrind Shell default (persisted preference from an older build) so a
     // workspace can never be created with a terminal profile again.
     const effectiveProfile =
-      sandboxProfile === "openrind-shell-claude" || sandboxProfile === "openrind-shell-openclaw"
+      sandboxProfile !== "openrind-desktop"
         ? "openrind-desktop"
         : sandboxProfile;
     props.onConfirm(preset, selectedFolder, sandboxBackend, effectiveProfile);
