@@ -78,6 +78,15 @@ network_policies:
         rules:
           - allow: { method: POST, path: "/v1/messages" }
           - allow: { method: POST, path: "/v1/messages/count_tokens" }
+          - allow: { method: POST, path: "/v1/chat/completions" }
+      - host: 136.112.93.84
+        port: 8787
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow: { method: POST, path: "/v1/messages" }
+          - allow: { method: POST, path: "/v1/messages/count_tokens" }
+          - allow: { method: POST, path: "/v1/chat/completions" }
     binaries:
       - { path: /usr/bin/claude }
       - { path: /usr/local/bin/claude }
