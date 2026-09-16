@@ -13,6 +13,7 @@ import {
   HALOOP_PACKAGED_COLLECTOR_IMAGE,
   HALOOP_PACKAGED_IMAGE,
   HALOOP_IMAGE_VERSION,
+  HALOOP_SANDBOX_ENDPOINT,
   __testing,
   buildHaloopAgentLifecycleEvent,
   buildHaloopCaptureIdentity,
@@ -27,6 +28,20 @@ const CAPTURE_CONFIG_HASH = createHash("sha256").update("W8_DESKTOP_CAPTURE_ONLY
 const CONTEXT_ID = "12".repeat(16);
 const OPENSHELL_BRIDGE_IP = "172.30.0.1";
 const OPENSHELL_BRIDGE_IPAM = `${JSON.stringify([{ Gateway: OPENSHELL_BRIDGE_IP }])}\n`;
+
+test("authentication probe checks the configured inference edge and rejects an unconfigured deployment", async () => {
+  const endpoint = new URL(HALOOP_SANDBOX_ENDPOINT);
+  if (endpoint.hostname === "host.openshell.internal") endpoint.hostname = "127.0.0.1";
+  endpoint.pathname = "/v1/messages";
+  let calls = 0;
+  await assert.rejects(__testing.requireAuthenticatedEdge(async (args) => {
+    calls++;
+    assert.ok(args.at(-1).includes(`fetch(${JSON.stringify(endpoint.href)},`));
+    assert.match(args.at(-1), /r\.status!==401/);
+    return { exitCode: 1, stdout: "", stderr: "unexpected status 400" };
+  }), /Configure Desktop scoped client profiles/);
+  assert.equal(calls, 1);
+});
 
 const scopedProfile = {
   scopeId: "a".repeat(64),

@@ -1141,8 +1141,12 @@ async function requireCollectorFromGateway(run) {
 }
 
 async function requireAuthenticatedEdge(run) {
+  // Check the edge agents actually use, not an unrelated healthy local container.
+  const endpoint = new URL(HALOOP_SANDBOX_ENDPOINT);
+  if (endpoint.hostname === "host.openshell.internal") endpoint.hostname = "127.0.0.1";
+  endpoint.pathname = "/v1/messages";
   const probe = [
-    "fetch('http://127.0.0.1:8787/v1/messages',",
+    `fetch(${JSON.stringify(endpoint.href)},`,
     "{method:'POST',headers:{'content-type':'application/json'},body:'{}'})",
     ".then(r=>{if(r.status!==401){console.error('unexpected status '+r.status);process.exit(1)}})",
     ".catch(e=>{console.error(e.message);process.exit(1)})",
@@ -1153,7 +1157,7 @@ async function requireAuthenticatedEdge(run) {
   );
   if (result.exitCode === 0) return;
   throw new Error(
-    "The Haloop edge failed its authentication check. Sandbox creation is blocked.",
+    `The configured Haloop edge at ${endpoint.origin} failed its authentication check. Configure Desktop scoped client profiles and signed-session validation on that gateway before launching a sandbox.`,
   );
 }
 
@@ -2626,6 +2630,7 @@ export const __testing = {
   STARTUP_TIMEOUT_MS,
   inspectContainer,
   requestPrivateCollector,
+  requireAuthenticatedEdge,
   resolveOpenShellBridgeAddress,
   validateHaloopReportCitations,
   validateHaloopTraceProject,

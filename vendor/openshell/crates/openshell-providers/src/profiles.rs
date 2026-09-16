@@ -2702,13 +2702,18 @@ mod tests {
             vec!["HALOOP_CLIENT_TOKEN", "ANTHROPIC_API_KEY"]
         );
 
-        assert_eq!(profile.endpoints.len(), 1);
-        let endpoint = &profile.endpoints[0];
-        assert_eq!(endpoint.host, "host.openshell.internal");
-        assert_eq!(endpoint.port, 8787);
-        assert_eq!(endpoint.path, "/v1/**");
-        assert_eq!(endpoint.protocol, "rest");
-        assert_eq!(endpoint.enforcement, "enforce");
+        assert_eq!(profile.endpoints.len(), 2);
+        for (endpoint, host) in profile
+            .endpoints
+            .iter()
+            .zip(["host.openshell.internal", "136.112.93.84"])
+        {
+            assert_eq!(endpoint.host, host);
+            assert_eq!(endpoint.port, 8787);
+            assert_eq!(endpoint.path, "/v1/**");
+            assert_eq!(endpoint.protocol, "rest");
+            assert_eq!(endpoint.enforcement, "enforce");
+        }
 
         let binaries = profile
             .binaries
@@ -2717,6 +2722,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(binaries.contains(&"/usr/local/bin/claude-real"));
         assert!(binaries.contains(&"/usr/local/bin/openrind-openclaw-agent"));
+        assert!(binaries.contains(&"/usr/local/bin/openrind-openhands-agent"));
         assert!(!binaries.contains(&"/usr/bin/node"));
     }
 
