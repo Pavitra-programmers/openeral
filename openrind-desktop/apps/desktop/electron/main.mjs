@@ -3423,7 +3423,7 @@ function buildApplicationMenu() {
       ...(isMac
         ? []
         : [
-            { type: "separator" },
+            { type: /** @type {const} */ ("separator") },
             {
               label: "About Openrind Desktop",
               click: () => sendMenuActionToRenderer("about"),
@@ -3505,7 +3505,10 @@ async function createMainWindow() {
   };
   mainWindow.webContents.session.setPermissionRequestHandler(
     (_webContents, permission, callback, details) => {
-      const url = details?.requestingUrl || details?.securityOrigin || "";
+      const url =
+        details?.requestingUrl ||
+        (details && "securityOrigin" in details ? details.securityOrigin : "") ||
+        "";
       callback(
         isAudioOnlyMediaPermission(permission, details) &&
           isTrustedVoiceOrigin(url),
