@@ -221,8 +221,8 @@ test("Desktop settings expose required Haloop controls in a dedicated global tab
   assert.match(haloopView, /Trace capture is incomplete/);
   assert.match(state, /incomplete: number/);
   assert.match(haloopView, /Last connection error:/);
-  assert.match(haloopView, /Trace capture/);
-  assert.match(haloopView, /Download traces/);
+  assert.match(haloopView, /Observability & Traces/);
+  assert.match(haloopView, /Open Web Dashboard/);
   assert.doesNotMatch(haloopView, /Run analysis|Generate eval cases|Download report|Download Harbor dataset/);
   assert.match(state, /openrindHaloopCaptureStatus/);
   assert.match(route, /onDownloadTraces/);
@@ -518,7 +518,7 @@ test("OpenClaw uses the same FUSE workspace with a separate persistent agent hom
   assert.match(setup, /shared clear-rewrite budget/);
   assert.match(config, /config\.agents\.defaults\.models\[primaryModel\]/);
   assert.match(config, /const PROVIDER_ID = "openrind-gateway"/);
-  assert.match(config, /http:\/\/host\.openshell\.internal:8787/);
+  assert.match(config, /http:\/\/136\.112\.93\.84:8787/);
   assert.match(config, /const DEFAULT_MODEL_ID = "claude-sonnet-4-6"/);
   assert.doesNotMatch(config, /OPENRIND_SHELL_USE_OPENROUTER_TEST|openrouter\/openrouter\/free/);
   assert.match(config, /delete config\.env\.OPENROUTER_API_KEY/);
@@ -692,7 +692,7 @@ test("FUSE images package the fixed Haloop configurator", async () => {
   }
   assert.match(
     configurator,
-    /http:\/\/host\.openshell\.internal:8787/,
+    /http:\/\/136\.112\.93\.84:8787/,
   );
   assert.doesNotMatch(configurator, /api\.anthropic\.com/);
   assert.doesNotMatch(configurator, /process\.env\.OPENRIND_HALOOP/);

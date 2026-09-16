@@ -27,7 +27,10 @@ export const HALOOP_COLLECTOR_IMAGE_CONTRACT = "openrind-haloop-collector-v1";
 export const HALOOP_COLLECTOR_CONTAINER_NAME = "openrind-desktop-haloop-collector";
 export const HALOOP_NETWORK_NAME = "openrind-desktop-haloop";
 export const HALOOP_EDGE_PORT = 8787;
-export const HALOOP_SANDBOX_ENDPOINT = `http://host.openshell.internal:${HALOOP_EDGE_PORT}`;
+export const HALOOP_SANDBOX_ENDPOINT =
+  process.env.HALOOP_GATEWAY_URL?.trim() ||
+  process.env.OPENRIND_DESKTOP_HALOOP_ENDPOINT?.trim() ||
+  `http://136.112.93.84:${HALOOP_EDGE_PORT}`;
 export const HALOOP_ROUTE_POLICY = "incumbent-only";
 export const HALOOP_TEMPORARY_OPENROUTER_TEST_ENV =
   "OPENRIND_DESKTOP_HALOOP_TEST_OPENROUTER";
@@ -101,7 +104,7 @@ const HALOOP_REPORT_RETENTION_COUNT = 20;
 const HALOOP_SESSION_ASSERTION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const HALOOP_CONTEXT_ID_PATTERN = /^[0-9a-f]{32}$/;
 const HALOOP_RUN_ID_PATTERN = /^[0-9a-f]{12}$/;
-const HALOOP_PROJECT_PATTERN = /^openrind-[0-9a-f]{24}$/;
+const HALOOP_PROJECT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const HALOOP_EVAL_ARTIFACT_PATTERN = /^eval-cases-[0-9a-f]{12}\.jsonl$/;
 const HALOOP_ANALYSIS_PROMPT =
   "Diagnose recurring tool-use failures, invalid tool arguments, refusal loops, empty outputs, and wasted retries in these Openrind agent traces. Compare only models actually present in the trace data. Cite the exact trace_id and span_id for every finding, and treat citations as evidence rather than automatic failure labels.";
@@ -163,8 +166,16 @@ function stableHex(label, ...values) {
   return hash.digest("hex");
 }
 
-export function haloopProjectForWorkspace(workspaceId) {
-  return `openrind-${stableHex("project", requiredSecret(workspaceId, "Openrind workspace id")).slice(0, 24)}`;
+export function haloopProjectForWorkspace(workspaceId, sandboxName) {
+  if (sandboxName) {
+    const s = String(sandboxName).trim();
+    if (s) return s;
+  }
+  if (workspaceId) {
+    const w = String(workspaceId).trim();
+    if (w) return w;
+  }
+  return "default";
 }
 
 function deriveHaloopSessionHmacKey(profile) {
@@ -179,7 +190,7 @@ export function buildHaloopCaptureIdentity(profile, contextId) {
   if (!HALOOP_CONTEXT_ID_PATTERN.test(canonicalContextId)) {
     throw new Error("A canonical Haloop conversation context id is required.");
   }
-  const project = haloopProjectForWorkspace(profile.workspaceId);
+  const project = (profile.sandboxName && String(profile.sandboxName).trim()) || haloopProjectForWorkspace(profile.workspaceId);
   return {
     profileId: requiredSecret(profile.id, "Haloop profile id"),
     project,
@@ -247,7 +258,7 @@ export function buildHaloopProfilesDocument(
   return {
     version: 1,
     profiles: profiles.map((profile) => {
-      const project = haloopProjectForWorkspace(profile.workspaceId);
+      const project = (profile.sandboxName && String(profile.sandboxName).trim()) || haloopProjectForWorkspace(profile.workspaceId);
       return {
         id: profile.id,
         client_token_sha256: createHash("sha256")
@@ -476,7 +487,7 @@ async function requestPrivateCollector(run, { method = "GET", requestPath, body 
   }
   const allowedRequest =
     (normalizedMethod === "GET" &&
-      /^\/(?:stats\?project=openrind-[0-9a-f]{24}|halo\/runs(?:\/[0-9a-f]{12}(?:\?report=true)?)?|evals\/artifacts(?:\/[0-9a-f]{12}\/preview)?\?project=openrind-[0-9a-f]{24})$/.test(
+      /^\/(?:stats\?project=[A-Za-z0-9._-]+|halo\/runs(?:\/[0-9a-f]{12}(?:\?report=true)?)?|evals\/artifacts(?:\/[0-9a-f]{12}\/preview)?\?project=[A-Za-z0-9._-]+)$/.test(
         requestPath,
       )) ||
     (normalizedMethod === "POST" &&
@@ -528,7 +539,7 @@ async function requestPrivateCollector(run, { method = "GET", requestPath, body 
 }
 
 async function validateHaloopTraceProject(run, project) {
-  if (!/^openrind-[0-9a-f]{24}$/.test(project)) {
+  if (!HALOOP_PROJECT_PATTERN.test(project)) {
     throw new Error("The active Haloop trace project is invalid.");
   }
   const validationScript = [
@@ -570,7 +581,7 @@ async function validateHaloopTraceProject(run, project) {
 }
 
 async function validateHaloopReportCitations(run, project, report) {
-  if (!/^openrind-[0-9a-f]{24}$/.test(project)) {
+  if (!HALOOP_PROJECT_PATTERN.test(project)) {
     throw new Error("The active Haloop trace project is invalid.");
   }
   if (typeof report !== "string" || Buffer.byteLength(report, "utf8") > MAX_HALOOP_REPORT_BYTES) {
@@ -1182,7 +1193,7 @@ export function createHaloopRuntimeManager({
       const identity = resolveHaloopClientProfileIdentity(route);
       if (identity.id !== route.profileId || identity.providerName !== route.providerName) return;
       lastReadyRoute = route;
-      lastAnalysisProject = haloopProjectForWorkspace(route.workspaceId);
+      lastAnalysisProject = (route.sandboxName && String(route.sandboxName).trim()) || haloopProjectForWorkspace(route.workspaceId);
       managedThisProcess = true;
     } catch { /* Missing or stale metadata must not invent an active route. */ }
   }
@@ -1276,6 +1287,10 @@ export function createHaloopRuntimeManager({
   }
 
   async function discoverAnalysisProject() {
+    if (lastReadyRoute?.sandboxName && String(lastReadyRoute.sandboxName).trim()) {
+      lastAnalysisProject = String(lastReadyRoute.sandboxName).trim();
+      return lastAnalysisProject;
+    }
     if (lastReadyRoute?.workspaceId) {
       lastAnalysisProject = haloopProjectForWorkspace(lastReadyRoute.workspaceId);
       return lastAnalysisProject;
@@ -1352,9 +1367,8 @@ export function createHaloopRuntimeManager({
 
   async function analysisSnapshot() {
     const collector = await inspectContainer(run, HALOOP_COLLECTOR_CONTAINER_NAME);
-    const routeProject = lastReadyRoute?.workspaceId
-      ? haloopProjectForWorkspace(lastReadyRoute.workspaceId)
-      : lastAnalysisProject;
+    const routeProject = (lastReadyRoute?.sandboxName && String(lastReadyRoute.sandboxName).trim())
+      || (lastReadyRoute?.workspaceId ? haloopProjectForWorkspace(lastReadyRoute.workspaceId) : lastAnalysisProject);
     if (
       !collector?.managed ||
       !collector.running ||
@@ -1515,9 +1529,8 @@ export function createHaloopRuntimeManager({
 
   function traceCaptureStatus() {
     return serialize(async () => {
-      const project = lastReadyRoute?.workspaceId
-        ? haloopProjectForWorkspace(lastReadyRoute.workspaceId)
-        : lastAnalysisProject;
+      const project = (lastReadyRoute?.sandboxName && String(lastReadyRoute.sandboxName).trim())
+        || (lastReadyRoute?.workspaceId ? haloopProjectForWorkspace(lastReadyRoute.workspaceId) : lastAnalysisProject);
       const base = { project: project ?? null, stats: null, run: null, evalArtifact: null,
         retention: { days: HALOOP_REPORT_RETENTION_DAYS, reports: HALOOP_REPORT_RETENTION_COUNT } };
       const collector = await inspectContainer(run, HALOOP_COLLECTOR_CONTAINER_NAME);
@@ -1536,8 +1549,8 @@ export function createHaloopRuntimeManager({
 
   function exportTraces(project, destinationPath) {
     return serialize(async () => {
-      const expected = lastReadyRoute?.workspaceId
-        ? haloopProjectForWorkspace(lastReadyRoute.workspaceId) : lastAnalysisProject;
+      const expected = (lastReadyRoute?.sandboxName && String(lastReadyRoute.sandboxName).trim())
+        || (lastReadyRoute?.workspaceId ? haloopProjectForWorkspace(lastReadyRoute.workspaceId) : lastAnalysisProject);
       if (!HALOOP_PROJECT_PATTERN.test(String(project)) || project !== expected) {
         throw new Error("The active trace project changed. Refresh and retry.");
       }
@@ -1900,7 +1913,7 @@ export function createHaloopRuntimeManager({
         }
         await run(["-d", DISTRO_NAME, "--", "rm", "-f", ...stateFiles.map((file) => `${file}.${transactionId}`)],
           { timeout: 10_000, user: "root" }).catch(() => undefined);
-        lastAnalysisProject = haloopProjectForWorkspace(options.workspaceId);
+        lastAnalysisProject = (options.sandboxName && String(options.sandboxName).trim()) || haloopProjectForWorkspace(options.workspaceId);
         lastConnectionError = null;
         return result;
       } catch (error) {
@@ -2114,7 +2127,7 @@ export function createHaloopRuntimeManager({
           (isTemporaryOpenRouterHaloopTestEnabled(env) ? "openrouter-test" : "anthropic"),
         analysisConfigHash: lastReadyRoute?.analysisConfigHash ?? null,
       };
-      lastAnalysisProject = haloopProjectForWorkspace(identity.workspaceId);
+      lastAnalysisProject = (identity.sandboxName && String(identity.sandboxName).trim()) || haloopProjectForWorkspace(identity.workspaceId);
       if (lastReadyRoute.gatewayProfileHash) await persistReadyRoute(lastReadyRoute);
       lastConnectionError = null;
       return publicRouteIdentity(lastReadyRoute);

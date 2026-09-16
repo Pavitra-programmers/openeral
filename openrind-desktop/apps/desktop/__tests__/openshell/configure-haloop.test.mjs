@@ -88,7 +88,7 @@ test("Haloop configurator pins the edge and pre-provisions the persistent Claude
     const settings = JSON.parse(await readFile(settingsPath, "utf8"));
     assert.equal(
       settings.env.ANTHROPIC_BASE_URL,
-      "http://host.openshell.internal:8787",
+      "http://136.112.93.84:8787",
     );
     assert.equal(settings.env.KEEP_ME, "safe");
     assert.equal(settings.env.ANTHROPIC_API_KEY, undefined);
@@ -100,7 +100,7 @@ test("Haloop configurator pins the edge and pre-provisions the persistent Claude
     );
     assert.equal(
       claudeSettings.env.ANTHROPIC_BASE_URL,
-      "http://host.openshell.internal:8787",
+      "http://136.112.93.84:8787",
     );
     assert.equal(claudeSettings.env.KEEP_HOME, "safe");
     assert.equal(claudeSettings.env.ANTHROPIC_AUTH_TOKEN, undefined);
@@ -110,11 +110,11 @@ test("Haloop configurator pins the edge and pre-provisions the persistent Claude
     assert.equal(claudeConfig.keepConfig, true);
     assert.equal(
       await readFile(path.join(runtime, "anthropic-base-url"), "utf8"),
-      "http://host.openshell.internal:8787\n",
+      "http://136.112.93.84:8787\n",
     );
     assert.equal(
       await readFile(shellEnvPath, "utf8"),
-      "export KEEP_SHELL_VALUE='safe'\nexport ANTHROPIC_BASE_URL='http://host.openshell.internal:8787'\n",
+      "export KEEP_SHELL_VALUE='safe'\nexport ANTHROPIC_BASE_URL='http://136.112.93.84:8787'\n",
     );
     await assert.rejects(readFile(currentPresign, "utf8"), /ENOENT/);
     await assert.rejects(readFile(legacyPresign, "utf8"), /ENOENT/);

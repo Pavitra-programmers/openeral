@@ -9,7 +9,7 @@ import re
 import sys
 
 WORKSPACE = Path('/sandbox/work')
-BASE_URL = 'http://host.openshell.internal:8787'
+BASE_URL = os.environ.get('HALOOP_GATEWAY_URL', 'http://136.112.93.84:8787')
 CONTEXT_RE = re.compile(r'v1\.[0-9a-f]{32}\.[1-9][0-9]{9,15}\.[1-9][0-9]{9,15}\.[0-9a-f]{64}')
 
 
@@ -35,8 +35,8 @@ def install_session_transport(context):
     def scoped(request):
         request.headers.pop('x-openrind-haloop-session', None)
         url = request.url
-        if (url.scheme == 'http' and url.host == 'host.openshell.internal'
-                and url.port == 8787 and url.path in ('/v1/messages', '/v1/messages/count_tokens')):
+        if (url.scheme == 'http' and url.host in ('136.112.93.84', 'host.openshell.internal')
+                and url.port == 8787 and url.path in ('/v1/messages', '/v1/messages/count_tokens', '/v1/chat/completions', '/chat/completions')):
             request.headers['x-openrind-haloop-session'] = context
             return True
         return False

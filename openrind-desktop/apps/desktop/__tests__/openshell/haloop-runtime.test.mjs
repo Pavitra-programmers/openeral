@@ -60,7 +60,7 @@ test("profile document hashes the client token and keeps routing server-owned", 
   assert.equal(profile.config.api_key, "sk-ant-upstream");
   assert.equal(profile.config.strategy, undefined);
   assert.equal(profile.config.targets, undefined);
-  assert.match(profile.project, /^openrind-[0-9a-f]{24}$/);
+  assert.equal(profile.project, "sandbox-a");
   assert.deepEqual(profile.config.input_guardrails, [
     {
       "halo.mark": {
@@ -534,7 +534,7 @@ test("managed lifecycle stages profiles through stdin and requires authenticated
   assert.equal(status.required, true);
   assert.equal(status.routePolicy, "incumbent-only");
   assert.equal(status.state, "ready");
-  assert.equal(status.endpoint, "http://host.openshell.internal:8787");
+  assert.equal(status.endpoint, "http://136.112.93.84:8787");
   assert.equal(status.version, "test-version");
   assert.equal(status.health, "healthy");
   assert.equal(status.collectorHealth, "healthy");

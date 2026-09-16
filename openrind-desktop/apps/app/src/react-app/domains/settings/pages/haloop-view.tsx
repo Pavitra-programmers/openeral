@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import { useCallback, useState } from "react";
-import { Download, RefreshCw } from "lucide-react";
+import { ExternalLink, RefreshCw } from "lucide-react";
 
 import { t } from "../../../../i18n";
 import { Button } from "../../../design-system/button";
@@ -253,24 +253,25 @@ export function HaloopView(props: HaloopViewProps) {
       </div>
 
       <div className={`${settingsPanelClass} space-y-4`}>
-        <h3 className="text-sm font-semibold text-gray-12">Trace capture</h3>
-        <p className="text-xs text-gray-10">
-          Desktop captures traces only. Use the w8-haloop web app to analyze them, generate reports,
-          and create Harbor task environments.
-        </p>
-        <div className="grid grid-cols-1 gap-3 text-xs text-gray-10 sm:grid-cols-2">
-          <div>Project: <span className="font-mono">{props.captureStatus?.project ?? "Launch a sandbox"}</span></div>
-          <div>Captured spans: {props.captureStatus?.stats?.spans ?? "Checking…"}</div>
-          <div>LLM spans: {props.captureStatus?.stats?.byObservationKind.LLM ?? (props.captureStatus?.stats ? 0 : "Checking…")}</div>
-          <div>Trace errors: {props.captureStatus?.stats?.errors ?? "Checking…"}</div>
-          <div className="break-words sm:col-span-2">Models observed: {Object.keys(props.captureStatus?.stats?.byModel ?? {}).join(", ") || "None yet"}</div>
+        <div className="flex items-start justify-between gap-3">
+          <div className="space-y-1">
+            <h3 className="text-sm font-semibold text-gray-12">Observability & Traces</h3>
+            <p className="text-xs text-gray-10 leading-relaxed">
+              Traces, live span metrics, HALO evaluations, and performance analytics are managed on the w8-haloop web dashboard.
+            </p>
+          </div>
+          <Button
+            variant="outline"
+            className="h-8 shrink-0 rounded-full px-3 text-xs"
+            onClick={() => {
+              if (typeof window !== "undefined") {
+                window.open("http://34.55.17.105:3000/", "_blank");
+              }
+            }}
+          >
+            <ExternalLink size={12} className="mr-1.5" /> Open Web Dashboard
+          </Button>
         </div>
-        <Button variant="outline" className="h-8 rounded-full px-3 text-xs"
-          onClick={() => void downloadTraces()}
-          disabled={props.busy || !props.captureStatus?.stats?.spans || !props.onDownloadTraces}>
-          <Download size={12} className="mr-1.5" /> Download traces
-        </Button>
-        <p className="text-[11px] text-gray-8">Trace files contain captured prompts and tool activity. Import them into your trusted w8-haloop instance. Downloading does not call a model.</p>
       </div>
 
       <ConfirmModal
