@@ -16,9 +16,9 @@ test("desktop image and runtime share the current PTY bridge contract", async ()
     source("Dockerfile.openrind-shell"),
     source("openrind-desktop/apps/desktop/electron/openshell/fuse-sandbox.mjs"),
   ]);
-  assert.match(dockerfile, /fuse-haloop-required-v27/);
+  assert.match(dockerfile, /fuse-haloop-required-v28-openhands/);
   assert.match(dockerfile, /openrind-pty-bridge\.py/);
-  assert.match(sandbox, /IMAGE_CONTRACT = "fuse-haloop-required-v27"/);
+  assert.match(sandbox, /IMAGE_CONTRACT = "fuse-haloop-required-v28-openhands"/);
 });
 
 test("developer image builder targets the dedicated WSL daemon and validates all runtime contracts", async () => {
@@ -32,10 +32,10 @@ test("developer image builder targets the dedicated WSL daemon and validates all
   assert.match(builder, /haloop-collector:local/);
   assert.match(builder, /ghcr\.io\/openrind\/openrind-shell\/haloop-gateway/);
   assert.match(builder, /ghcr\.io\/openrind\/openrind-shell\/haloop-collector/);
-  assert.match(builder, /w8-haloop-openrind-v4-eval-export/);
+  assert.match(builder, /w8-haloop-openrind-v6-durable-analysis/);
   assert.match(builder, /--production-haloop/);
   assert.match(builder, /"docker",\s*"image",\s*"push"/);
-  assert.match(builder, /fuse-haloop-required-v27/);
+  assert.match(builder, /fuse-haloop-required-v28-openhands/);
   assert.match(builder, /openrind-haloop-v2/);
   assert.match(builder, /openrind-haloop-collector-v1/);
   assert.match(builder, /openrind-desktop-collector/);
@@ -83,10 +83,14 @@ test("Desktop Haloop profiles require synchronous capture through a private coll
   assert.match(runtime, /requireCollectorFromGateway/);
   assert.match(runtime, /HALOOP_ROUTE_POLICY = "incumbent-only"/);
   assert.match(runtime, /provider: "anthropic"/);
-  assert.match(runtime, /api_key: upstreamKey/);
+  assert.match(runtime, /api_key: upstream\.apiKey/);
   assert.doesNotMatch(
     runtime,
-    /strategy: \{ mode: "loadbalance" \}|targets: \[|weight:|override_params/,
+    /strategy: \{ mode: "loadbalance" \}|targets: \[|weight:/,
+  );
+  assert.match(
+    runtime,
+    /override_params: \{ model: HALOOP_TEMPORARY_OPENROUTER_MODEL \}/,
   );
   assert.doesNotMatch(runtime, /8788:8788/);
 });
@@ -217,13 +221,11 @@ test("Desktop settings expose required Haloop controls in a dedicated global tab
   assert.match(haloopView, /Trace capture is incomplete/);
   assert.match(state, /incomplete: number/);
   assert.match(haloopView, /Last connection error:/);
-  assert.match(haloopView, /HALO trace analysis/);
-  assert.match(haloopView, /Run analysis/);
-  assert.match(haloopView, /Citations are\s*evidence, not automatic failure labels/);
-  assert.match(state, /invoke<HaloopAnalysisStatus>\("openrindHaloopAnalysisStart"\)/);
-  assert.match(state, /invoke<HaloopAnalysisReport>\("openrindHaloopAnalysisReport"/);
-  assert.match(route, /onStartAnalysis=\{\(\) => openshellState\.startHaloopAnalysis\(\)\}/);
-  assert.match(route, /onLoadAnalysisReport=\{\(\) => openshellState\.loadHaloopAnalysisReport\(\)\}/);
+  assert.match(haloopView, /Observability & Traces/);
+  assert.match(haloopView, /Open Web Dashboard/);
+  assert.doesNotMatch(haloopView, /Run analysis|Generate eval cases|Download report|Download Harbor dataset/);
+  assert.match(state, /openrindHaloopCaptureStatus/);
+  assert.match(route, /onDownloadTraces/);
   assert.match(haloopView, /Restart Haloop/);
   assert.match(state, /invoke<HaloopRuntimeStatus>\("openrindHaloopRestart"\)/);
   assert.match(route, /onRestart=\{\(\) => openshellState\.restartHaloop\(\)\}/);
@@ -249,9 +251,16 @@ test("Desktop settings expose required Haloop controls in a dedicated global tab
   assert.match(main, /case "openrindHaloopAnalysisStatus":/);
   assert.match(main, /case "openrindHaloopAnalysisStart":/);
   assert.match(main, /case "openrindHaloopAnalysisReport":/);
+  assert.match(main, /case "openrindHaloopAnalysisReportDownload":/);
   assert.match(main, /case "openrindHaloopEvalGenerate":/);
+  assert.match(main, /case "openrindHaloopEvalCases":/);
+  assert.match(main, /case "openrindHaloopEvalDownload":/);
+  assert.match(main, /case "openrindHaloopHarborDownload":/);
   assert.match(main, /case "openrindHaloopRestart":/);
-  assert.match(main, /openrindShell\.restartHaloopRuntime\(\{ anthropicApiKey \}\)/);
+  assert.match(
+    main,
+    /openrindShell\.restartHaloopRuntime\(\{ anthropicApiKey: upstreamApiKey \}\)/,
+  );
   assert.match(main, /case "openrindHaloopRollbackIncumbent":/);
   assert.match(main, /openrindShell\.restoreOpenrindShellHaloopIncumbent/);
   assert.match(main, /case "openrindHaloopRotateToken":/);
@@ -260,42 +269,54 @@ test("Desktop settings expose required Haloop controls in a dedicated global tab
   assert.match(main, /openrindShell\.rotateOpenrindShellHaloop/);
 });
 
-test("Desktop HALO analysis validates evidence and keeps eval generation private", async () => {
-  const [runtime, facade, main, state, view] = await Promise.all([
-    source("openrind-desktop/apps/desktop/electron/openshell/haloop-runtime.mjs"),
-    source("openrind-desktop/apps/desktop/electron/openshell/openrind-shell.mjs"),
+test("Desktop delegates analysis and Harbor generation to the web app", async () => {
+  const [main, runtime, state] = await Promise.all([
     source("openrind-desktop/apps/desktop/electron/main.mjs"),
+    source("openrind-desktop/apps/desktop/electron/openshell/haloop-runtime.mjs"),
     source("openrind-desktop/apps/app/src/react-app/domains/settings/state/openshell-state.ts"),
-    source("openrind-desktop/apps/app/src/react-app/domains/settings/pages/haloop-view.tsx"),
+  ]);
+  assert.match(runtime, /W8_DESKTOP_CAPTURE_ONLY=1/);
+  assert.doesNotMatch(state, /invoke[^\n]*"openrindHaloopAnalysisStart"|invoke[^\n]*"openrindHaloopEvalGenerate"/);
+  const disabled = main.slice(main.indexOf('case "openrindHaloopAnalysisStart"'), main.indexOf('case "openrindHaloopRestart"'));
+  assert.match(disabled, /throw new Error/);
+  assert.doesNotMatch(disabled, /openrindShell\./);
+});
+
+test("sandbox navigation retains Haloop artifacts and reuses live PTYs without restart work", async () => {
+  const [main, runtime, state, sessionRoute, sandbox] = await Promise.all([
+    source("openrind-desktop/apps/desktop/electron/main.mjs"),
+    source("openrind-desktop/apps/desktop/electron/openshell/haloop-runtime.mjs"),
+    source("openrind-desktop/apps/app/src/react-app/domains/settings/state/openshell-state.ts"),
+    source("openrind-desktop/apps/app/src/react-app/shell/session-route.tsx"),
+    source("openrind-desktop/apps/desktop/electron/openshell/fuse-sandbox.mjs"),
   ]);
 
-  assert.match(runtime, /ANTHROPIC_API_KEY=\$\{upstreamKey\}/);
-  assert.match(runtime, /--env-file/);
-  assert.doesNotMatch(runtime, /"--env",\s*`ANTHROPIC_API_KEY=/);
-  assert.match(runtime, /W8_REPORTS_DIR=/);
-  assert.match(runtime, /HALOOP_REPORT_RETENTION_DAYS = 30/);
-  assert.match(runtime, /HALOOP_REPORT_RETENTION_COUNT = 20/);
-  assert.match(runtime, /from services\.collector\.trace_validation import verify/);
-  assert.match(runtime, /if \(!validation\.valid\)[\s\S]*?Analysis was not started/);
-  assert.match(runtime, /validateReportCitations\(run, project, payload\.report\)/);
-  assert.match(runtime, /cited trace evidence outside the active project/);
-  assert.match(runtime, /requestPath: "\/halo\/analyze"/);
-  assert.doesNotMatch(
-    runtime.slice(runtime.indexOf('requestPath: "/halo/analyze"'), runtime.indexOf("analysisAudits.delete")),
-    /api_key|base_url|model:/,
+  const attachStart = main.indexOf('case "openrindPtyAttachOrOpen":');
+  const attachEnd = main.indexOf('case "openrindPtyAttach":', attachStart);
+  const attachCase = main.slice(attachStart, attachEnd);
+  assert.ok(attachStart >= 0 && attachEnd > attachStart);
+  assert.ok(
+    attachCase.indexOf("activateExistingHaloopRoute") <
+      attachCase.indexOf("ensureOpenrindShellHaloop"),
   );
-  assert.match(runtime, /requestPath: "\/evals\/extract"/);
-  assert.match(runtime, /await readAuditedAnalysisReport\(project, normalizedRunId\)/);
-  assert.match(runtime, /body: \{ project, run_id: normalizedRunId \}/);
-  assert.doesNotMatch(runtime, /evals\/extract[\s\S]{0,300}(?:traces|report|out|provider|model):/);
-  assert.match(facade, /generateHaloopEvalCases/);
-  assert.match(facade, /getHaloopAnalysisStatus/);
-  assert.match(facade, /loadHaloopAnalysisReport/);
-  assert.match(facade, /startHaloopAnalysis/);
-  assert.match(main, /case "openrindHaloopEvalGenerate":/);
-  assert.match(state, /generateHaloopEvalCases/);
-  assert.match(view, /Generate eval cases/);
-  assert.match(view, /No candidate traffic has been enabled/);
+  assert.match(attachCase, /if \(existing && !existing\.exitInfo\)[\s\S]*?reused: true/);
+  assert.match(attachCase, /resolveOpenrindShellSandboxWorkspaceId/);
+  assert.match(attachCase, /workspaceId: routeWorkspaceId/);
+  assert.match(sandbox, /com\.openrind\.desktop\.workspace/);
+  assert.match(sandbox, /resolveOpenrindShellSandboxWorkspaceId/);
+  assert.match(runtime, /discoverAnalysisProject/);
+  assert.match(runtime, /collector's durable run index/);
+  assert.match(state, /retainedHaloopAnalysisReport/);
+  assert.match(state, /retainedHaloopEvalPreview/);
+  assert.match(state, /mergeHaloopAnalysisSnapshot/);
+  assert.match(state, /incoming\.stats\.spans < previous\.stats\.spans/);
+  assert.doesNotMatch(state, /haloopHydrationRef/);
+  assert.match(state, /Only positive replacement evidence invalidates rendered artifacts/);
+  assert.doesNotMatch(
+    state,
+    /current\s*&&\s*\(!status\.run\s*\|\|\s*status\.run\.runId\s*!==\s*current\.runId\)/,
+  );
+  assert.match(sessionRoute, /retainedSandboxSelection/);
 });
 
 test("sandbox deletion revokes scoped Haloop access before destructive teardown", async () => {
@@ -438,7 +459,7 @@ test("OpenClaw uses the same FUSE workspace with a separate persistent agent hom
   assert.match(sandbox, /openrind-openclaw-home-/);
   assert.match(sandbox, /OPENRIND_SHELL_AGENT=\$\{agent\.id\}/);
   assert.match(sandbox, /getCredential\("anthropicApiKey"\)/);
-  assert.match(sandbox, /ANTHROPIC_API_KEY is required by Haloop/);
+  assert.match(sandbox, /resolveHaloopUpstreamApiKey\(anthropicApiKey\)/);
   assert.match(sandbox, /ensureHaloopRuntime/);
   assert.doesNotMatch(sandbox, /OPENROUTER|openrouter|TEMPORARY_USE_OPENROUTER/);
   assert.match(setup, /OPENRIND_SHELL_OPENCLAW_HOME=\/sandbox\/openclaw-home/);
@@ -497,7 +518,7 @@ test("OpenClaw uses the same FUSE workspace with a separate persistent agent hom
   assert.match(setup, /shared clear-rewrite budget/);
   assert.match(config, /config\.agents\.defaults\.models\[primaryModel\]/);
   assert.match(config, /const PROVIDER_ID = "openrind-gateway"/);
-  assert.match(config, /http:\/\/host\.openshell\.internal:8787/);
+  assert.match(config, /http:\/\/136\.112\.93\.84:8787/);
   assert.match(config, /const DEFAULT_MODEL_ID = "claude-sonnet-4-6"/);
   assert.doesNotMatch(config, /OPENRIND_SHELL_USE_OPENROUTER_TEST|openrouter\/openrouter\/free/);
   assert.match(config, /delete config\.env\.OPENROUTER_API_KEY/);
@@ -671,7 +692,7 @@ test("FUSE images package the fixed Haloop configurator", async () => {
   }
   assert.match(
     configurator,
-    /http:\/\/host\.openshell\.internal:8787/,
+    /http:\/\/136\.112\.93\.84:8787/,
   );
   assert.doesNotMatch(configurator, /api\.anthropic\.com/);
   assert.doesNotMatch(configurator, /process\.env\.OPENRIND_HALOOP/);

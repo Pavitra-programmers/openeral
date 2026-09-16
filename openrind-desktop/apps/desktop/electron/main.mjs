@@ -236,6 +236,7 @@ function isReservedIp(ip) {
 // host validates as public and then re-resolves to a private/loopback IP for
 // the real fetch: there is no second, unvalidated resolution.
 function pinnedPublicLookup(hostname, options, callback) {
+  /** @type {import('node:dns').LookupAllOptions} */
   const opts = { all: true };
   if (options && typeof options.family === "number" && options.family !== 0) {
     opts.family = options.family;
@@ -644,9 +645,11 @@ async function buildOpenrindShellPtyEnv(cols, rows, profile) {
       ? "claude"
       : profile === "openrind-shell-openclaw"
         ? "openclaw"
-        : null;
+        : profile === "openrind-shell-openhands" || profile === "openrind-shell-openhands-script"
+          ? "openhands"
+          : null;
   if (!agent) {
-    throw new Error("The primary FUSE runtime supports the Claude and OpenClaw profiles only.");
+    throw new Error("The primary FUSE runtime supports Claude, OpenClaw, and OpenHands profiles only.");
   }
   /** @type {Record<string, string>} */
   const extraEnv = {};
@@ -748,10 +751,10 @@ function openOpenrindShellPtySession(opts) {
     haloopContextId,
     haloopSessionAssertion,
   } = opts;
-  if (profile !== "openrind-shell-claude" && profile !== "openrind-shell-openclaw") {
-    throw new Error("The primary FUSE runtime supports the Claude and OpenClaw profiles only.");
+  if (!["openrind-shell-claude", "openrind-shell-openclaw", "openrind-shell-openhands", "openrind-shell-openhands-script"].includes(profile)) {
+    throw new Error("The primary FUSE runtime supports Claude, OpenClaw, and OpenHands profiles only.");
   }
-  const expectedAgent = profile === "openrind-shell-claude" ? "claude" : "openclaw";
+  const expectedAgent = profile === "openrind-shell-claude" ? "claude" : profile === "openrind-shell-openclaw" ? "openclaw" : "openhands";
   const agent = String(extraEnv?.OPENRIND_SHELL_AGENT ?? "").trim();
   if (agent !== expectedAgent) {
     throw new Error("A validated OPENRIND_SHELL_AGENT value is required for agent launch.");
@@ -805,10 +808,11 @@ function openOpenrindShellPtySession(opts) {
         extraEnv,
         agentSessionId,
         haloopContextId,
-        onLifecycleExit: (event) =>
-          openrindShell.recordHaloopApplicationSpans(haloopCapture, [
+        onLifecycleExit: async (event) => {
+          await openrindShell.recordHaloopApplicationSpans(haloopCapture, [
             openrindShell.buildHaloopAgentLifecycleEvent(agent, event),
-          ]),
+          ]);
+        },
       });
     });
   openrindFreshOpenChains.set(sandboxName, next);
@@ -2414,7 +2418,15 @@ async function handleDesktopInvoke(event, command, ...args) {
     }
     case "openrindGatewayExchangeToken": {
       const { token } = args[0] ?? {};
-      if (!token) throw new Error("Token is required.");
+      if (typeof token !== "string" || !token.trim() || token.length > 8192) throw new Error("A valid token is required.");
+
+      const consent = await dialog.showMessageBox(activeWindowFromEvent(event), {
+        type: "question",
+        title: "Connect Openrind Gateway",
+        message: "Connect this Gateway account and replace any saved Gateway credential?",
+        buttons: ["Cancel", "Connect"], defaultId: 0, cancelId: 0,
+      });
+      if (consent.response !== 1) return { success: false, canceled: true };
 
       const gatewayUrl = process.env.OPENRIND_GATEWAY_URL || "https://app.openrind.com";
       const response = await fetch(`${gatewayUrl}/api/auth/key-exchange`, {
@@ -2434,6 +2446,7 @@ async function handleDesktopInvoke(event, command, ...args) {
       const data = await response.json();
 
       // Compare with the currently set API key to see if we should overwrite/replace it
+      if (typeof data.apiKey !== "string" || !data.apiKey.trim()) throw new Error("Gateway returned no valid credential.");
       const currentKey = await openrindCredentials.getCredential("openrindGatewayApiKey");
 
       const isNewAccount = !currentKey || (data.apiKey && data.apiKey !== currentKey);
@@ -2445,7 +2458,6 @@ async function handleDesktopInvoke(event, command, ...args) {
 
       return {
         success: true,
-        apiKey: data.apiKey,
         organizationId: data.organizationId,
         status: data.status,
         isNewAccount,
@@ -2455,22 +2467,32 @@ async function handleDesktopInvoke(event, command, ...args) {
       return openrindCredentials.getCredentialStatus();
     case "openrindHaloopStatus":
       return openrindShell.getHaloopRuntimeStatus();
+    case "openrindHaloopCaptureStatus":
     case "openrindHaloopAnalysisStatus":
-      return openrindShell.getHaloopAnalysisStatus();
-    case "openrindHaloopAnalysisStart": {
+      return openrindShell.getHaloopCaptureStatus();
+    case "openrindHaloopTracesDownload": {
       assertHaloopIntegrationNotResetting();
-      return trackHaloopOperation(openrindShell.startHaloopAnalysis());
+      const snapshot = await openrindShell.getHaloopCaptureStatus();
+      if (!snapshot.project || !snapshot.stats?.spans) throw new Error("No captured traces are available.");
+      const filename = `${snapshot.project}.traces.jsonl`;
+      const result = await dialog.showSaveDialog(activeWindowFromEvent(event), {
+        title: "Download traces for w8-haloop",
+        defaultPath: path.join(app.getPath("downloads"), filename),
+        filters: downloadDialogFilters(filename),
+      });
+      if (result.canceled || !result.filePath) return { canceled: true };
+      const destination = preserveDownloadExtension(result.filePath, filename);
+      await openrindShell.exportHaloopTraces(snapshot.project, toWslPath(destination));
+      return { canceled: false, path: destination };
     }
-    case "openrindHaloopAnalysisReport": {
-      assertHaloopIntegrationNotResetting();
-      const runId = String(args[0]?.runId ?? "").trim();
-      return openrindShell.loadHaloopAnalysisReport(runId);
-    }
-    case "openrindHaloopEvalGenerate": {
-      assertHaloopIntegrationNotResetting();
-      const runId = String(args[0]?.runId ?? "").trim();
-      return trackHaloopOperation(openrindShell.generateHaloopEvalCases(runId));
-    }
+    case "openrindHaloopAnalysisStart":
+    case "openrindHaloopAnalysisReport":
+    case "openrindHaloopAnalysisReportDownload":
+    case "openrindHaloopEvalGenerate":
+    case "openrindHaloopEvalCases":
+    case "openrindHaloopEvalDownload":
+    case "openrindHaloopHarborDownload":
+      throw new Error("Analysis, reports, and Harbor task generation are available in the w8-haloop web app.");
     case "openrindHaloopRestart": {
       assertHaloopIntegrationNotResetting();
       const anthropicApiKey = await openrindCredentials.getCredential("anthropicApiKey");
@@ -2657,7 +2679,7 @@ async function handleDesktopInvoke(event, command, ...args) {
       const workspaceId = String(input.workspaceId ?? "").trim();
       const profile = String(input.profile ?? "").trim();
       if (!workspaceId) throw new Error("workspaceId is required");
-      if (!["openrind-shell-claude", "openrind-shell-openclaw"].includes(profile)) {
+      if (!["openrind-shell-claude", "openrind-shell-openclaw", "openrind-shell-openhands", "openrind-shell-openhands-script"].includes(profile)) {
         throw new Error(`Unsupported Openrind Shell profile: ${profile}`);
       }
       await assertOpenShellReady();
@@ -2804,6 +2826,9 @@ async function handleDesktopInvoke(event, command, ...args) {
       const profile = String(input.profile ?? "").trim();
       const workspaceId = String(input.workspaceId ?? "").trim();
       if (!workspaceId) throw new Error("workspaceId is required");
+      if (!["openrind-shell-claude", "openrind-shell-openclaw", "openrind-shell-openhands", "openrind-shell-openhands-script"].includes(profile)) {
+        throw new Error("The primary FUSE runtime supports Claude, OpenClaw, and OpenHands profiles only.");
+      }
       assertHaloopCredentialNotChanging(sandboxName);
       const existingHaloopSession = openrindPty.findSessionBySandboxAndAgent(
         sandboxName,
@@ -2857,11 +2882,58 @@ async function handleDesktopInvoke(event, command, ...args) {
       const profile = String(input.profile ?? "").trim();
       const workspaceId = String(input.workspaceId ?? "").trim();
       if (!workspaceId) throw new Error("workspaceId is required");
+      if (!["openrind-shell-claude", "openrind-shell-openclaw", "openrind-shell-openhands", "openrind-shell-openhands-script"].includes(profile)) {
+        throw new Error("The primary FUSE runtime supports Claude, OpenClaw, and OpenHands profiles only.");
+      }
       assertHaloopCredentialNotChanging(sandboxName);
       const existing = openrindPty.findSessionBySandboxAndAgent(
         sandboxName,
         agentSessionId,
       );
+
+      if (existing && !existing.exitInfo && !existing.haloopContextId) {
+        throw new Error(
+          "This running sandbox session predates the required Haloop route. End it once, then reconnect.",
+        );
+      }
+
+      // This PTY already passed the mandatory Haloop gate when it was created.
+      // Reactivate only its in-memory route identity and return before any
+      // Docker/profile work: switching views must not restart Haloop, the
+      // sandbox, or the agent.
+      if (existing && !existing.exitInfo) {
+        const routeWorkspaceId = await openrindShell.resolveOpenrindShellSandboxWorkspaceId({
+          name: sandboxName,
+          profile,
+          fallbackWorkspaceId: workspaceId,
+        });
+        await openrindShell.activateExistingHaloopRoute({
+          sandboxName,
+          workspaceId: routeWorkspaceId,
+          agentId: profile === "openrind-shell-openclaw" ? "openclaw" : profile === "openrind-shell-claude" ? "claude" : "openhands",
+        });
+        return {
+          id: existing.id,
+          buffered: openrindPty.getBuffer(existing.id),
+          cols: existing.size.cols,
+          rows: existing.size.rows,
+          reused: true,
+          exited: false,
+        };
+      }
+
+      // Keep completed scrollback available without treating the dead PTY as
+      // an active route or turning selection into an implicit reconnect.
+      if (existing?.exitInfo) {
+        return {
+          id: existing.id,
+          buffered: openrindPty.getBuffer(existing.id),
+          cols: existing.size.cols,
+          rows: existing.size.rows,
+          reused: true,
+          exited: true,
+        };
+      }
 
       const haloop = await trackHaloopOperation(
         openrindShell.ensureOpenrindShellHaloop({
@@ -3061,7 +3133,7 @@ async function handleDesktopInvoke(event, command, ...args) {
       const workspaceId = String(input.workspaceId ?? "").trim();
       const profile = String(input.profile ?? "").trim();
       if (!workspaceId) throw new Error("workspaceId is required");
-      if (!["openrind-shell-claude", "openrind-shell-openclaw"].includes(profile)) {
+      if (!["openrind-shell-claude", "openrind-shell-openclaw", "openrind-shell-openhands", "openrind-shell-openhands-script"].includes(profile)) {
         throw new Error(`Unsupported Openrind Shell profile: ${profile}`);
       }
       await assertOpenShellReady();
@@ -3103,7 +3175,7 @@ async function handleDesktopInvoke(event, command, ...args) {
       const workspaceId = String(input.workspaceId ?? "").trim();
       if (!sandboxName) throw new Error("sandboxName is required");
       if (!workspaceId) throw new Error("workspaceId is required");
-      if (!["openrind-shell-claude", "openrind-shell-openclaw"].includes(profile)) {
+      if (!["openrind-shell-claude", "openrind-shell-openclaw", "openrind-shell-openhands", "openrind-shell-openhands-script"].includes(profile)) {
         throw new Error(`Unsupported Openrind Shell profile: ${profile}`);
       }
       assertHaloopCredentialNotChanging(sandboxName);
@@ -3351,7 +3423,7 @@ function buildApplicationMenu() {
       ...(isMac
         ? []
         : [
-            { type: "separator" },
+            { type: /** @type {const} */ ("separator") },
             {
               label: "About Openrind Desktop",
               click: () => sendMenuActionToRenderer("about"),
@@ -3433,7 +3505,10 @@ async function createMainWindow() {
   };
   mainWindow.webContents.session.setPermissionRequestHandler(
     (_webContents, permission, callback, details) => {
-      const url = details?.requestingUrl || details?.securityOrigin || "";
+      const url =
+        details?.requestingUrl ||
+        (details && "securityOrigin" in details ? details.securityOrigin : "") ||
+        "";
       callback(
         isAudioOnlyMediaPermission(permission, details) &&
           isTrustedVoiceOrigin(url),

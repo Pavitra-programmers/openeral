@@ -182,7 +182,15 @@ export function CreateSandboxModal(props: CreateSandboxModalProps) {
               >
                 <option value="openrind-shell-claude">{t("sandbox.agent_claude")}</option>
                 <option value="openrind-shell-openclaw">{t("sandbox.agent_openclaw")}</option>
+                <option value="openrind-shell-openhands">OpenHands CLI</option>
+                <option value="openrind-shell-openhands-script">OpenHands Script (task file)</option>
               </select>
+              {profile === "openrind-shell-openhands-script" ? (
+                <p className="mt-2 text-xs text-dls-secondary">
+                  Choose a task file from the sandbox workspace in the terminal, then confirm RUN.
+                  OpenHands will execute it without per-action prompts and show the output here.
+                </p>
+              ) : null}
             </div>
           </div>
         </div>

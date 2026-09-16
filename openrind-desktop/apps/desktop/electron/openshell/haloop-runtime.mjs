@@ -11,8 +11,10 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
+import { exportHarborDatasetToZip } from "./harbor-exporter.mjs";
 import {
   registerHaloopClientProfile,
+  resolveHaloopClientProfileIdentity,
   revokeAllHaloopClientProfiles,
   revokeHaloopClientProfilesForSandbox,
   rotateHaloopClientProfile,
@@ -25,7 +27,10 @@ export const HALOOP_COLLECTOR_IMAGE_CONTRACT = "openrind-haloop-collector-v1";
 export const HALOOP_COLLECTOR_CONTAINER_NAME = "openrind-desktop-haloop-collector";
 export const HALOOP_NETWORK_NAME = "openrind-desktop-haloop";
 export const HALOOP_EDGE_PORT = 8787;
-export const HALOOP_SANDBOX_ENDPOINT = `http://host.openshell.internal:${HALOOP_EDGE_PORT}`;
+export const HALOOP_SANDBOX_ENDPOINT =
+  process.env.HALOOP_GATEWAY_URL?.trim() ||
+  process.env.OPENRIND_DESKTOP_HALOOP_ENDPOINT?.trim() ||
+  `http://136.112.93.84:${HALOOP_EDGE_PORT}`;
 export const HALOOP_ROUTE_POLICY = "incumbent-only";
 export const HALOOP_TEMPORARY_OPENROUTER_TEST_ENV =
   "OPENRIND_DESKTOP_HALOOP_TEST_OPENROUTER";
@@ -36,7 +41,7 @@ const HALOOP_TEMPORARY_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(MODULE_DIR, "../../../../../");
 const SOURCE_CHECKOUT = existsSync(path.join(REPOSITORY_ROOT, "Dockerfile.openrind-shell"));
-export const HALOOP_IMAGE_VERSION = "w8-haloop-openrind-v4-eval-export";
+export const HALOOP_IMAGE_VERSION = "w8-haloop-openrind-v6-durable-analysis";
 export const HALOOP_PACKAGED_IMAGE =
   `ghcr.io/openrind/openrind-shell/haloop-gateway:${HALOOP_IMAGE_VERSION}`;
 export const HALOOP_PACKAGED_COLLECTOR_IMAGE =
@@ -71,6 +76,7 @@ const HALOOP_COLLECTOR_CONTAINER_DATA_DIR = "/app/halo-loop/data";
 const HALOOP_COLLECTOR_CONTAINER_REPORTS_DIR = "/app/halo-loop/reports";
 const HALOOP_COLLECTOR_URL = `http://${HALOOP_COLLECTOR_CONTAINER_NAME}:8788`;
 const HALOOP_PROFILES_FILE = `${HALOOP_STATE_DIR}/openrind-profiles.json`;
+const HALOOP_READY_ROUTE_FILE = `${HALOOP_STATE_DIR}/ready-route.json`;
 const HALOOP_CONTAINER_PROFILES_FILE = "/run/openrind/openrind-profiles.json";
 const OPENSHELL_SANDBOX_NETWORK_NAME = "openshell-docker";
 const PROFILE_HASH_LABEL = "com.openrind.desktop.haloop-profile-sha256";
@@ -92,11 +98,13 @@ const MAX_APP_BATCH_BYTES = 256 * 1024;
 const MAX_APP_CAPTURE_BYTES_PER_TRACE = 4 * 1024 * 1024;
 const MAX_COLLECTOR_RESPONSE_BYTES = 1024 * 1024;
 const MAX_HALOOP_REPORT_BYTES = 512 * 1024;
+const MAX_HALOOP_EVAL_PREVIEW_BYTES = 1024 * 1024;
 const HALOOP_REPORT_RETENTION_DAYS = 30;
 const HALOOP_REPORT_RETENTION_COUNT = 20;
 const HALOOP_SESSION_ASSERTION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const HALOOP_CONTEXT_ID_PATTERN = /^[0-9a-f]{32}$/;
 const HALOOP_RUN_ID_PATTERN = /^[0-9a-f]{12}$/;
+const HALOOP_PROJECT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const HALOOP_EVAL_ARTIFACT_PATTERN = /^eval-cases-[0-9a-f]{12}\.jsonl$/;
 const HALOOP_ANALYSIS_PROMPT =
   "Diagnose recurring tool-use failures, invalid tool arguments, refusal loops, empty outputs, and wasted retries in these Openrind agent traces. Compare only models actually present in the trace data. Cite the exact trace_id and span_id for every finding, and treat citations as evidence rather than automatic failure labels.";
@@ -114,10 +122,15 @@ export function isTemporaryOpenRouterHaloopTestEnabled(env = process.env) {
 }
 
 function resolveHaloopUpstream(anthropicApiKey, env = process.env, { optional = false } = {}) {
-  const openrouterTest = isTemporaryOpenRouterHaloopTestEnabled(env);
+  const explicitOpenrouterTest = isTemporaryOpenRouterHaloopTestEnabled(env);
+  const rawCandidate =
+    (explicitOpenrouterTest ? env?.OPENROUTER_API_KEY : null) ||
+    anthropicApiKey ||
+    env?.OPENROUTER_API_KEY ||
+    "";
+  const normalized = String(rawCandidate ?? "").trim();
+  const openrouterTest = explicitOpenrouterTest || normalized.startsWith("sk-or-v1-");
   const label = openrouterTest ? "OPENROUTER_API_KEY" : "ANTHROPIC_API_KEY";
-  const candidate = openrouterTest ? env?.OPENROUTER_API_KEY : anthropicApiKey;
-  const normalized = String(candidate ?? "").trim();
   if (optional && !normalized) {
     return { apiKey: "", mode: openrouterTest ? "openrouter-test" : "anthropic" };
   }
@@ -153,8 +166,16 @@ function stableHex(label, ...values) {
   return hash.digest("hex");
 }
 
-export function haloopProjectForWorkspace(workspaceId) {
-  return `openrind-${stableHex("project", requiredSecret(workspaceId, "Openrind workspace id")).slice(0, 24)}`;
+export function haloopProjectForWorkspace(workspaceId, sandboxName) {
+  if (sandboxName) {
+    const s = String(sandboxName).trim();
+    if (s) return s;
+  }
+  if (workspaceId) {
+    const w = String(workspaceId).trim();
+    if (w) return w;
+  }
+  return "default";
 }
 
 function deriveHaloopSessionHmacKey(profile) {
@@ -169,7 +190,7 @@ export function buildHaloopCaptureIdentity(profile, contextId) {
   if (!HALOOP_CONTEXT_ID_PATTERN.test(canonicalContextId)) {
     throw new Error("A canonical Haloop conversation context id is required.");
   }
-  const project = haloopProjectForWorkspace(profile.workspaceId);
+  const project = (profile.sandboxName && String(profile.sandboxName).trim()) || haloopProjectForWorkspace(profile.workspaceId);
   return {
     profileId: requiredSecret(profile.id, "Haloop profile id"),
     project,
@@ -237,7 +258,7 @@ export function buildHaloopProfilesDocument(
   return {
     version: 1,
     profiles: profiles.map((profile) => {
-      const project = haloopProjectForWorkspace(profile.workspaceId);
+      const project = (profile.sandboxName && String(profile.sandboxName).trim()) || haloopProjectForWorkspace(profile.workspaceId);
       return {
         id: profile.id,
         client_token_sha256: createHash("sha256")
@@ -372,8 +393,8 @@ export function buildTrustedHaloopAppSpan(capture, event) {
 
 export function buildHaloopAgentLifecycleEvent(agent, event) {
   const agentId = String(agent ?? "").trim();
-  if (agentId !== "claude" && agentId !== "openclaw") {
-    throw new Error("OPENRIND_SHELL_AGENT must be claude or openclaw for Haloop lifecycle capture.");
+  if (agentId !== "claude" && agentId !== "openclaw" && agentId !== "openhands") {
+    throw new Error("OPENRIND_SHELL_AGENT must be claude, openclaw, or openhands for Haloop lifecycle capture.");
   }
   const cause = String(event?.terminationCause || "process-exit");
   const lifecycle =
@@ -466,7 +487,7 @@ async function requestPrivateCollector(run, { method = "GET", requestPath, body 
   }
   const allowedRequest =
     (normalizedMethod === "GET" &&
-      /^\/(?:stats\?project=openrind-[0-9a-f]{24}|halo\/runs(?:\/[0-9a-f]{12}(?:\?report=true)?)?|evals\/artifacts\?project=openrind-[0-9a-f]{24})$/.test(
+      /^\/(?:stats\?project=[A-Za-z0-9._-]+|halo\/runs(?:\/[0-9a-f]{12}(?:\?report=true)?)?|evals\/artifacts(?:\/[0-9a-f]{12}\/preview)?\?project=[A-Za-z0-9._-]+)$/.test(
         requestPath,
       )) ||
     (normalizedMethod === "POST" &&
@@ -518,7 +539,7 @@ async function requestPrivateCollector(run, { method = "GET", requestPath, body 
 }
 
 async function validateHaloopTraceProject(run, project) {
-  if (!/^openrind-[0-9a-f]{24}$/.test(project)) {
+  if (!HALOOP_PROJECT_PATTERN.test(project)) {
     throw new Error("The active Haloop trace project is invalid.");
   }
   const validationScript = [
@@ -560,7 +581,7 @@ async function validateHaloopTraceProject(run, project) {
 }
 
 async function validateHaloopReportCitations(run, project, report) {
-  if (!/^openrind-[0-9a-f]{24}$/.test(project)) {
+  if (!HALOOP_PROJECT_PATTERN.test(project)) {
     throw new Error("The active Haloop trace project is invalid.");
   }
   if (typeof report !== "string" || Buffer.byteLength(report, "utf8") > MAX_HALOOP_REPORT_BYTES) {
@@ -650,6 +671,64 @@ function normalizeHaloopEvalArtifact(payload, project, runId) {
     replaySurface: "chat-completions",
     containsSensitiveContent: true,
   };
+}
+
+function normalizeHaloopEvalPreview(payload, project, runId, artifact) {
+  const cases = Array.isArray(payload?.cases) ? payload.cases : null;
+  const encodedCases = cases ? JSON.stringify(cases) : "";
+  if (
+    !payload ||
+    typeof payload !== "object" ||
+    payload.project !== project ||
+    payload.halo_run_id !== runId ||
+    payload.artifact_id !== artifact.artifactId ||
+    payload.total_cases !== artifact.cases ||
+    !Number.isInteger(payload.shown_cases) ||
+    payload.shown_cases < 1 ||
+    payload.shown_cases > 100 ||
+    payload.shown_cases !== cases?.length ||
+    payload.truncated !== (payload.shown_cases < payload.total_cases) ||
+    payload.contains_sensitive_content !== true ||
+    Buffer.byteLength(encodedCases, "utf8") > MAX_HALOOP_EVAL_PREVIEW_BYTES ||
+    cases.some((entry) => !entry || typeof entry !== "object" || Array.isArray(entry))
+  ) {
+    throw new Error("The private Haloop collector returned an invalid eval preview.");
+  }
+  return {
+    artifactId: artifact.artifactId,
+    haloRunId: runId,
+    totalCases: artifact.cases,
+    shownCases: payload.shown_cases,
+    truncated: payload.truncated,
+    containsSensitiveContent: true,
+    cases: JSON.parse(encodedCases),
+  };
+}
+
+async function copyPrivateCollectorEvalArtifact(run, { artifactId, destinationPath }) {
+  if (!HALOOP_EVAL_ARTIFACT_PATTERN.test(artifactId)) {
+    throw new Error("The Haloop eval artifact identity is invalid.");
+  }
+  const normalizedDestination = String(destinationPath ?? "");
+  if (
+    normalizedDestination.length > 4096 ||
+    /[\u0000-\u001f\u007f]/.test(normalizedDestination) ||
+    !/^\/mnt\/[a-z]\/.+/i.test(normalizedDestination) ||
+    /(?:^|\/)\.\.(?:\/|$)/.test(normalizedDestination)
+  ) {
+    throw new Error("The selected eval download destination is invalid.");
+  }
+  const result = await run(
+    dockerArgs(
+      "cp",
+      `${HALOOP_COLLECTOR_CONTAINER_NAME}:${HALOOP_COLLECTOR_CONTAINER_REPORTS_DIR}/${artifactId}`,
+      normalizedDestination,
+    ),
+    { timeout: 60_000 },
+  );
+  if (result.exitCode !== 0) {
+    throw new Error("The private Haloop eval artifact could not be downloaded.");
+  }
 }
 
 async function pruneHaloopReports(run) {
@@ -1062,8 +1141,12 @@ async function requireCollectorFromGateway(run) {
 }
 
 async function requireAuthenticatedEdge(run) {
+  // Check the edge agents actually use, not an unrelated healthy local container.
+  const endpoint = new URL(HALOOP_SANDBOX_ENDPOINT);
+  if (endpoint.hostname === "host.openshell.internal") endpoint.hostname = "127.0.0.1";
+  endpoint.pathname = "/v1/messages";
   const probe = [
-    "fetch('http://127.0.0.1:8787/v1/messages',",
+    `fetch(${JSON.stringify(endpoint.href)},`,
     "{method:'POST',headers:{'content-type':'application/json'},body:'{}'})",
     ".then(r=>{if(r.status!==401){console.error('unexpected status '+r.status);process.exit(1)}})",
     ".catch(e=>{console.error(e.message);process.exit(1)})",
@@ -1073,12 +1156,8 @@ async function requireAuthenticatedEdge(run) {
     { timeout: 15_000 },
   );
   if (result.exitCode === 0) return;
-  await run(
-    dockerArgs("stop", "--time", String(SHUTDOWN_TIMEOUT_SECONDS), HALOOP_CONTAINER_NAME),
-    { timeout: 60_000 },
-  ).catch(() => undefined);
   throw new Error(
-    "The Haloop edge failed its authentication check and was stopped. Sandbox creation is blocked.",
+    `The configured Haloop edge at ${endpoint.origin} failed its authentication check. Configure Desktop scoped client profiles and signed-session validation on that gateway before launching a sandbox.`,
   );
 }
 
@@ -1094,14 +1173,56 @@ export function createHaloopRuntimeManager({
   validateTraceProject = validateHaloopTraceProject,
   validateReportCitations = validateHaloopReportCitations,
   pruneReports = pruneHaloopReports,
+  copyEvalArtifact = copyPrivateCollectorEvalArtifact,
   env = process.env,
 } = {}) {
   let queue = Promise.resolve();
   let managedThisProcess = false;
   let lastReadyRoute = null;
+
+  async function persistReadyRoute(route) {
+    const result = await run(["-d", DISTRO_NAME, "--", "sh", "-c",
+      `umask 077; cat > ${HALOOP_READY_ROUTE_FILE}.tmp && mv ${HALOOP_READY_ROUTE_FILE}.tmp ${HALOOP_READY_ROUTE_FILE}`],
+      { stdin: JSON.stringify(route), timeout: 10_000, user: "root" });
+    if (result.exitCode !== 0) throw new Error("Could not persist the ready Haloop route.");
+  }
+
+  async function recoverReadyRoute(gateway) {
+    if (lastReadyRoute || !gateway?.managed) return;
+    const result = await run(["-d", DISTRO_NAME, "--", "cat", HALOOP_READY_ROUTE_FILE],
+      { timeout: 10_000, user: "root" }).catch(() => null);
+    try {
+      const route = JSON.parse(result?.stdout || "null");
+      if (!route || route.gatewayProfileHash !== gateway.profileHash) return;
+      const identity = resolveHaloopClientProfileIdentity(route);
+      if (identity.id !== route.profileId || identity.providerName !== route.providerName) return;
+      lastReadyRoute = route;
+      lastAnalysisProject = (route.sandboxName && String(route.sandboxName).trim()) || haloopProjectForWorkspace(route.workspaceId);
+      managedThisProcess = true;
+    } catch { /* Missing or stale metadata must not invent an active route. */ }
+  }
+  // Analysis artifacts outlive the renderer route and may outlive the main
+  // process. Keep their project separate from the currently serving route;
+  // a fresh process can recover it from the collector's durable run index.
+  let lastAnalysisProject = null;
+  // Completed historical runs stay durable, but the live panel selects only a
+  // run explicitly started by this Desktop process. An unfinished run may be
+  // recovered after a process restart so it remains observable, never started.
+  const selectedAnalysisRunIds = new Map();
   let lastConnectionError = null;
   const capturedBytesByTrace = new Map();
   const analysisAudits = new Map();
+
+  function publicRouteIdentity(route) {
+    if (!route) return null;
+    return {
+      profileId: route.profileId,
+      providerName: route.providerName,
+      sandboxName: route.sandboxName,
+      workspaceId: route.workspaceId,
+      agentId: route.agentId,
+    };
+  }
   const captureStatus = {
     written: 0,
     duplicates: 0,
@@ -1169,8 +1290,39 @@ export function createHaloopRuntimeManager({
     });
   }
 
+  async function discoverAnalysisProject() {
+    if (lastReadyRoute?.sandboxName && String(lastReadyRoute.sandboxName).trim()) {
+      lastAnalysisProject = String(lastReadyRoute.sandboxName).trim();
+      return lastAnalysisProject;
+    }
+    if (lastReadyRoute?.workspaceId) {
+      lastAnalysisProject = haloopProjectForWorkspace(lastReadyRoute.workspaceId);
+      return lastAnalysisProject;
+    }
+    if (HALOOP_PROJECT_PATTERN.test(String(lastAnalysisProject ?? ""))) {
+      return lastAnalysisProject;
+    }
+    let response;
+    try {
+      response = await collectorRequest(run, { requestPath: "/halo/runs" });
+    } catch {
+      return null;
+    }
+    if (response.status !== 200 || !Array.isArray(response.body?.runs)) return null;
+    const recovered = response.body.runs
+      .filter((entry) => HALOOP_PROJECT_PATTERN.test(String(entry?.project ?? "")))
+      .sort((left, right) =>
+        (Number(right?.finished_at) || Number(right?.started_at) || 0) -
+        (Number(left?.finished_at) || Number(left?.started_at) || 0),
+      )[0]?.project;
+    if (!recovered) return null;
+    lastAnalysisProject = recovered;
+    return recovered;
+  }
+
   async function requireAnalysisCollector() {
-    if (!lastReadyRoute?.workspaceId) {
+    const project = await discoverAnalysisProject();
+    if (!project) {
       throw new Error(
         "Haloop has no active trace project. Launch a Claude or OpenClaw sandbox first.",
       );
@@ -1186,7 +1338,7 @@ export function createHaloopRuntimeManager({
         "The private Haloop collector is not analysis-ready. Restart Haloop, then retry.",
       );
     }
-    return { project: haloopProjectForWorkspace(lastReadyRoute.workspaceId) };
+    return { project };
   }
 
   async function readAuditedAnalysisReport(project, runId) {
@@ -1218,11 +1370,21 @@ export function createHaloopRuntimeManager({
   }
 
   async function analysisSnapshot() {
-    if (!lastReadyRoute?.workspaceId) {
+    const collector = await inspectContainer(run, HALOOP_COLLECTOR_CONTAINER_NAME);
+    const routeProject = (lastReadyRoute?.sandboxName && String(lastReadyRoute.sandboxName).trim())
+      || (lastReadyRoute?.workspaceId ? haloopProjectForWorkspace(lastReadyRoute.workspaceId) : lastAnalysisProject);
+    if (
+      !collector?.managed ||
+      !collector.running ||
+      collector.health !== "healthy" ||
+      collector.analysisContract !== COLLECTOR_ANALYSIS_CONTRACT
+    ) {
       return {
         state: "unavailable",
-        project: null,
-        detail: "Launch a Claude or OpenClaw sandbox to create an active trace project.",
+        project: HALOOP_PROJECT_PATTERN.test(String(routeProject ?? ""))
+          ? routeProject
+          : null,
+        detail: "Restart Haloop to make the private collector ready for analysis.",
         stats: null,
         run: null,
         evalArtifact: null,
@@ -1232,18 +1394,13 @@ export function createHaloopRuntimeManager({
         },
       };
     }
-    const project = haloopProjectForWorkspace(lastReadyRoute.workspaceId);
-    const collector = await inspectContainer(run, HALOOP_COLLECTOR_CONTAINER_NAME);
-    if (
-      !collector?.managed ||
-      !collector.running ||
-      collector.health !== "healthy" ||
-      collector.analysisContract !== COLLECTOR_ANALYSIS_CONTRACT
-    ) {
+
+    const project = await discoverAnalysisProject();
+    if (!project) {
       return {
         state: "unavailable",
-        project,
-        detail: "Restart Haloop to make the private collector ready for analysis.",
+        project: null,
+        detail: "Launch a Claude or OpenClaw sandbox to create a trace project.",
         stats: null,
         run: null,
         evalArtifact: null,
@@ -1275,9 +1432,20 @@ export function createHaloopRuntimeManager({
     if (runsResponse.status !== 200 || !Array.isArray(runsResponse.body.runs)) {
       throw new Error("The private Haloop collector could not list HALO analysis runs.");
     }
-    const latest = runsResponse.body.runs.find(
+    const projectRuns = runsResponse.body.runs.filter(
       (entry) => entry && entry.project === project && HALOOP_RUN_ID_PATTERN.test(entry.run_id),
     );
+    let selectedRunId = selectedAnalysisRunIds.get(project) ?? null;
+    if (!selectedRunId) {
+      const unfinished = projectRuns.find(
+        (entry) => entry.status === "created" || entry.status === "running",
+      );
+      if (unfinished) {
+        selectedRunId = unfinished.run_id;
+        selectedAnalysisRunIds.set(project, selectedRunId);
+      }
+    }
+    const latest = projectRuns.find((entry) => entry.run_id === selectedRunId);
     if (!latest) {
       return {
         state: stats.spans > 0 ? "ready" : "no-traces",
@@ -1363,6 +1531,47 @@ export function createHaloopRuntimeManager({
     };
   }
 
+  function traceCaptureStatus() {
+    return serialize(async () => {
+      const project = (lastReadyRoute?.sandboxName && String(lastReadyRoute.sandboxName).trim())
+        || (lastReadyRoute?.workspaceId ? haloopProjectForWorkspace(lastReadyRoute.workspaceId) : lastAnalysisProject);
+      const base = { project: project ?? null, stats: null, run: null, evalArtifact: null,
+        retention: { days: HALOOP_REPORT_RETENTION_DAYS, reports: HALOOP_REPORT_RETENTION_COUNT } };
+      const collector = await inspectContainer(run, HALOOP_COLLECTOR_CONTAINER_NAME);
+      if (!collector?.managed || !collector.running || collector.health !== "healthy" || !project) {
+        return { ...base, state: "unavailable", detail: "Launch a sandbox to capture traces." };
+      }
+      const result = await collectorRequest(run, { requestPath: `/stats?project=${project}` });
+      if (result.status !== 200) throw new Error("Could not read captured trace counts.");
+      const raw = result.body;
+      const stats = { spans: Number(raw.spans) || 0, errors: Number(raw.errors) || 0,
+        byObservationKind: raw.by_observation_kind ?? {}, byModel: raw.by_model ?? {} };
+      return { ...base, stats, state: stats.spans ? "ready" : "no-traces",
+        detail: "Desktop captures traces. Analysis and Harbor generation belong to the w8-haloop web app." };
+    });
+  }
+
+  function exportTraces(project, destinationPath) {
+    return serialize(async () => {
+      const expected = (lastReadyRoute?.sandboxName && String(lastReadyRoute.sandboxName).trim())
+        || (lastReadyRoute?.workspaceId ? haloopProjectForWorkspace(lastReadyRoute.workspaceId) : lastAnalysisProject);
+      if (!HALOOP_PROJECT_PATTERN.test(String(project)) || project !== expected) {
+        throw new Error("The active trace project changed. Refresh and retry.");
+      }
+      const collector = await inspectContainer(run, HALOOP_COLLECTOR_CONTAINER_NAME);
+      if (!collector?.managed || !collector.running) throw new Error("The private trace collector is unavailable.");
+      const destination = String(destinationPath ?? "");
+      if (!/^\/mnt\/[a-z]\/.+/i.test(destination) || destination.length > 4096 ||
+          /[\u0000-\u001f\u007f]/.test(destination) || /(?:^|\/)\.\.(?:\/|$)/.test(destination)) {
+        throw new Error("The selected trace download destination is invalid.");
+      }
+      // Docker copies only the server-derived project path. Never accept a source path from the renderer.
+      const source = `${HALOOP_COLLECTOR_CONTAINER_DATA_DIR}/traces/${project}.traces.jsonl`;
+      const result = await run(dockerArgs("cp", `${HALOOP_COLLECTOR_CONTAINER_NAME}:${source}`, destination), { timeout: 60_000 });
+      if (result.exitCode !== 0) throw new Error("The captured traces could not be downloaded.");
+    });
+  }
+
   function analysisStatus() {
     return serialize(() => analysisSnapshot());
   }
@@ -1413,6 +1622,7 @@ export function createHaloopRuntimeManager({
           : "The private collector rejected the analysis request.";
         throw new Error(reason);
       }
+      selectedAnalysisRunIds.set(project, response.body.run_id);
       analysisAudits.delete(response.body.run_id);
       return analysisSnapshot();
     });
@@ -1450,6 +1660,82 @@ export function createHaloopRuntimeManager({
     });
   }
 
+  async function readValidatedEvalPreview(project, runId) {
+    const normalizedRunId = String(runId ?? "").trim();
+    if (!HALOOP_RUN_ID_PATTERN.test(normalizedRunId)) {
+      throw new Error("The HALO analysis run identity is invalid.");
+    }
+    // Re-audit the report and resolve the artifact from collector-owned state;
+    // neither an artifact filename nor trace content comes from the renderer.
+    await readAuditedAnalysisReport(project, normalizedRunId);
+    const artifactsResponse = await collectorRequest(run, {
+      requestPath: `/evals/artifacts?project=${project}`,
+    });
+    const matchingArtifact = Array.isArray(artifactsResponse.body?.artifacts)
+      ? artifactsResponse.body.artifacts.find(
+          (candidate) => candidate?.halo_run_id === normalizedRunId,
+        )
+      : null;
+    if (artifactsResponse.status !== 200 || !matchingArtifact) {
+      throw new Error("The requested Haloop eval artifact is unavailable.");
+    }
+    const artifact = normalizeHaloopEvalArtifact(matchingArtifact, project, normalizedRunId);
+    const previewResponse = await collectorRequest(run, {
+      requestPath: `/evals/artifacts/${normalizedRunId}/preview?project=${project}`,
+    });
+    if (previewResponse.status !== 200) {
+      const reason = typeof previewResponse.body?.error === "string"
+        ? safeDiagnosticMessage(previewResponse.body.error)
+        : "The private collector rejected the eval preview request.";
+      throw new Error(reason);
+    }
+    return {
+      artifact,
+      preview: normalizeHaloopEvalPreview(
+        previewResponse.body,
+        project,
+        normalizedRunId,
+        artifact,
+      ),
+    };
+  }
+
+  function loadEvalCases(runId) {
+    return serialize(async () => {
+      const { project } = await requireAnalysisCollector();
+      const { preview } = await readValidatedEvalPreview(project, runId);
+      return preview;
+    });
+  }
+
+  function exportEvalCases(runId, destinationPath) {
+    return serialize(async () => {
+      const { project } = await requireAnalysisCollector();
+      const { artifact } = await readValidatedEvalPreview(project, runId);
+      await copyEvalArtifact(run, {
+        artifactId: artifact.artifactId,
+        destinationPath,
+      });
+      return artifact;
+    });
+  }
+
+  function exportHarborDataset(runId, destinationPath) {
+    return serialize(async () => {
+      const { project } = await requireAnalysisCollector();
+      const { artifact, preview } = await readValidatedEvalPreview(project, runId);
+      const normalizedDestination = String(destinationPath ?? "");
+      if (
+        normalizedDestination.length > 4096 ||
+        /[\u0000-\u001f\u007f]/.test(normalizedDestination) ||
+        /(?:^|\/)\.\.(?:\/|$)/.test(normalizedDestination)
+      ) {
+        throw new Error("The selected Harbor export destination is invalid.");
+      }
+      return exportHarborDatasetToZip(preview.cases, artifact, normalizedDestination);
+    });
+  }
+
   async function ensureOperation(options = {}) {
       const upstream = resolveHaloopUpstream(options.anthropicApiKey, env);
       await ensureDistro();
@@ -1459,6 +1745,7 @@ export function createHaloopRuntimeManager({
       });
       const images = await requireHaloopImages(run);
       const registration = await registerProfile({
+        deferCommit: true,
         sandboxName: options.sandboxName,
         workspaceId: options.workspaceId,
         agentId: options.agentId,
@@ -1471,16 +1758,33 @@ export function createHaloopRuntimeManager({
       });
       const serialized = `${JSON.stringify(document, null, 2)}\n`;
       const profileHash = createHash("sha256").update(serialized).digest("hex");
-      const analysisEnvironment = buildHaloopAnalysisEnvironment(upstream);
+      const analysisEnvironment = "W8_DESKTOP_CAPTURE_ONLY=1\n";
       const analysisConfigHash = createHash("sha256")
         .update(analysisEnvironment)
         .digest("hex");
-      await stageProfiles(run, serialized);
-      await stageAnalysisEnvironment(run, analysisEnvironment);
+      const previousRoute = lastReadyRoute;
+      const transactionId = randomBytes(8).toString("hex");
+      const heldContainers = [];
+      const stateFiles = [HALOOP_PROFILES_FILE, HALOOP_ANALYSIS_ENV_FILE, HALOOP_READY_ROUTE_FILE];
+      async function checkedRun(args, options = {}) {
+        const result = await run(args, { timeout: 60_000, ...options });
+        if (result.exitCode !== 0) throw new Error("Could not safely update or restore Haloop runtime state.");
+        return result;
+      }
+      await checkedRun(["-d", DISTRO_NAME, "--", "sh", "-c",
+        "set -eu; " + stateFiles.map((file) => `if [ -f ${file} ]; then cp -p ${file} ${file}.${transactionId}; fi`).join("; ")], { user: "root" });
+      async function holdContainer(name, info) {
+        const backup = `${name}-${transactionId}`;
+        await checkedRun(dockerArgs("container", "rename", name, backup));
+        heldContainers.push({ name, backup, running: info.running });
+        await checkedRun(dockerArgs("container", "stop", "--time", String(SHUTDOWN_TIMEOUT_SECONDS), backup));
+      }
 
       let gatewayStartedThisOperation = false;
       let collectorStartedThisOperation = false;
+      let analysisEnvironmentStagedThisOperation = false;
       try {
+        await stageProfiles(run, serialized);
         await ensureManagedNetwork(run);
         let collector = await inspectContainer(run, HALOOP_COLLECTOR_CONTAINER_NAME);
         let gateway = await inspectContainer(run, HALOOP_CONTAINER_NAME);
@@ -1500,30 +1804,33 @@ export function createHaloopRuntimeManager({
             collector.imageId !== images.collector.imageId ||
             collector.analysisContract !== COLLECTOR_ANALYSIS_CONTRACT ||
             collector.analysisConfigHash !== analysisConfigHash ||
+            options.forceRestart === true ||
             !collector.running
           )
         ) {
           options.onProgress?.({
             phase: "haloop",
-            message: "Applying the analysis-ready private Haloop collector…",
+            message: "Applying the capture-only private Haloop collector…",
           });
-          await removeManagedContainer(run, HALOOP_COLLECTOR_CONTAINER_NAME, "collector");
+          await holdContainer(HALOOP_COLLECTOR_CONTAINER_NAME, collector);
           collector = null;
         }
         if (!collector) {
+          await stageAnalysisEnvironment(run, analysisEnvironment);
+          analysisEnvironmentStagedThisOperation = true;
           await createCollectorContainer(run, analysisConfigHash);
           collectorStartedThisOperation = true;
         }
         await waitForHealthyContainer(run, HALOOP_COLLECTOR_CONTAINER_NAME, "collector");
 
         const reusableGateway =
-          gateway?.profileHash === profileHash && gateway?.imageId === images.gateway.imageId;
+          options.forceRestart !== true && gateway?.profileHash === profileHash && gateway?.imageId === images.gateway.imageId;
         if (!reusableGateway && gateway) {
           options.onProgress?.({
             phase: "haloop",
             message: "Applying the updated Haloop route-profile registry…",
           });
-          await removeManagedContainer(run, HALOOP_CONTAINER_NAME, "gateway");
+          await holdContainer(HALOOP_CONTAINER_NAME, gateway);
           gateway = null;
         }
         if (!gateway) {
@@ -1593,6 +1900,7 @@ export function createHaloopRuntimeManager({
             : {}),
         };
         lastReadyRoute = {
+          gatewayProfileHash: profileHash,
           profileId: registration.current.id,
           providerName: registration.current.providerName,
           sandboxName: options.sandboxName,
@@ -1601,9 +1909,19 @@ export function createHaloopRuntimeManager({
           upstreamMode: upstream.mode,
           analysisConfigHash,
         };
+        await persistReadyRoute(lastReadyRoute);
+        await registration.commit?.();
+        // Only discard the rollback resources after all readiness checks and persistence.
+        for (const held of heldContainers) {
+          await run(dockerArgs("container", "rm", held.backup), { timeout: 60_000 }).catch(() => undefined);
+        }
+        await run(["-d", DISTRO_NAME, "--", "rm", "-f", ...stateFiles.map((file) => `${file}.${transactionId}`)],
+          { timeout: 10_000, user: "root" }).catch(() => undefined);
+        lastAnalysisProject = (options.sandboxName && String(options.sandboxName).trim()) || haloopProjectForWorkspace(options.workspaceId);
         lastConnectionError = null;
         return result;
       } catch (error) {
+        lastReadyRoute = previousRoute;
         if (gatewayStartedThisOperation) {
           await run(
             dockerArgs("container", "stop", "--time", String(SHUTDOWN_TIMEOUT_SECONDS), HALOOP_CONTAINER_NAME),
@@ -1616,18 +1934,18 @@ export function createHaloopRuntimeManager({
             { timeout: 60_000 },
           ).catch(() => undefined);
         }
-        await run(
-          [
-            "-d",
-            DISTRO_NAME,
-            "--",
-            "rm",
-            "-f",
-            HALOOP_PROFILES_FILE,
-            HALOOP_ANALYSIS_ENV_FILE,
-          ],
-          { timeout: 10_000, user: "root" },
-        ).catch(() => undefined);
+        try {
+          await checkedRun(["-d", DISTRO_NAME, "--", "sh", "-c",
+            "set -eu; " + stateFiles.map((file) => `if [ -f ${file}.${transactionId} ]; then mv -f ${file}.${transactionId} ${file}; else rm -f ${file}; fi`).join("; ")], { user: "root" });
+          for (const held of heldContainers.reverse()) {
+            const candidate = await inspectContainer(run, held.name);
+            if (candidate) await removeManagedContainer(run, held.name, "replacement");
+            await checkedRun(dockerArgs("container", "rename", held.backup, held.name));
+            if (held.running) await checkedRun(dockerArgs("container", "start", held.name));
+          }
+        } catch {
+          throw new Error("Haloop update failed and rollback needs attention. The previous containers were retained for recovery.", { cause: error });
+        }
         throw error;
       }
   }
@@ -1669,6 +1987,7 @@ export function createHaloopRuntimeManager({
       const network = await inspectNetwork(run);
       const gateway = await inspectContainer(run, HALOOP_CONTAINER_NAME);
       const collector = await inspectContainer(run, HALOOP_COLLECTOR_CONTAINER_NAME);
+      await recoverReadyRoute(gateway);
       let state = "stopped";
       let detail = "Haloop routing and private trace capture will start automatically before a Claude or OpenClaw sandbox connects.";
       if (network && !network.managed) {
@@ -1776,6 +2095,7 @@ export function createHaloopRuntimeManager({
   }
 
   async function restart(options = {}) {
+    await status();
     const upstreamKey = resolveHaloopUpstreamApiKey(options.anthropicApiKey, { env });
     const route = lastReadyRoute ? { ...lastReadyRoute } : null;
     if (!route) {
@@ -1783,8 +2103,8 @@ export function createHaloopRuntimeManager({
         "Haloop has no active Desktop route to restart. Launch a Claude or OpenClaw sandbox first.",
       );
     }
-    await stop();
     return ensure({
+      forceRestart: true,
       anthropicApiKey: upstreamKey,
       sandboxName: route.sandboxName,
       workspaceId: route.workspaceId,
@@ -1794,7 +2114,28 @@ export function createHaloopRuntimeManager({
   }
 
   function activeRoute() {
-    return lastReadyRoute ? { ...lastReadyRoute } : null;
+    return publicRouteIdentity(lastReadyRoute);
+  }
+
+  function activateExistingRoute(options = {}) {
+    return serialize(async () => {
+      const identity = resolveHaloopClientProfileIdentity(options);
+      lastReadyRoute = {
+        gatewayProfileHash: lastReadyRoute?.gatewayProfileHash ?? null,
+        profileId: identity.id,
+        providerName: identity.providerName,
+        sandboxName: identity.sandboxName,
+        workspaceId: identity.workspaceId,
+        agentId: identity.agentId,
+        upstreamMode: lastReadyRoute?.upstreamMode ??
+          (isTemporaryOpenRouterHaloopTestEnabled(env) ? "openrouter-test" : "anthropic"),
+        analysisConfigHash: lastReadyRoute?.analysisConfigHash ?? null,
+      };
+      lastAnalysisProject = (identity.sandboxName && String(identity.sandboxName).trim()) || haloopProjectForWorkspace(identity.workspaceId);
+      if (lastReadyRoute.gatewayProfileHash) await persistReadyRoute(lastReadyRoute);
+      lastConnectionError = null;
+      return publicRouteIdentity(lastReadyRoute);
+    });
   }
 
   function restoreIncumbent(options = {}) {
@@ -1856,7 +2197,7 @@ export function createHaloopRuntimeManager({
         );
       }
 
-      await options.beforeRollback?.({ ...route });
+      await options.beforeRollback?.(publicRouteIdentity(route));
       options.onProgress?.({
         phase: "haloop",
         message: "Restoring the approved incumbent-only Haloop route…",
@@ -1921,7 +2262,9 @@ export function createHaloopRuntimeManager({
       // End tracked agent processes before invalidating their assertion key.
       // The callback runs inside the same runtime queue as every registry
       // mutation, so no old credential is served after it completes.
-      const affectedSessions = Number(await options.beforeRotate?.({ ...route })) || 0;
+      const affectedSessions = Number(
+        await options.beforeRotate?.(publicRouteIdentity(route)),
+      ) || 0;
       if (gateway) {
         await removeManagedContainer(run, HALOOP_CONTAINER_NAME, "gateway");
       }
@@ -2135,6 +2478,7 @@ export function createHaloopRuntimeManager({
           "-f",
           HALOOP_PROFILES_FILE,
           HALOOP_ANALYSIS_ENV_FILE,
+          HALOOP_READY_ROUTE_FILE,
         ],
         { timeout: 10_000, user: "root" },
       );
@@ -2166,11 +2510,17 @@ export function createHaloopRuntimeManager({
   }
 
   return {
+    activateExistingRoute,
     activeRoute,
     analysisStatus,
+    traceCaptureStatus,
+    exportTraces,
     ensure,
+    exportEvalCases,
+    exportHarborDataset,
     generateEvalCases,
     loadAnalysisReport,
+    loadEvalCases,
     recordApplicationSpans,
     restart,
     restoreIncumbent,
@@ -2189,8 +2539,20 @@ export function ensureHaloopRuntime(options) {
   return runtimeManager.ensure(options);
 }
 
+export function activateExistingHaloopRoute(options) {
+  return runtimeManager.activateExistingRoute(options);
+}
+
 export function getHaloopRuntimeStatus() {
   return runtimeManager.status();
+}
+
+export function getHaloopCaptureStatus() {
+  return runtimeManager.traceCaptureStatus();
+}
+
+export function exportHaloopTraces(project, destinationPath) {
+  return runtimeManager.exportTraces(project, destinationPath);
 }
 
 export function getHaloopAnalysisStatus() {
@@ -2201,12 +2563,24 @@ export function generateHaloopEvalCases(runId) {
   return runtimeManager.generateEvalCases(runId);
 }
 
+export function exportHaloopEvalCases(runId, destinationPath) {
+  return runtimeManager.exportEvalCases(runId, destinationPath);
+}
+
+export function exportHaloopHarborDataset(runId, destinationPath) {
+  return runtimeManager.exportHarborDataset(runId, destinationPath);
+}
+
 export function startHaloopAnalysis() {
   return runtimeManager.startAnalysis();
 }
 
 export function loadHaloopAnalysisReport(runId) {
   return runtimeManager.loadAnalysisReport(runId);
+}
+
+export function loadHaloopEvalCases(runId) {
+  return runtimeManager.loadEvalCases(runId);
 }
 
 export function recordHaloopApplicationSpans(capture, events) {
@@ -2256,6 +2630,7 @@ export const __testing = {
   STARTUP_TIMEOUT_MS,
   inspectContainer,
   requestPrivateCollector,
+  requireAuthenticatedEdge,
   resolveOpenShellBridgeAddress,
   validateHaloopReportCitations,
   validateHaloopTraceProject,

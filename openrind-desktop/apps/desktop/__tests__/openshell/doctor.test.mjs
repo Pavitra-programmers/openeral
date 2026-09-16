@@ -5,7 +5,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -13,6 +13,10 @@ import { dirname, join } from "node:path";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MOCK_WSL = join(__dirname, "mock-wsl.sh");
 const MOCK_PWSH = join(__dirname, "mock-pwsh.sh");
+if (process.platform !== "win32") {
+  chmodSync(MOCK_WSL, 0o755);
+  chmodSync(MOCK_PWSH, 0o755);
+}
 
 let workDir;
 let wslLog;
@@ -238,10 +242,13 @@ test("checkOpenShellGateway: gateway Crashed → warn with restart hint", async 
   assert.match(c.actionable, /[Rr]estart/);
 });
 
-test("checkOpenShellGateway: non-zero exit → missing", async () => {
+test("checkOpenShellGateway: runtime failure → warn with restart hint, not missing installation", async () => {
   process.env.MOCK_WSL_EXIT = "1";
+  process.env.MOCK_WSL_STDERR = "gateway connection refused";
   const c = await __testing.checkOpenShellGateway();
-  assert.equal(c.state, "missing");
+  assert.equal(c.state, "warn");
+  assert.equal(c.detail, "gateway connection refused");
+  assert.match(c.actionable, /Restart gateway/);
 });
 
 // v0.0.45+ dropped `--json`; we fall back to parsing plain `openshell

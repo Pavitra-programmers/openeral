@@ -73,6 +73,12 @@ unset FAST_FIRST_LAUNCH_MARKER
 expected_profile="openrind-shell-claude"
 if [ "${OPENRIND_SHELL_AGENT:-}" = "openclaw" ]; then
   expected_profile="openrind-shell-openclaw"
+elif [ "${OPENRIND_SHELL_AGENT:-}" = openhands ]; then
+  case "${OPENRIND_SHELL_OPENHANDS_MODE:-}" in
+    cli) expected_profile=openrind-shell-openhands ;;
+    script) expected_profile=openrind-shell-openhands-script ;;
+    *) echo "Openrind Shell: invalid OpenHands mode"; exit 64 ;;
+  esac
 fi
 if [ "$profile" != "$expected_profile" ]; then
   echo "Openrind Shell: launch profile mismatch (marker: $profile, expected: $expected_profile)."
@@ -82,7 +88,9 @@ fi
 # The login shell is transport plumbing only. Replace it with the selected
 # FUSE-aware agent wrapper so Desktop never falls through to an interactive
 # bash prompt and neither agent can bypass its workspace/health setup.
-if [ "${OPENRIND_SHELL_AGENT:-}" = "openclaw" ]; then
+if [ "${OPENRIND_SHELL_AGENT:-}" = openhands ]; then
+  set -- /usr/local/bin/openrind-openhands "$OPENRIND_SHELL_OPENHANDS_MODE"
+elif [ "${OPENRIND_SHELL_AGENT:-}" = "openclaw" ]; then
   unset ANTHROPIC_BASE_URL
   if [ ! -x /usr/local/bin/openrind-openclaw ]; then
     echo "Openrind Shell: FUSE-aware OpenClaw launcher is missing."

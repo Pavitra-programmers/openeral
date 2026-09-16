@@ -7,15 +7,17 @@ FROM rust:1.95-bookworm AS fused-builder
 WORKDIR /source
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
-COPY sandboxes/openeral/openclaw-agent-launcher.c ./
+COPY sandboxes/openeral/openclaw-agent-launcher.c sandboxes/openeral/openhands-agent-launcher.c ./
 RUN cargo build --locked --release -p openeral-fused \
     && cc -std=c11 -D_POSIX_C_SOURCE=200809L -O2 -Wall -Wextra -Werror \
         -o openrind-openclaw-agent openclaw-agent-launcher.c \
-    && strip target/release/openeral-fused openrind-openclaw-agent
+    && cc -std=c11 -D_POSIX_C_SOURCE=200809L -O2 -Wall -Wextra -Werror \
+        -o openrind-openhands-agent openhands-agent-launcher.c \
+    && strip target/release/openeral-fused openrind-openclaw-agent openrind-openhands-agent
 
 FROM ghcr.io/nvidia/openshell-community/sandboxes/base:latest
 
-LABEL com.openrind.desktop.fuse-contract="fuse-haloop-required-v27"
+LABEL com.openrind.desktop.fuse-contract="fuse-haloop-required-v28-openhands"
 
 USER root
 
@@ -23,13 +25,17 @@ ARG OPENCLAW_VERSION=2026.7.1-2
 ARG CLAUDE_CODE_VERSION=latest
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl gnupg python3 \
+    && apt-get install -y --no-install-recommends ca-certificates curl gnupg python3 python3-venv \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && SHARP_IGNORE_GLOBAL_LIBVIPS=1 npm install -g --loglevel=error "openclaw@${OPENCLAW_VERSION}" \
     && test -x /usr/bin/openclaw \
     && test -f /usr/lib/node_modules/openclaw/openclaw.mjs \
     && rm -rf /var/lib/apt/lists/*
+
+RUN /usr/bin/python3.12 -m venv --copies /opt/openrind-openhands \
+    && /opt/openrind-openhands/bin/python3.12 -m pip install --no-cache-dir "openhands==1.16.0" \
+    && /opt/openrind-openhands/bin/python3.12 -I -c 'import sys; from openhands_cli.entrypoint import main; sys.argv = ["openhands", "--help"]; main()'
 
 COPY openeral-js/ /opt/openrind-shell/
 RUN cd /opt/openrind-shell && npm install && npm run build && npm prune --omit=dev \
@@ -48,6 +54,9 @@ RUN rm -f /usr/local/bin/claude \
 COPY --from=fused-builder /source/target/release/openeral-fused /usr/local/bin/openrind-shell-fused
 # OpenShell authorizes this kernel-visible parent, never the shared Node runtime.
 COPY --from=fused-builder /source/openrind-openclaw-agent /usr/local/bin/openrind-openclaw-agent
+COPY --from=fused-builder /source/openrind-openhands-agent /usr/local/bin/openrind-openhands-agent
+COPY sandboxes/openeral/openhands-agent.py /opt/openrind-openhands/openhands-agent.py
+COPY sandboxes/openeral/openrind-openhands-fuse.sh /usr/local/bin/openrind-openhands
 COPY sandboxes/openeral/openeral-claude-fuse.sh /usr/local/bin/claude
 COPY sandboxes/openeral/pg-client-fuse.mjs /usr/local/bin/pg
 COPY sandboxes/openeral/setup-fuse.sh /opt/openrind-shell/setup.sh
@@ -58,6 +67,7 @@ COPY sandboxes/openeral/configure-openclaw-fuse.mjs /opt/openrind-shell/configur
 COPY sandboxes/openeral/openrind-openclaw-fuse.sh /usr/local/bin/openrind-openclaw
 COPY sandboxes/openeral/supabase-root-2021-ca.pem /opt/openrind-shell/certs/supabase-root-2021-ca.pem
 RUN chmod 755 /usr/local/bin/openrind-shell-fused /usr/local/bin/claude /usr/local/bin/pg /usr/local/bin/openrind-desktop-claude-launch \
+        /usr/local/bin/openrind-openhands /usr/local/bin/openrind-openhands-agent \
         /usr/local/bin/openrind-openclaw /usr/local/bin/openrind-openclaw-agent \
         /opt/openrind-shell/setup.sh /opt/openrind-shell/openrind-pty-bridge.py \
         /opt/openrind-shell/configure-haloop.mjs \
@@ -66,15 +76,17 @@ RUN chmod 755 /usr/local/bin/openrind-shell-fused /usr/local/bin/claude /usr/loc
     && install -m 0644 /opt/openrind-shell/certs/supabase-root-2021-ca.pem /usr/local/share/ca-certificates/supabase-root-2021-ca.crt \
     && cat /opt/openrind-shell/certs/supabase-root-2021-ca.pem >> /etc/ssl/certs/ca-certificates.crt \
     && sed -i 's/\r$//' /usr/local/bin/claude /usr/local/bin/pg /usr/local/bin/openrind-desktop-claude-launch \
-        /usr/local/bin/openrind-openclaw \
+        /usr/local/bin/openrind-openhands /usr/local/bin/openrind-openclaw \
         /opt/openrind-shell/setup.sh /opt/openrind-shell/openrind-pty-bridge.py \
         /opt/openrind-shell/configure-haloop.mjs \
         /opt/openrind-shell/configure-openclaw-fuse.mjs \
+    && bash -n /usr/local/bin/openrind-openhands \
+    && /opt/openrind-openhands/bin/python3.12 -m py_compile /opt/openrind-openhands/openhands-agent.py \
     && bash -n /usr/local/bin/openrind-openclaw \
     && bash -n /opt/openrind-shell/setup.sh \
     && node --check /opt/openrind-shell/configure-haloop.mjs \
     && node --check /opt/openrind-shell/configure-openclaw-fuse.mjs \
-    && printf '%s' fuse-haloop-required-v27 > /opt/openrind-shell/desktop-contract \
+    && printf '%s' fuse-haloop-required-v28-openhands > /opt/openrind-shell/desktop-contract \
     && ln -sf /usr/local/bin/openrind-shell-fused /usr/local/bin/openeral-fused \
     && ln -sf /opt/openrind-shell/setup.sh /usr/local/bin/openrind-shell \
     && ln -sf /opt/openrind-shell/setup.sh /usr/local/bin/openrind-shell-init \
@@ -84,7 +96,7 @@ RUN chmod 755 /usr/local/bin/openrind-shell-fused /usr/local/bin/claude /usr/loc
     && ln -sf /usr/local/bin/openrind-shell-start /usr/local/bin/openeral-start \
     && ln -sf /opt/openrind-shell/openrind-pty-bridge.py /usr/local/bin/openrind-pty-bridge.py \
     && install -d -o sandbox -g sandbox -m 0700 \
-        /var/lib/openrind-shell/runtime /sandbox/claude-home /sandbox/openclaw-home \
+        /var/lib/openrind-shell/runtime /sandbox/claude-home /sandbox/openclaw-home /sandbox/openhands-home \
         /home/agent /home/agent/.openrind-shell
 
 COPY sandboxes/openeral/policy.yaml /etc/openshell/policy.yaml

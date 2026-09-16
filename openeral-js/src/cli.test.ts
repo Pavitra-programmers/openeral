@@ -101,14 +101,13 @@ describe('openrind-shell skill shape', () => {
   const skillPath = join(__dirname, '../../.claude/skills/openrind-shell/SKILL.md');
   const skill = readFileSync(skillPath, 'utf8');
 
-  it('defaults to FUSE and keeps the compatibility image explicitly scoped', () => {
-    expect(skill).toContain('ghcr.io/openrind/openrind-shell/sandbox:just-bash');
-    expect(skill).toContain('Dockerfile.openrind-shell');
-    expect(skill).toContain('--fuse');
-    expect(skill).toContain('all `/sandbox/work`');
-    expect(skill).toContain('Use the primary FUSE runtime by default');
-    expect(skill).toContain('Never silently downgrade a FUSE request');
-    expect(skill).toContain('requires registry pull access');
+  it('requires Desktop-managed Haloop and FUSE without a compatibility fallback', () => {
+    expect(skill).toContain('New sandbox → Claude Code');
+    expect(skill).toContain('Desktop registers the scoped Haloop provider');
+    expect(skill).toContain('issues a signed conversation context');
+    expect(skill).toContain('`/sandbox/work` is PostgreSQL-backed FUSE');
+    expect(skill).toContain('Missing Haloop readiness blocks launch');
+    expect(skill).toMatch(/Compatibility is a separately requested legacy runtime, not recovery for a\s+failed mandatory Haloop launch/);
   });
 
   it('uses openshell-only commands (no npx, no pnpm)', () => {
@@ -116,28 +115,33 @@ describe('openrind-shell skill shape', () => {
     expect(skill).not.toMatch(/\bpnpm (install|build)\b/);
   });
 
-  it('uses gateway info (not the nonexistent gateway list)', () => {
+  it('uses the paired patched CLI and managed gateway for diagnostics', () => {
     expect(skill).not.toMatch(/openshell gateway list\b/);
-    expect(skill).toContain('openshell gateway info');
     expect(skill).not.toMatch(/^\s*openshell gateway start\b/m);
-    expect(skill).toContain('OPENSHELL_GATEWAY_ENDPOINT');
-    expect(skill).toContain('sandbox create --help | grep -- --fuse');
+    expect(skill).toContain('paired patched CLI and gateway');
+    expect(skill).toContain('managed gateway endpoint');
+    expect(skill).toContain('filesystem state must be `writable`');
   });
 
-  it('creates Openrind Gateway from an env lookup without exposing its value in argv', () => {
-    expect(skill).toContain('openrind-gateway');
-    expect(skill).toContain('OPENRIND_GATEWAY_API_KEY');
+  it('keeps credentials in Desktop configuration and forbids unsigned launches', () => {
+    expect(skill).toContain('upstream provider credential in Desktop Settings');
+    expect(skill).toContain('Never print database URLs or provider keys');
+    expect(skill).toContain('or pass provider keys through `--env`');
+    expect(skill).toContain('Do not invent a provider ID for a standalone CLI launch');
+    expect(skill).toMatch(/Never use\s+`--auto-providers`, a direct Anthropic provider, or an unsigned `claude` command/);
     expect(skill).not.toMatch(/--credential ["']?OPENRIND_GATEWAY_API_KEY=/);
     expect(skill).not.toMatch(/openshell provider create --name db\b/);
   });
 
-  it('lets OpenShell create the gateway presign inside the sandbox', () => {
+  it('delegates initialization to Desktop instead of a manual presign recipe', () => {
     expect(skill).not.toContain('curl -fsS https://app.stringcost.com/v1/presign');
-    expect(skill).toContain('Initialization calls the presign endpoint inside the sandbox');
+    expect(skill).toMatch(/Desktop registers the scoped Haloop provider,[\s\S]*initializes FUSE/);
+    expect(skill).toContain('Do not reuse its old provider recipe');
   });
 
-  it('documents openshell sandbox exec for one-off commands', () => {
-    expect(skill).toMatch(/openshell sandbox exec\b/);
+  it('documents sandbox exec health checks and separates diagnostic shells from agent launches', () => {
+    expect(skill).toContain('sandbox exec -n <sandbox-name> -- openrind-shell-fused health');
+    expect(skill).toContain('`sandbox connect` opens a diagnostic shell, not a signed agent launch');
   });
 });
 

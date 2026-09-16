@@ -11,6 +11,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  desktop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.27.0
+          package_json_file: openrind-desktop/package.json
+      - name: Install Desktop workspace
+        working-directory: openrind-desktop
+        run: pnpm install --frozen-lockfile
+      - name: Desktop OpenShell tests
+        working-directory: openrind-desktop/apps/desktop
+        run: pnpm test:openshell
+      - name: Electron typecheck
+        working-directory: openrind-desktop/apps/desktop
+        run: pnpm typecheck:electron
+      - name: App typecheck
+        working-directory: openrind-desktop/apps/app
+        run: pnpm typecheck
+
   test:
     runs-on: ubuntu-latest
 
@@ -68,8 +92,16 @@ jobs:
 
       - name: Validate sandbox scripts
         run: |
+          python3 tests/test_excel_report_parser.py
           bash -n build-image.sh sandboxes/openeral/*.sh tests/*.sh tests/fuse/*.sh
           for script in sandboxes/openeral/*.mjs; do node --check "$script"; done
+
+      - name: Check OpenHands sandbox adapter (no inference)
+        run: |
+          python3 -m venv /tmp/openrind-openhands-tests
+          /tmp/openrind-openhands-tests/bin/pip install 'pytest==8.4.2' 'httpx==0.28.1'
+          /tmp/openrind-openhands-tests/bin/python -m pytest tests/test_openhands_agent.py -q
+          cc -std=c11 -D_POSIX_C_SOURCE=200809L -O2 -Wall -Wextra -Werror -o /tmp/openrind-openhands-agent sandboxes/openeral/openhands-agent-launcher.c
 
   fuse:
     runs-on: ubuntu-latest

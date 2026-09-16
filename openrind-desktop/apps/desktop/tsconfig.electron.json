@@ -14,6 +14,7 @@
     "types": ["node"]
   },
   "include": [
+    "electron/**/*.d.ts",
     "electron/**/*.mjs",
     "scripts/check-electron-bridge.mjs",
     "scripts/electron-build.mjs",

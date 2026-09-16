@@ -110,6 +110,13 @@ node openrind-desktop/apps/desktop/scripts/build-openshell-runtime-images.mjs
 
 ### Create And Initialize
 
+For the supported customer flow, open Desktop, configure the PostgreSQL and provider
+credentials in Settings, then choose **Sandboxes → New sandbox → Claude Code**.
+Desktop creates the scoped Haloop provider and persistent agent-home volume and
+initializes the FUSE workspace. No provider ID needs to be copied from Desktop.
+The following low-level commands are developer diagnostics, not a standalone
+customer launch recipe; they require a provider already registered by Desktop.
+
 Point the patched CLI at the patched Docker gateway:
 
 ```bash
@@ -138,6 +145,7 @@ chmod 600 "$db_file"
   --name "$OPENRIND_SHELL_WORKSPACE_ID" \
   --from openrind-shell-fuse:local \
   --fuse \
+  --driver-config-json '{"docker":{"mounts":[{"type":"volume","source":"openrind-manual-claude-home","target":"/sandbox/claude-home","read_only":false}]}}' \
   --upload "$db_file:/sandbox/db-url" \
   --provider "$OPENRIND_HALOOP_PROVIDER" \
   --env "OPENRIND_SHELL_WORKSPACE_ID=$OPENRIND_SHELL_WORKSPACE_ID" \
@@ -220,6 +228,11 @@ describes a Docker Compose TLS PostgreSQL fixture and the derived test image.
 
 ### Start, Stop, And Resume Claude
 
+In Desktop select the existing sandbox to connect. Use `/exit` to end Claude,
+then **Reconnect** to launch another signed session. Select the same sandbox to
+return to its running session; do not create a second sandbox for the same workspace.
+Keep the sandbox and its agent-home volume to retain conversation history.
+
 Connect from the host:
 
 ```bash
@@ -290,8 +303,8 @@ cleanly before deleting it:
 ### Required Haloop Runtime
 
 Openrind Desktop starts the Haloop gateway and private trace collector outside
-the sandbox, registers a server-owned route profile with mandatory synchronous
-capture hooks, and creates one endpoint-bound OpenShell provider per
+the sandbox, registers a server-owned route profile with capture hooks,
+and creates one endpoint-bound OpenShell provider per
 workspace/sandbox/agent scope. OpenShell materializes the scoped token only as
 `x-api-key` for the exact Haloop endpoint and trusted native launcher. The
 Desktop also issues a signed, opaque conversation assertion per agent process.
@@ -305,6 +318,10 @@ Desktop-managed Docker network. Packaged Desktop selects the matched,
 version-pinned Haloop gateway and collector images rather than the source-only
 `:local` tags. The FUSE sandbox is not given a direct
 Anthropic, legacy Openrind Gateway, or `stringcost` inference path.
+
+Routing and startup readiness are mandatory. After startup, trace capture is
+best-effort (`deny: false`): collector failures do not block successful inference.
+A successful response is not proof that its trace was stored; check capture stats.
 Desktop sandbox deletion withdraws the live edge before removing the matching
 provider and encrypted profile records. Surviving profiles are restored through
 Haloop with unchanged credentials; deleting the last profile stops the managed
