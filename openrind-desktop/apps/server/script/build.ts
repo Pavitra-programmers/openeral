@@ -1,6 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
-import { join, resolve, relative } from "node:path";
+import { join, resolve, relative, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const appDir = dirname(dirname(fileURLToPath(import.meta.url)));
 
 const bunRuntime = (globalThis as typeof globalThis & {
   Bun?: {
@@ -98,14 +101,14 @@ async function buildOnce(entrypoint: string, outdir: string, filename: string, t
     args.push("--target", target);
   }
 
-  const result = spawnSync("bun", args, { stdio: "inherit" });
+  const result = spawnSync("bun", args, { stdio: "inherit", shell: process.platform === "win32" });
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
   }
 }
 
 const options = readArgs(bun.argv.slice(2));
-const entrypoint = resolve("src", "cli.ts");
+const entrypoint = resolve(appDir, "src", "cli.ts");
 const targets = options.targets.length ? options.targets : [undefined];
 
 for (const target of targets) {
