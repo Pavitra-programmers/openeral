@@ -242,10 +242,13 @@ test("checkOpenShellGateway: gateway Crashed → warn with restart hint", async 
   assert.match(c.actionable, /[Rr]estart/);
 });
 
-test("checkOpenShellGateway: non-zero exit → missing", async () => {
+test("checkOpenShellGateway: runtime failure → warn with restart hint, not missing installation", async () => {
   process.env.MOCK_WSL_EXIT = "1";
+  process.env.MOCK_WSL_STDERR = "gateway connection refused";
   const c = await __testing.checkOpenShellGateway();
-  assert.equal(c.state, "missing");
+  assert.equal(c.state, "warn");
+  assert.equal(c.detail, "gateway connection refused");
+  assert.match(c.actionable, /Restart gateway/);
 });
 
 // v0.0.45+ dropped `--json`; we fall back to parsing plain `openshell

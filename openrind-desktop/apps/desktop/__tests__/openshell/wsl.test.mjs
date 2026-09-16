@@ -8,6 +8,8 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { once } from "node:events";
+import { setTimeout as delay } from "node:timers/promises";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MOCK_WSL = join(__dirname, "mock-wsl.sh");
@@ -42,6 +44,15 @@ function readArgsLog() {
   } catch {
     return [];
   }
+}
+
+async function waitForInvocation(invocation) {
+  // Spawning the mock and executing its first line are separate events.
+  const deadline = Date.now() + 5000;
+  while (!readArgsLog().includes(invocation) && Date.now() < deadline) {
+    await delay(10);
+  }
+  assert.ok(readArgsLog().includes(invocation), `missing invocation: ${invocation}`);
 }
 
 // Fresh import per test would be cleaner, but the module is stateless
@@ -160,13 +171,16 @@ test("ensureDistroRunning throws when the distro is not registered", async () =>
   );
 });
 
-test("ensureDistroRunning returns immediately when already Running", async () => {
+test("ensureDistroRunning pins an already running distro without booting it again", async () => {
   process.env.MOCK_WSL_STDOUT =
     "  NAME                  STATE           VERSION\n" +
     "  openrind-desktop-openshell    Running         2\n";
   await wsl.ensureDistroRunning();
-  // Only the state probe should have run; no boot call.
-  assert.deepEqual(readArgsLog(), ["--list --verbose"]);
+  await waitForInvocation("-d openrind-desktop-openshell -- sleep infinity");
+  assert.deepEqual(readArgsLog(), [
+    "--list --verbose",
+    "-d openrind-desktop-openshell -- sleep infinity",
+  ]);
 });
 
 test("toWslPath converts a Windows drive path", () => {
@@ -200,22 +214,19 @@ test("toWindowsPath passes through non-mount WSL paths unchanged", () => {
   assert.equal(wsl.toWindowsPath("/etc/hostname"), "/etc/hostname");
 });
 
-test("wslSpawn.kill() runs `wsl -t openrind-desktop-openshell` to reap orphans", async () => {
+test("wslSpawn.kill() stops only its command, never the shared WSL distro", async () => {
   // Long-running mock so we have a child to kill.
   process.env.MOCK_WSL_DELAY_MS = "5000";
   const child = wsl.wslSpawn(["-d", "openrind-desktop-openshell", "--", "sleep", "5"]);
 
-  const exited = new Promise((resolve) => child.on("exit", resolve));
-  child.kill("SIGTERM");
-  await exited;
+  const exited = once(child, "exit");
+  await waitForInvocation("-d openrind-desktop-openshell -- sleep 5");
+  assert.equal(child.kill("SIGTERM"), true);
+  const [code, signal] = await exited;
+  assert.equal(code, null);
+  assert.equal(signal, "SIGTERM");
 
-  // Wait a tick for the reaper child's log line to flush. The reaper is
-  // also a mock-wsl.sh invocation, so its args show up in the log.
-  await new Promise((r) => setTimeout(r, 100));
-
-  const lines = readArgsLog();
-  assert.ok(
-    lines.some((l) => l === "-t openrind-desktop-openshell"),
-    `expected '-t openrind-desktop-openshell' invocation, got: ${JSON.stringify(lines)}`,
-  );
+  // A distro-wide reaper would tear down unrelated sandboxes and the gateway.
+  await delay(100);
+  assert.deepEqual(readArgsLog(), ["-d openrind-desktop-openshell -- sleep 5"]);
 });
