@@ -487,6 +487,14 @@ SESSION_ENV="$OPENRIND_SHELL_RUNTIME_DIR/session.env"
     # Its explicit openrind-gateway provider owns the endpoint; never let it
     # inherit a stale Claude base URL from a previous image contract.
     printf 'unset ANTHROPIC_BASE_URL\n'
+  elif [ "$OPENRIND_SHELL_AGENT" = openhands ]; then
+    _gw="${HALOOP_GATEWAY_URL:-http://host.openshell.internal:8787}"
+    printf 'export LLM_BASE_URL=%s\n' "$(shell_quote "$_gw")"
+    printf 'export ANTHROPIC_BASE_URL=%s\n' "$(shell_quote "$_gw")"
+    printf 'export ANTHROPIC_API_BASE=%s\n' "$(shell_quote "$_gw")"
+    printf 'export OPENAI_BASE_URL=%s\n' "$(shell_quote "$_gw")"
+    printf 'export OPENAI_API_BASE=%s\n' "$(shell_quote "$_gw")"
+    printf 'export LITELLM_API_BASE=%s\n' "$(shell_quote "$_gw")"
   elif [ -f "$OPENRIND_SHELL_RUNTIME_DIR/anthropic-base-url" ]; then
     printf 'export ANTHROPIC_BASE_URL='; shell_quote "$(cat "$OPENRIND_SHELL_RUNTIME_DIR/anthropic-base-url")"; printf '\n'
   fi

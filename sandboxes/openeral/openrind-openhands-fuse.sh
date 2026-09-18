@@ -2,6 +2,16 @@
 set -uo pipefail
 export HOME=/sandbox/openhands-home
 export OPENRIND_SHELL_HOME=/sandbox/work
+GATEWAY_URL="${HALOOP_GATEWAY_URL:-http://host.openshell.internal:8787}"
+export LLM_BASE_URL="$GATEWAY_URL"
+export ANTHROPIC_BASE_URL="$GATEWAY_URL"
+export ANTHROPIC_API_BASE="$GATEWAY_URL"
+export OPENAI_BASE_URL="$GATEWAY_URL"
+export OPENAI_API_BASE="$GATEWAY_URL"
+export LITELLM_API_BASE="$GATEWAY_URL"
+if [ -n "${OPENRIND_HALOOP_SESSION_CONTEXT:-}" ]; then
+  export ANTHROPIC_CUSTOM_HEADERS="x-openrind-haloop-session: ${OPENRIND_HALOOP_SESSION_CONTEXT}"
+fi
 mode="${1:-cli}"
 case "$mode" in cli|script) ;; *) echo 'Invalid OpenHands mode' >&2; exit 64 ;; esac
 if ! printf '%s' "${OPENRIND_HALOOP_SESSION_CONTEXT:-}" | grep -Eq '^v1\.[0-9a-f]{32}\.[1-9][0-9]{9,15}\.[1-9][0-9]{9,15}\.[0-9a-f]{64}$'; then
