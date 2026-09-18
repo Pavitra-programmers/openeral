@@ -90,6 +90,13 @@ def test_launcher_selects_local_cli_or_headless(tmp_path, monkeypatch, mode, con
         adapter.main()
         assert adapter.os.environ['LLM_BASE_URL'] == adapter.BASE_URL
         assert adapter.os.environ['LLM_API_KEY'] == 'openshell:resolve:env:v1_ANTHROPIC_API_KEY'
+        assert adapter.os.environ['ANTHROPIC_API_KEY'] == 'openshell:resolve:env:v1_ANTHROPIC_API_KEY'
+        assert adapter.os.environ['ANTHROPIC_BASE_URL'] == adapter.BASE_URL
+        assert adapter.os.environ['ANTHROPIC_API_BASE'] == adapter.BASE_URL
+        assert adapter.os.environ['OPENAI_BASE_URL'] == adapter.BASE_URL
+        assert adapter.os.environ['OPENAI_API_BASE'] == adapter.BASE_URL
+        assert adapter.os.environ['LITELLM_API_BASE'] == adapter.BASE_URL
+        assert adapter.os.environ['ANTHROPIC_CUSTOM_HEADERS'] == f'x-openrind-haloop-session: {CONTEXT}'
     assert bool(calls) == runs
     if runs:
         assert calls[0][:2] == ['openhands', '--override-with-envs']

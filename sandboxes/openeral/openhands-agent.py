@@ -112,7 +112,13 @@ def main():
         'LLM_MODEL': 'anthropic/claude-sonnet-4-5-20250929',
         'LLM_BASE_URL': base,
         'LLM_API_KEY': credential,
+        'ANTHROPIC_API_KEY': credential,
         'ANTHROPIC_BASE_URL': base,
+        'ANTHROPIC_API_BASE': base,
+        'OPENAI_BASE_URL': base,
+        'OPENAI_API_BASE': base,
+        'LITELLM_API_BASE': base,
+        'ANTHROPIC_CUSTOM_HEADERS': f'x-openrind-haloop-session: {context}',
         'DO_NOT_TRACK': '1',
     })
     # No nested Docker/cloud runtime: the local CLI executes inside OpenShell.
