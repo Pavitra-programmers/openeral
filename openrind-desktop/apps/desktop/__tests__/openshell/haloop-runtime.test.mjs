@@ -534,7 +534,7 @@ test("managed lifecycle stages profiles through stdin and requires authenticated
   assert.equal(status.required, true);
   assert.equal(status.routePolicy, "incumbent-only");
   assert.equal(status.state, "ready");
-  assert.equal(status.endpoint, "http://136.112.93.84:8787");
+  assert.equal(status.endpoint, "http://host.openshell.internal:8787");
   assert.equal(status.version, "test-version");
   assert.equal(status.health, "healthy");
   assert.equal(status.collectorHealth, "healthy");

@@ -13,7 +13,7 @@ import { dirname, join } from "node:path";
 export const HALOOP_ANTHROPIC_BASE_URL =
   process.env.HALOOP_ANTHROPIC_BASE_URL ||
   process.env.HALOOP_GATEWAY_URL ||
-  "http://136.112.93.84:8787";
+  "http://host.openshell.internal:8787";
 
 const workspaceHome =
   process.env.OPENRIND_SHELL_HOME ||

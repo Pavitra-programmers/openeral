@@ -17,7 +17,7 @@ const PROVIDER_ID = "openrind-gateway";
 const PROVIDER_BASE_URL =
   process.env.OPENRIND_GATEWAY_BASE_URL ||
   process.env.HALOOP_GATEWAY_URL ||
-  "http://136.112.93.84:8787";
+  "http://host.openshell.internal:8787";
 const DEFAULT_MODEL_ID = "claude-sonnet-4-6";
 const home = resolve(process.env.HOME || OPENCLAW_HOME);
 
