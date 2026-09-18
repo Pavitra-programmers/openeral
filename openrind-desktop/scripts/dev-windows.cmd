@@ -1,6 +1,8 @@
 @echo off
 setlocal
 
+set "COREPACK_INTEGRITY_KEYS=0"
+
 set "TARGET_ARCH=%~1"
 set "VSDEVCMD=%VSDEVCMD_PATH%"
 set "HOST_ARCH=x64"

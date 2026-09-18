@@ -730,6 +730,11 @@ async function provisionOpenrindShellSandbox(options) {
     `OPENRIND_SHELL_AGENT=${agent.id}`,
     "--env",
     `OPENRIND_SHELL_OPENHANDS_MODE=${agent.mode || "cli"}`,
+  );
+  if (haloop.endpoint) {
+    sandboxArgs.push("--env", `HALOOP_GATEWAY_URL=${haloop.endpoint}`);
+  }
+  sandboxArgs.push(
     "--no-tty",
     "--",
     "openrind-shell-init",

@@ -79,7 +79,7 @@ def test_launcher_selects_local_cli_or_headless(tmp_path, monkeypatch, mode, con
     monkeypatch.setenv('OPENRIND_HALOOP_SESSION_CONTEXT', CONTEXT)
     monkeypatch.setenv('ANTHROPIC_API_KEY', 'openshell:resolve:env:v1_ANTHROPIC_API_KEY')
     monkeypatch.setattr(sys, 'argv', ['adapter', mode])
-    monkeypatch.setattr(adapter, 'install_session_transport', lambda context: None)
+    monkeypatch.setattr(adapter, 'install_session_transport', lambda context, *args, **kwargs: None)
     answers = iter(['task.md', confirmation])
     monkeypatch.setattr('builtins.input', lambda _: next(answers))
     calls = []
@@ -90,6 +90,13 @@ def test_launcher_selects_local_cli_or_headless(tmp_path, monkeypatch, mode, con
         adapter.main()
         assert adapter.os.environ['LLM_BASE_URL'] == adapter.BASE_URL
         assert adapter.os.environ['LLM_API_KEY'] == 'openshell:resolve:env:v1_ANTHROPIC_API_KEY'
+        assert adapter.os.environ['ANTHROPIC_API_KEY'] == 'openshell:resolve:env:v1_ANTHROPIC_API_KEY'
+        assert adapter.os.environ['ANTHROPIC_BASE_URL'] == adapter.BASE_URL
+        assert adapter.os.environ['ANTHROPIC_API_BASE'] == adapter.BASE_URL
+        assert adapter.os.environ['OPENAI_BASE_URL'] == adapter.BASE_URL
+        assert adapter.os.environ['OPENAI_API_BASE'] == adapter.BASE_URL
+        assert adapter.os.environ['LITELLM_API_BASE'] == adapter.BASE_URL
+        assert adapter.os.environ['ANTHROPIC_CUSTOM_HEADERS'] == f'x-openrind-haloop-session: {CONTEXT}'
     assert bool(calls) == runs
     if runs:
         assert calls[0][:2] == ['openhands', '--override-with-envs']
@@ -109,3 +116,32 @@ def test_launch_rejects_missing_provider_credential(monkeypatch):
     monkeypatch.setattr(sys, 'argv', ['adapter', 'cli'])
     with pytest.raises(ValueError, match='provider credential'):
         adapter.main()
+
+
+@pytest.mark.parametrize('input_url,expected', [
+    ('http://136.112.93.84:8787/v1/chat/completions', 'http://136.112.93.84:8787'),
+    ('http://136.112.93.84/v1/chat/completions', 'http://136.112.93.84'),
+    ('http://host.openshell.internal:8787/v1/messages', 'http://host.openshell.internal:8787'),
+    ('http://host.openshell.internal:8787/chat/completions', 'http://host.openshell.internal:8787'),
+    ('136.112.93.84:8787/v1/chat/completions', 'http://136.112.93.84:8787'),
+    ('', 'http://host.openshell.internal:8787'),
+    (None, 'http://host.openshell.internal:8787'),
+])
+def test_normalize_gateway_url(input_url, expected):
+    assert adapter.normalize_gateway_url(input_url) == expected
+
+
+def test_custom_gateway_url_attaches_session_header():
+    custom_url = 'http://136.123.45.67:8787/v1/chat/completions'
+    base_url = adapter.normalize_gateway_url(custom_url)
+    assert base_url == 'http://136.123.45.67:8787'
+
+    def respond(request):
+        assert request.headers.get('x-openrind-haloop-session') == CONTEXT
+        return httpx.Response(200, json={})
+
+    with patch.object(httpx.Client, 'send', httpx.Client.send):
+        adapter.install_session_transport(CONTEXT, base_url)
+        with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+            client.post('http://136.123.45.67:8787/v1/chat/completions')
+            client.post('http://136.123.45.67:8787/v1/messages')

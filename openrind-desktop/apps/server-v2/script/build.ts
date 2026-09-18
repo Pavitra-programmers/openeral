@@ -252,7 +252,7 @@ function buildOnce(options: BuildOptions, target?: string) {
     args.push("--target", target);
   }
 
-  const result = spawnSync("bun", args, { stdio: "inherit" });
+  const result = spawnSync("bun", args, { stdio: "inherit", shell: process.platform === "win32" });
   embedded?.cleanup();
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
