@@ -2,7 +2,10 @@
 set -uo pipefail
 export HOME=/sandbox/openhands-home
 export OPENRIND_SHELL_HOME=/sandbox/work
-GATEWAY_URL="${HALOOP_GATEWAY_URL:-http://host.openshell.internal:8787}"
+GATEWAY_URL="${HALOOP_GATEWAY_URL:-}"
+if [ -z "$GATEWAY_URL" ]; then
+  GATEWAY_URL="http://136.112.93.84:8787"
+fi
 export LLM_BASE_URL="$GATEWAY_URL"
 export ANTHROPIC_BASE_URL="$GATEWAY_URL"
 export ANTHROPIC_API_BASE="$GATEWAY_URL"

@@ -118,7 +118,69 @@ function normalizeProviderRows(stdout) {
     .filter((row) => row.name);
 }
 
+const HALOOP_PROFILE_YAML = `id: haloop-anthropic
+display_name: Haloop Anthropic
+description: Required Openrind Shell inference through the host-managed Haloop edge
+category: agent
+inference_capable: true
+credentials:
+  - name: client_token
+    description: Scoped Haloop client token; this is not an upstream provider key
+    env_vars: [HALOOP_CLIENT_TOKEN, ANTHROPIC_API_KEY]
+    required: true
+    auth_style: header
+    header_name: x-api-key
+discovery:
+  credentials: [client_token]
+endpoints:
+  - host: host.openshell.internal
+    port: 8787
+    path: /v1/**
+    protocol: rest
+    enforcement: enforce
+    rules:
+      - allow: { method: POST, path: "/v1/messages" }
+      - allow: { method: POST, path: "/v1/messages/count_tokens" }
+      - allow: { method: POST, path: "/v1/chat/completions" }
+      - allow: { method: POST, path: "/chat/completions" }
+  - host: 136.112.93.84
+    port: 8787
+    path: /v1/**
+    protocol: rest
+    enforcement: enforce
+    rules:
+      - allow: { method: POST, path: "/v1/messages" }
+      - allow: { method: POST, path: "/v1/messages/count_tokens" }
+      - allow: { method: POST, path: "/v1/chat/completions" }
+      - allow: { method: POST, path: "/chat/completions" }
+binaries: [/usr/bin/claude, /usr/local/bin/claude, /usr/local/bin/claude-real, /usr/local/bin/openrind-openclaw-agent, /usr/local/bin/openrind-openhands-agent, /opt/openrind-openhands/bin/python3.12]
+`;
+
+async function ensureHaloopProfileRegistered() {
+  const check = await runFuseOpenShell(
+    ["provider", "profile", "export", "--global", "haloop-anthropic"],
+    { ensure: false, timeout: 10_000 },
+  ).catch(() => null);
+  if (check?.exitCode === 0) return;
+
+  const tempPath = `/tmp/haloop-anthropic-${randomUUID()}.yaml`;
+  const script = `cat > ${shellQuote(tempPath)} << 'EOF'\n${HALOOP_PROFILE_YAML}\nEOF\n`;
+  await wslRun(
+    ["-d", DISTRO_NAME, "--", "bash", "-lc", script],
+    { timeout: 10_000 },
+  );
+  await runFuseOpenShell(
+    ["provider", "profile", "import", "--global", "--file", tempPath],
+    { ensure: false, timeout: 15_000 },
+  ).catch(() => {});
+  await wslRun(
+    ["-d", DISTRO_NAME, "--", "rm", "-f", tempPath],
+    { timeout: 5_000 },
+  ).catch(() => {});
+}
+
 async function ensureHaloopProvider(providerName, clientToken, onProgress) {
+  await ensureHaloopProfileRegistered();
   // Claude and OpenClaw both look for ANTHROPIC_API_KEY. The value supplied
   // here is the scoped Haloop client token, never the upstream Anthropic key.
   // OpenShell exposes only its resolver placeholder to the sandbox process and
@@ -730,10 +792,9 @@ async function provisionOpenrindShellSandbox(options) {
     `OPENRIND_SHELL_AGENT=${agent.id}`,
     "--env",
     `OPENRIND_SHELL_OPENHANDS_MODE=${agent.mode || "cli"}`,
+    "--env",
+    `HALOOP_GATEWAY_URL=${process.env.HALOOP_GATEWAY_URL?.trim() || process.env.OPENRIND_DESKTOP_HALOOP_ENDPOINT?.trim() || "http://136.112.93.84:8787"}`,
   );
-  if (haloop.endpoint) {
-    sandboxArgs.push("--env", `HALOOP_GATEWAY_URL=${haloop.endpoint}`);
-  }
   sandboxArgs.push(
     "--no-tty",
     "--",

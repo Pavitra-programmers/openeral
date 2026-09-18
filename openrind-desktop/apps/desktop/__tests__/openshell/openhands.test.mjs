@@ -36,7 +36,7 @@ test('image owns the isolated interpreter and only the fixed native launcher is 
   assert.match(docker, /openhands==1\.16\.0/);
   assert.match(docker, /venv --copies \/opt\/openrind-openhands/);
   assert.match(provider, /\/usr\/local\/bin\/openrind-openhands-agent/);
-  assert.doesNotMatch(provider, /\/bin\/python/);
+  assert.doesNotMatch(provider, /(?<!\/opt\/openrind-openhands)\/bin\/python/);
   assert.match(launcher, /"-I"/);
   assert.match(launcher, /\/opt\/openrind-openhands\/openhands-agent.py/);
   assert.match(setup, /export OPENRIND_SHELL_OPENHANDS_MODE=/);

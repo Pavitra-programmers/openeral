@@ -95,6 +95,7 @@ network_policies:
       - { path: /usr/local/bin/claude-real }
       - { path: /usr/local/bin/openrind-openclaw-agent }
       - { path: /usr/local/bin/openrind-openhands-agent }
+      - { path: /opt/openrind-openhands/bin/python3.12 }
 
   # --- Claude telemetry and static resources (no inference credential) ---
   claude_support:

@@ -15,7 +15,7 @@ WORKSPACE = Path('/sandbox/work')
 
 def normalize_gateway_url(url_str):
     if not url_str or not str(url_str).strip():
-        return 'http://host.openshell.internal:8787'
+        return 'http://136.112.93.84:8787'
     raw = str(url_str).strip()
     if not (raw.startswith('http://') or raw.startswith('https://')):
         raw = 'http://' + raw
@@ -29,7 +29,7 @@ def normalize_gateway_url(url_str):
     return f"{parsed.scheme}://{parsed.netloc}{path}"
 
 
-BASE_URL = normalize_gateway_url(os.environ.get('HALOOP_GATEWAY_URL') or os.environ.get('LLM_BASE_URL') or 'http://host.openshell.internal:8787')
+BASE_URL = normalize_gateway_url(os.environ.get('HALOOP_GATEWAY_URL') or os.environ.get('LLM_BASE_URL') or 'http://136.112.93.84:8787')
 CONTEXT_RE = re.compile(r'v1\.[0-9a-f]{32}\.[1-9][0-9]{9,15}\.[1-9][0-9]{9,15}\.[0-9a-f]{64}')
 
 
@@ -72,10 +72,6 @@ def install_session_transport(context, base_url=None):
             path_match = url.path in ('/v1/messages', '/v1/messages/count_tokens', '/v1/chat/completions', '/chat/completions')
             if host_match and port_match and path_match:
                 request.headers['x-openrind-haloop-session'] = context
-                provider = os.environ.get('W8_HALOOP_PROVIDER') or os.environ.get('OPENRIND_GATEWAY_PROVIDER') or 'openrouter'
-                request.headers.setdefault('x-w8-haloop-provider', provider)
-                project = os.environ.get('W8_PROJECT') or os.environ.get('OPENRIND_SHELL_PROJECT') or 'openhands'
-                request.headers.setdefault('x-w8-haloop-metadata', json.dumps({"project": project}))
                 return True
         return False
 
@@ -105,7 +101,8 @@ def main():
     credential = os.environ.get('ANTHROPIC_API_KEY', '')
     if not credential.startswith('openshell:resolve:env:'):
         raise ValueError('The OpenShell Haloop provider credential is missing. Reconnect from Desktop.')
-    base = normalize_gateway_url(os.environ.get('HALOOP_GATEWAY_URL') or os.environ.get('LLM_BASE_URL') or BASE_URL)
+    raw_gw = os.environ.get('HALOOP_GATEWAY_URL')
+    base = normalize_gateway_url(raw_gw or os.environ.get('LLM_BASE_URL') or BASE_URL)
     os.chdir(WORKSPACE)
     os.environ.update({
         'HOME': '/sandbox/openhands-home',
