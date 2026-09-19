@@ -88,14 +88,14 @@ def test_launcher_selects_local_cli_or_headless(tmp_path, monkeypatch, mode, con
     monkeypatch.setitem(sys.modules, 'openhands_cli.entrypoint', entrypoint)
     with patch.dict('os.environ'), patch.object(adapter.os, 'chdir'):
         adapter.main()
-        assert adapter.os.environ['LLM_BASE_URL'] == adapter.BASE_URL
+        assert adapter.os.environ['LLM_BASE_URL'] == f"{adapter.BASE_URL}/v1"
         assert adapter.os.environ['LLM_API_KEY'] == 'openshell:resolve:env:v1_ANTHROPIC_API_KEY'
         assert adapter.os.environ['ANTHROPIC_API_KEY'] == 'openshell:resolve:env:v1_ANTHROPIC_API_KEY'
         assert adapter.os.environ['ANTHROPIC_BASE_URL'] == adapter.BASE_URL
         assert adapter.os.environ['ANTHROPIC_API_BASE'] == adapter.BASE_URL
-        assert adapter.os.environ['OPENAI_BASE_URL'] == adapter.BASE_URL
-        assert adapter.os.environ['OPENAI_API_BASE'] == adapter.BASE_URL
-        assert adapter.os.environ['LITELLM_API_BASE'] == adapter.BASE_URL
+        assert adapter.os.environ['OPENAI_BASE_URL'] == f"{adapter.BASE_URL}/v1"
+        assert adapter.os.environ['OPENAI_API_BASE'] == f"{adapter.BASE_URL}/v1"
+        assert adapter.os.environ['LITELLM_API_BASE'] == f"{adapter.BASE_URL}/v1"
         assert adapter.os.environ['ANTHROPIC_CUSTOM_HEADERS'] == f'x-openrind-haloop-session: {CONTEXT}'
     assert bool(calls) == runs
     if runs:
@@ -124,8 +124,8 @@ def test_launch_rejects_missing_provider_credential(monkeypatch):
     ('http://host.openshell.internal:8787/v1/messages', 'http://host.openshell.internal:8787'),
     ('http://host.openshell.internal:8787/chat/completions', 'http://host.openshell.internal:8787'),
     ('136.112.93.84:8787/v1/chat/completions', 'http://136.112.93.84:8787'),
-    ('', 'http://host.openshell.internal:8787'),
-    (None, 'http://host.openshell.internal:8787'),
+    ('', 'http://136.112.93.84:8787'),
+    (None, 'http://136.112.93.84:8787'),
 ])
 def test_normalize_gateway_url(input_url, expected):
     assert adapter.normalize_gateway_url(input_url) == expected

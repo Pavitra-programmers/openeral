@@ -13,12 +13,17 @@ credentials:
     required: true
     auth_style: header
     header_name: x-api-key
+  - name: bearer_token
+    description: Scoped Haloop Bearer token for OpenAI-compatible completions
+    env_vars: [OPENAI_API_KEY, LLM_API_KEY]
+    required: false
+    auth_style: bearer
+    header_name: Authorization
 discovery:
   credentials: [client_token]
 endpoints:
   - host: host.openshell.internal
     port: 8787
-    path: /v1/**
     protocol: rest
     enforcement: enforce
     rules:
@@ -28,7 +33,6 @@ endpoints:
       - allow: { method: POST, path: "/chat/completions" }
   - host: 136.112.93.84
     port: 8787
-    path: /v1/**
     protocol: rest
     enforcement: enforce
     rules:

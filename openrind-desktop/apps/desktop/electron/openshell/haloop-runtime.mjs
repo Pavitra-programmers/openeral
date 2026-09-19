@@ -30,7 +30,7 @@ export const HALOOP_EDGE_PORT = 8787;
 export const HALOOP_SANDBOX_ENDPOINT =
   process.env.HALOOP_GATEWAY_URL?.trim() ||
   process.env.OPENRIND_DESKTOP_HALOOP_ENDPOINT?.trim() ||
-  `http://host.openshell.internal:${HALOOP_EDGE_PORT}`;
+  `http://136.112.93.84:${HALOOP_EDGE_PORT}`;
 export const HALOOP_ROUTE_POLICY = "incumbent-only";
 export const HALOOP_TEMPORARY_OPENROUTER_TEST_ENV =
   "OPENRIND_DESKTOP_HALOOP_TEST_OPENROUTER";

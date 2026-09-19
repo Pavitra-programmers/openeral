@@ -108,6 +108,7 @@ network_policies:
       - { path: /usr/local/bin/claude }
       - { path: /usr/local/bin/claude-real }
       - { path: /usr/local/bin/openrind-openclaw-agent }
+      - { path: /usr/local/bin/openrind-openhands-agent }
 
   # --- Socket.dev package registry ---
   # When --provider socket is configured with SOCKET_TOKEN, npm traffic
