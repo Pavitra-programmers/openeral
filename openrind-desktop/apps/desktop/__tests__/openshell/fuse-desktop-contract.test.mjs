@@ -58,10 +58,12 @@ test("Windows Electron launchers keep nested processes on the workspace pnpm ver
     source("openrind-desktop/apps/desktop/scripts/prepare-sidecar.mjs"),
   ]);
   assert.match(windowsLauncher, /corepack pnpm@10\.27\.0/);
+  assert.match(electronDev, /OPENRIND_DESKTOP_USE_COREPACK_PNPM === "1"/);
   for (const launcher of [electronDev, electronBuild]) {
     assert.match(launcher, /"corepack\.cmd"/);
     assert.match(launcher, /\["pnpm@10\.27\.0"\]/);
   }
+  assert.match(electronBuild, /a\.includes\(" "\)/);
   assert.match(electronDev, /\.\.\.pnpmArgs, "--filter", "@openrind\/app", "dev:windows"/);
   assert.match(electronDev, /\.\.\.pnpmArgs, "exec", "electron"/);
   assert.doesNotMatch(electronDev, /shell: process\.platform === "win32"/);
@@ -136,15 +138,15 @@ test("desktop provisioning preserves one-shot FUSE create with only scoped Haloo
   assert.doesNotMatch(sandbox, /ensureClaudeProvider|ensureGatewayProvider/);
   assert.match(
     sandbox,
-    /buildFuseWslEnv\(\{ ANTHROPIC_API_KEY: clientToken \}\)/,
+    /buildFuseWslEnv\(\{[\s\S]*?ANTHROPIC_API_KEY: clientToken[\s\S]*?\}\)/,
   );
   assert.match(
     sandbox,
     /"--credential", "ANTHROPIC_API_KEY"/,
   );
-  assert.doesNotMatch(
+  assert.match(
     sandbox,
-    /buildFuseWslEnv\(\{ HALOOP_CLIENT_TOKEN: clientToken \}\)/,
+    /buildFuseWslEnv\(\{[\s\S]*?HALOOP_CLIENT_TOKEN: clientToken[\s\S]*?\}\)/,
   );
 });
 

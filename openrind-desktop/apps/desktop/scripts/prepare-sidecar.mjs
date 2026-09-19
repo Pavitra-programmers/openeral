@@ -117,6 +117,19 @@ const bunTarget = (() => {
   }
 })();
 
+function resolveBunCommand() {
+  if (process.platform !== "win32") return "bun";
+  const paths = (process.env.PATH || "").split(";");
+  for (const p of paths) {
+    const exe = join(p, "bun.exe");
+    if (existsSync(exe)) {
+      return exe;
+    }
+  }
+  return "bun";
+}
+
+const spawnShell = false;
 const opencodeBaseName = isWindowsTarget ? "opencode.exe" : "opencode";
 const opencodePath = join(sidecarDir, opencodeBaseName);
 const opencodeTargetName = resolvedTargetTriple
@@ -163,7 +176,7 @@ function safeCopyFileSync(src, dest) {
     copyFileSync(src, dest);
   } catch (err) {
     if (err && err.code === "EBUSY" && existsSync(dest)) {
-      console.warn(`[prepare-sidecar] Warning: Destination file ${dest} is currently in use; skipping overwrite.`);
+      console.warn(`[prepare-sidecar] Warning: Destination file ${dest} is currently in use (EBUSY); skipping overwrite.`);
       return;
     }
     throw err;
@@ -339,12 +352,14 @@ if (shouldBuildOpenrindDesktopServer) {
   if (bunTarget) {
     openrindDesktopServerArgs.push("--target", bunTarget);
   }
-  const buildResult = spawnSync("bun", openrindDesktopServerArgs, {
+  const buildResult = spawnSync(resolveBunCommand(), openrindDesktopServerArgs, {
     cwd: openrindDesktopServerDir,
     stdio: "inherit",
+    shell: false,
   });
 
   if (buildResult.status !== 0) {
+    console.error(`[prepare-sidecar] openrind-desktop-server build failed: status=${buildResult.status}, error=${buildResult.error}`);
     process.exit(buildResult.status ?? 1);
   }
 
@@ -426,10 +441,10 @@ if (shouldDownloadOpencode) {
   mkdirSync(extractDir, { recursive: true });
 
   if (process.platform === "win32") {
-    const psQuote = (value) => `'${value.replace(/'/g, "''")}'`;
+    const psQuote = (value) => `'${value.replace(/\\/g, "/").replace(/'/g, "''")}'`;
     const psScript = [
       "$ErrorActionPreference = 'Stop'",
-      `Invoke-WebRequest -Uri ${psQuote(opencodeUrl)} -OutFile ${psQuote(archivePath)}`,
+      `Invoke-WebRequest -UseBasicParsing -Uri ${psQuote(opencodeUrl)} -OutFile ${psQuote(archivePath)}`,
       `Expand-Archive -Path ${psQuote(archivePath)} -DestinationPath ${psQuote(extractDir)} -Force`,
     ].join("; ");
 
@@ -438,6 +453,7 @@ if (shouldDownloadOpencode) {
     });
 
     if (result.status !== 0) {
+      console.error(`[prepare-sidecar] opencode download failed: status=${result.status}, error=${result.error}`);
       process.exit(result.status ?? 1);
     }
   } else {
@@ -517,9 +533,10 @@ if (shouldBuildOrchestrator) {
   if (bunTarget) {
     orchestratorArgs.push("--target", bunTarget);
   }
-  const result = spawnSync("bun", orchestratorArgs, {
+  const result = spawnSync(resolveBunCommand(), orchestratorArgs, {
     cwd: orchestratorDir,
     stdio: "inherit",
+    shell: false,
     env: {
       ...process.env,
       NODE_ENV: "production",
@@ -527,6 +544,7 @@ if (shouldBuildOrchestrator) {
     },
   });
   if (result.status !== 0) {
+    console.error(`[prepare-sidecar] orchestrator build failed: status=${result.status}, error=${result.error}`);
     process.exit(result.status ?? 1);
   }
 
@@ -580,9 +598,10 @@ if (shouldBuildChromeDevtools) {
     chromeDevtoolsArgs.push("--target", bunTarget);
   }
 
-  const result = spawnSync("bun", chromeDevtoolsArgs, {
+  const result = spawnSync(resolveBunCommand(), chromeDevtoolsArgs, {
     cwd: __dirname,
     stdio: "inherit",
+    shell: false,
     env: {
       ...process.env,
       NODE_ENV: "production",
@@ -590,6 +609,7 @@ if (shouldBuildChromeDevtools) {
     },
   });
   if (result.status !== 0) {
+    console.error(`[prepare-sidecar] chrome-devtools-mcp build failed: status=${result.status}, error=${result.error}`);
     process.exit(result.status ?? 1);
   }
 

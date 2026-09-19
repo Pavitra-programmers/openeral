@@ -1,6 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
-import { join, resolve, relative } from "node:path";
+import { mkdirSync, existsSync } from "node:fs";
+import { join, resolve, relative, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const appDir = dirname(dirname(fileURLToPath(import.meta.url)));
 
 const bunRuntime = (globalThis as typeof globalThis & {
   Bun?: {
@@ -88,6 +91,18 @@ function outputName(filename: string, target?: string) {
   return `${filename}${suffix}${ext}`;
 }
 
+function resolveBunCommand() {
+  if (process.platform !== "win32") return "bun";
+  const paths = (process.env.PATH || "").split(";");
+  for (const p of paths) {
+    const exe = join(p, "bun.exe");
+    if (existsSync(exe)) {
+      return exe;
+    }
+  }
+  return "bun";
+}
+
 async function buildOnce(entrypoint: string, outdir: string, filename: string, target?: string) {
   mkdirSync(outdir, { recursive: true });
   const absoluteOutfile = join(outdir, outputName(filename, target));
@@ -98,14 +113,14 @@ async function buildOnce(entrypoint: string, outdir: string, filename: string, t
     args.push("--target", target);
   }
 
-  const result = spawnSync("bun", args, { stdio: "inherit" });
+  const result = spawnSync(resolveBunCommand(), args, { stdio: "inherit", shell: false });
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
   }
 }
 
 const options = readArgs(bun.argv.slice(2));
-const entrypoint = resolve("src", "cli.ts");
+const entrypoint = resolve(appDir, "src", "cli.ts");
 const targets = options.targets.length ? options.targets : [undefined];
 
 for (const target of targets) {

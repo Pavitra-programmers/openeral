@@ -265,7 +265,7 @@ export function HaloopView(props: HaloopViewProps) {
             className="h-8 shrink-0 rounded-full px-3 text-xs"
             onClick={() => {
               if (typeof window !== "undefined") {
-                window.open("http://34.55.17.105:3000/", "_blank");
+                window.open("http://136.112.93.84:3000/", "_blank");
               }
             }}
           >

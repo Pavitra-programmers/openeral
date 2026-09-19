@@ -79,6 +79,7 @@ network_policies:
           - allow: { method: POST, path: "/v1/messages" }
           - allow: { method: POST, path: "/v1/messages/count_tokens" }
           - allow: { method: POST, path: "/v1/chat/completions" }
+          - allow: { method: POST, path: "/chat/completions" }
       - host: 136.112.93.84
         port: 8787
         protocol: rest
@@ -87,6 +88,7 @@ network_policies:
           - allow: { method: POST, path: "/v1/messages" }
           - allow: { method: POST, path: "/v1/messages/count_tokens" }
           - allow: { method: POST, path: "/v1/chat/completions" }
+          - allow: { method: POST, path: "/chat/completions" }
     binaries:
       - { path: /usr/bin/claude }
       - { path: /usr/local/bin/claude }
@@ -106,6 +108,7 @@ network_policies:
       - { path: /usr/local/bin/claude }
       - { path: /usr/local/bin/claude-real }
       - { path: /usr/local/bin/openrind-openclaw-agent }
+      - { path: /usr/local/bin/openrind-openhands-agent }
 
   # --- Socket.dev package registry ---
   # When --provider socket is configured with SOCKET_TOKEN, npm traffic
