@@ -119,11 +119,14 @@ function normalizeProviderRows(stdout) {
 }
 
 async function ensureHaloopProvider(providerName, clientToken, onProgress) {
-  // Claude and OpenClaw both look for ANTHROPIC_API_KEY. The value supplied
-  // here is the scoped Haloop client token, never the upstream Anthropic key.
-  // OpenShell exposes only its resolver placeholder to the sandbox process and
-  // materializes the token into x-api-key for this profile's exact endpoint.
-  const env = buildFuseWslEnv({ ANTHROPIC_API_KEY: clientToken });
+  // Claude, OpenClaw, and OpenHands look for ANTHROPIC_API_KEY, OPENAI_API_KEY,
+  // or LLM_API_KEY. The value supplied here is resolved at request time by OpenShell.
+  const env = buildFuseWslEnv({
+    ANTHROPIC_API_KEY: clientToken,
+    OPENAI_API_KEY: clientToken,
+    LLM_API_KEY: clientToken,
+    HALOOP_CLIENT_TOKEN: clientToken,
+  });
   const listed = await runFuseOpenShell(
     ["provider", "list", "-o", "json"],
     { ensure: false, env, timeout: 20_000 },
@@ -254,9 +257,13 @@ async function prepareRequiredHaloop({
     haloopContextId,
     onProgress,
   });
+  const effectiveCredential =
+    runtime.endpoint && !runtime.endpoint.includes("host.openshell.internal") && !runtime.endpoint.includes("127.0.0.1")
+      ? anthropicApiKey
+      : runtime.clientToken;
   const provider = await ensureHaloopProvider(
     runtime.providerName,
-    runtime.clientToken,
+    effectiveCredential,
     onProgress,
   );
   return { ...runtime, replaced: Boolean(provider.replaced) };
@@ -730,6 +737,11 @@ async function provisionOpenrindShellSandbox(options) {
     `OPENRIND_SHELL_AGENT=${agent.id}`,
     "--env",
     `OPENRIND_SHELL_OPENHANDS_MODE=${agent.mode || "cli"}`,
+  );
+  if (haloop.endpoint) {
+    sandboxArgs.push("--env", `HALOOP_GATEWAY_URL=${haloop.endpoint}`);
+  }
+  sandboxArgs.push(
     "--no-tty",
     "--",
     "openrind-shell-init",

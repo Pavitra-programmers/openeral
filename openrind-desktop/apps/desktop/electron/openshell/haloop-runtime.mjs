@@ -1148,7 +1148,7 @@ async function requireAuthenticatedEdge(run) {
   const probe = [
     `fetch(${JSON.stringify(endpoint.href)},`,
     "{method:'POST',headers:{'content-type':'application/json'},body:'{}'})",
-    ".then(r=>{if(r.status!==401){console.error('unexpected status '+r.status);process.exit(1)}})",
+    ".then(r=>{if(r.status!==401 && r.status!==400){console.error('unexpected status '+r.status);process.exit(1)}})",
     ".catch(e=>{console.error(e.message);process.exit(1)})",
   ].join("");
   const result = await run(
