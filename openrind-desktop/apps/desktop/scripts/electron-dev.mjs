@@ -8,8 +8,9 @@ const desktopRoot = resolve(__dirname, "..");
 const repoRoot = resolve(desktopRoot, "../..");
 const electronSidecarDir = resolve(desktopRoot, "resources", "sidecars");
 
-const pnpmCmd = process.platform === "win32" ? "corepack.cmd" : "pnpm";
-const pnpmArgs = process.platform === "win32" ? ["pnpm@10.27.0"] : [];
+const useCorepack = process.env.OPENRIND_DESKTOP_USE_COREPACK === "1";
+const pnpmCmd = process.platform === "win32" ? (useCorepack ? "corepack.cmd" : "pnpm.cmd") : "pnpm";
+const pnpmArgs = useCorepack && process.platform === "win32" ? ["pnpm@10.27.0"] : [];
 const nodeCmd = process.execPath;
 const portValue = Number.parseInt(process.env.PORT ?? "", 10);
 const devPort = Number.isFinite(portValue) && portValue > 0 ? portValue : 5173;

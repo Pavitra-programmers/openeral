@@ -1,5 +1,8 @@
-import { mkdirSync, readFileSync } from "node:fs";
-import { join, resolve, relative } from "node:path";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const appDir = dirname(dirname(fileURLToPath(import.meta.url)));
 import solidPlugin from "../node_modules/@opentui/solid/scripts/solid-plugin";
 
 const bunRuntime = (globalThis as typeof globalThis & {
@@ -98,7 +101,7 @@ async function buildOnce(entrypoint: string, outdir: string, filename: string, t
   const absoluteOutfile = join(outdir, outputName(filename, target));
   const outfile = relative(process.cwd(), absoluteOutfile);
   const define: Record<string, string> = {};
-  const pkgPath = resolve("package.json");
+  const pkgPath = resolve(appDir, "package.json");
   try {
     const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { version?: string };
     if (typeof pkg.version === "string" && pkg.version.trim()) {
@@ -109,7 +112,7 @@ async function buildOnce(entrypoint: string, outdir: string, filename: string, t
   }
   try {
     const constants = JSON.parse(
-      readFileSync(resolve("..", "..", "constants.json"), "utf8"),
+      readFileSync(resolve(appDir, "..", "..", "constants.json"), "utf8"),
     ) as { opencodeVersion?: string };
     if (
       typeof constants.opencodeVersion === "string" &&
@@ -125,7 +128,7 @@ async function buildOnce(entrypoint: string, outdir: string, filename: string, t
 
   const resolvedTarget = target ?? defaultTarget();
   const result = await bun.build({
-    tsconfig: "./tsconfig.json",
+    tsconfig: resolve(appDir, "tsconfig.json"),
     plugins: [solidPlugin],
     entrypoints: [entrypoint],
     define,
@@ -143,7 +146,7 @@ async function buildOnce(entrypoint: string, outdir: string, filename: string, t
 }
 
 const options = readArgs(bun.argv.slice(2));
-const entrypoint = resolve("src", "cli.ts");
+const entrypoint = resolve(appDir, "src", "cli.ts");
 const targets = options.targets.length ? options.targets : [undefined];
 
 for (const target of targets) {
