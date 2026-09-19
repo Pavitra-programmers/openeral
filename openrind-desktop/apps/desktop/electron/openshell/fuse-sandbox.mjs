@@ -257,13 +257,9 @@ async function prepareRequiredHaloop({
     haloopContextId,
     onProgress,
   });
-  const effectiveCredential =
-    runtime.endpoint && !runtime.endpoint.includes("host.openshell.internal") && !runtime.endpoint.includes("127.0.0.1")
-      ? anthropicApiKey
-      : runtime.clientToken;
   const provider = await ensureHaloopProvider(
     runtime.providerName,
-    effectiveCredential,
+    runtime.clientToken,
     onProgress,
   );
   return { ...runtime, replaced: Boolean(provider.replaced) };
@@ -739,6 +735,18 @@ async function provisionOpenrindShellSandbox(options) {
     `OPENRIND_SHELL_OPENHANDS_MODE=${agent.mode || "cli"}`,
   );
   if (haloop.endpoint) {
+    try {
+      const parsedUrl = new URL(haloop.endpoint);
+      const host = parsedUrl.hostname;
+      if (host !== "136.112.93.84" && host !== "host.openshell.internal" && host !== "127.0.0.1" && host !== "localhost") {
+        throw new Error(`OpenShell policy blocks arbitrary gateway host '${host}'. Only '136.112.93.84' and 'host.openshell.internal' are authorized.`);
+      }
+    } catch (err) {
+      if (err.message.includes("OpenShell policy blocks")) {
+        throw err;
+      }
+      throw new Error(`Invalid Haloop gateway URL: ${haloop.endpoint}`);
+    }
     sandboxArgs.push("--env", `HALOOP_GATEWAY_URL=${haloop.endpoint}`);
   }
   sandboxArgs.push(

@@ -58,10 +58,12 @@ test("Windows Electron launchers keep nested processes on the workspace pnpm ver
     source("openrind-desktop/apps/desktop/scripts/prepare-sidecar.mjs"),
   ]);
   assert.match(windowsLauncher, /corepack pnpm@10\.27\.0/);
+  assert.match(electronDev, /OPENRIND_DESKTOP_USE_COREPACK_PNPM === "1"/);
   for (const launcher of [electronDev, electronBuild]) {
     assert.match(launcher, /"corepack\.cmd"/);
     assert.match(launcher, /\["pnpm@10\.27\.0"\]/);
   }
+  assert.match(electronBuild, /a\.includes\(" "\)/);
   assert.match(electronDev, /\.\.\.pnpmArgs, "--filter", "@openrind\/app", "dev:windows"/);
   assert.match(electronDev, /\.\.\.pnpmArgs, "exec", "electron"/);
   assert.doesNotMatch(electronDev, /shell: process\.platform === "win32"/);

@@ -88,6 +88,18 @@ function outputName(filename: string, target?: string) {
   return `${filename}${suffix}${ext}`;
 }
 
+function resolveBunCommand() {
+  if (process.platform !== "win32") return "bun";
+  const paths = (process.env.PATH || "").split(";");
+  for (const p of paths) {
+    const exe = join(p, "bun.exe");
+    if (existsSync(exe)) {
+      return exe;
+    }
+  }
+  return "bun";
+}
+
 async function buildOnce(entrypoint: string, outdir: string, filename: string, target?: string) {
   mkdirSync(outdir, { recursive: true });
   const outfile = join(outdir, outputName(filename, target));
@@ -106,7 +118,7 @@ async function buildOnce(entrypoint: string, outdir: string, filename: string, t
     args.push("--target", target);
   }
 
-  const result = spawnSync("bun", args, { stdio: "inherit", shell: process.platform === "win32" });
+  const result = spawnSync(resolveBunCommand(), args, { stdio: "inherit", shell: false });
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
   }

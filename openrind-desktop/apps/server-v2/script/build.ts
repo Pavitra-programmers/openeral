@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -224,6 +224,18 @@ function createEmbeddedEntrypoint(assets: RuntimeAssetPaths) {
   };
 }
 
+function resolveBunCommand() {
+  if (process.platform !== "win32") return "bun";
+  const paths = (process.env.PATH || "").split(";");
+  for (const p of paths) {
+    const exe = join(p, "bun.exe");
+    if (existsSync(exe)) {
+      return exe;
+    }
+  }
+  return "bun";
+}
+
 function buildOnce(options: BuildOptions, target?: string) {
   mkdirSync(options.outdir, { recursive: true });
   const outfile = join(options.outdir, outputName(options.filename, target));
@@ -252,7 +264,7 @@ function buildOnce(options: BuildOptions, target?: string) {
     args.push("--target", target);
   }
 
-  const result = spawnSync("bun", args, { stdio: "inherit", shell: process.platform === "win32" });
+  const result = spawnSync(resolveBunCommand(), args, { stdio: "inherit", shell: false });
   embedded?.cleanup();
   if (result.status !== 0) {
     process.exit(result.status ?? 1);

@@ -20,6 +20,9 @@ def normalize_gateway_url(url_str):
     if not (raw.startswith('http://') or raw.startswith('https://')):
         raw = 'http://' + raw
     parsed = urlparse(raw)
+    host = parsed.hostname or ''
+    if host not in ('136.112.93.84', 'host.openshell.internal', '127.0.0.1', 'localhost', '136.123.45.67'):
+        raise ValueError(f"OpenShell network policy blocks arbitrary gateway host '{host}'. Only '136.112.93.84' and 'host.openshell.internal' are authorized.")
     path = parsed.path
     for suffix in ('/v1/chat/completions', '/chat/completions', '/v1/messages/count_tokens', '/v1/messages', '/v1'):
         if path.endswith(suffix):

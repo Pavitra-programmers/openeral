@@ -117,7 +117,19 @@ const bunTarget = (() => {
   }
 })();
 
-const spawnShell = process.platform === "win32";
+function resolveBunCommand() {
+  if (process.platform !== "win32") return "bun";
+  const paths = (process.env.PATH || "").split(";");
+  for (const p of paths) {
+    const exe = join(p, "bun.exe");
+    if (existsSync(exe)) {
+      return exe;
+    }
+  }
+  return "bun";
+}
+
+const spawnShell = false;
 const opencodeBaseName = isWindowsTarget ? "opencode.exe" : "opencode";
 const opencodePath = join(sidecarDir, opencodeBaseName);
 const opencodeTargetName = resolvedTargetTriple
@@ -163,8 +175,8 @@ function safeCopyFileSync(src, dest) {
     }
     copyFileSync(src, dest);
   } catch (err) {
-    if (err && (err.code === "EBUSY" || err.code === "EPERM") && existsSync(dest)) {
-      console.warn(`[prepare-sidecar] Warning: Destination file ${dest} is currently in use; skipping overwrite.`);
+    if (err && err.code === "EBUSY" && existsSync(dest)) {
+      console.warn(`[prepare-sidecar] Warning: Destination file ${dest} is currently in use (EBUSY); skipping overwrite.`);
       return;
     }
     throw err;
@@ -340,10 +352,10 @@ if (shouldBuildOpenrindDesktopServer) {
   if (bunTarget) {
     openrindDesktopServerArgs.push("--target", bunTarget);
   }
-  const buildResult = spawnSync("bun", openrindDesktopServerArgs, {
+  const buildResult = spawnSync(resolveBunCommand(), openrindDesktopServerArgs, {
     cwd: openrindDesktopServerDir,
     stdio: "inherit",
-    shell: spawnShell,
+    shell: false,
   });
 
   if (buildResult.status !== 0) {
@@ -521,10 +533,10 @@ if (shouldBuildOrchestrator) {
   if (bunTarget) {
     orchestratorArgs.push("--target", bunTarget);
   }
-  const result = spawnSync("bun", orchestratorArgs, {
+  const result = spawnSync(resolveBunCommand(), orchestratorArgs, {
     cwd: orchestratorDir,
     stdio: "inherit",
-    shell: spawnShell,
+    shell: false,
     env: {
       ...process.env,
       NODE_ENV: "production",
@@ -586,10 +598,10 @@ if (shouldBuildChromeDevtools) {
     chromeDevtoolsArgs.push("--target", bunTarget);
   }
 
-  const result = spawnSync("bun", chromeDevtoolsArgs, {
+  const result = spawnSync(resolveBunCommand(), chromeDevtoolsArgs, {
     cwd: __dirname,
     stdio: "inherit",
-    shell: spawnShell,
+    shell: false,
     env: {
       ...process.env,
       NODE_ENV: "production",
