@@ -136,15 +136,15 @@ test("desktop provisioning preserves one-shot FUSE create with only scoped Haloo
   assert.doesNotMatch(sandbox, /ensureClaudeProvider|ensureGatewayProvider/);
   assert.match(
     sandbox,
-    /buildFuseWslEnv\(\{ ANTHROPIC_API_KEY: clientToken \}\)/,
+    /buildFuseWslEnv\(\{[\s\S]*?ANTHROPIC_API_KEY: clientToken[\s\S]*?\}\)/,
   );
   assert.match(
     sandbox,
     /"--credential", "ANTHROPIC_API_KEY"/,
   );
-  assert.doesNotMatch(
+  assert.match(
     sandbox,
-    /buildFuseWslEnv\(\{ HALOOP_CLIENT_TOKEN: clientToken \}\)/,
+    /buildFuseWslEnv\(\{[\s\S]*?HALOOP_CLIENT_TOKEN: clientToken[\s\S]*?\}\)/,
   );
 });
 
