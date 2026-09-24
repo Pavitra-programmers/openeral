@@ -131,6 +131,23 @@ function resolveBunCommand() {
   return "bun";
 }
 
+function spawnBun(bunCmd, args, options = {}) {
+  const isCmdOrBat =
+    process.platform === "win32" &&
+    (bunCmd.toLowerCase().endsWith(".cmd") || bunCmd.toLowerCase().endsWith(".bat"));
+  if (isCmdOrBat) {
+    const comspec = process.env.ComSpec || "cmd.exe";
+    return spawnSync(comspec, ["/d", "/s", "/c", bunCmd, ...args], {
+      ...options,
+      shell: false,
+    });
+  }
+  return spawnSync(bunCmd, args, {
+    ...options,
+    shell: false,
+  });
+}
+
 const spawnShell = false;
 const opencodeBaseName = isWindowsTarget ? "opencode.exe" : "opencode";
 const opencodePath = join(sidecarDir, opencodeBaseName);
@@ -354,11 +371,9 @@ if (shouldBuildOpenrindDesktopServer) {
   if (bunTarget) {
     openrindDesktopServerArgs.push("--target", bunTarget);
   }
-  const isWin = process.platform === "win32";
-  const buildResult = spawnSync(resolveBunCommand(), openrindDesktopServerArgs, {
+  const buildResult = spawnBun(resolveBunCommand(), openrindDesktopServerArgs, {
     cwd: openrindDesktopServerDir,
     stdio: "inherit",
-    shell: isWin,
   });
 
   if (buildResult.status !== 0) {
@@ -536,11 +551,9 @@ if (shouldBuildOrchestrator) {
   if (bunTarget) {
     orchestratorArgs.push("--target", bunTarget);
   }
-  const isWin = process.platform === "win32";
-  const result = spawnSync(resolveBunCommand(), orchestratorArgs, {
+  const result = spawnBun(resolveBunCommand(), orchestratorArgs, {
     cwd: orchestratorDir,
     stdio: "inherit",
-    shell: isWin,
     env: {
       ...process.env,
       NODE_ENV: "production",
@@ -602,11 +615,9 @@ if (shouldBuildChromeDevtools) {
     chromeDevtoolsArgs.push("--target", bunTarget);
   }
 
-  const isWin = process.platform === "win32";
-  const result = spawnSync(resolveBunCommand(), chromeDevtoolsArgs, {
+  const result = spawnBun(resolveBunCommand(), chromeDevtoolsArgs, {
     cwd: __dirname,
     stdio: "inherit",
-    shell: isWin,
     env: {
       ...process.env,
       NODE_ENV: "production",

@@ -102,8 +102,12 @@ async function verifyImage(image, labelName, expectedContract, includeVersion = 
 }
 
 async function resolveLatestClaudeCodeVersion() {
-  if (process.env.CLAUDE_CODE_VERSION?.trim()) {
-    return process.env.CLAUDE_CODE_VERSION.trim();
+  const envVersion = process.env.CLAUDE_CODE_VERSION?.trim();
+  if (envVersion) {
+    if (!/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(envVersion)) {
+      fail(`CLAUDE_CODE_VERSION ${JSON.stringify(envVersion)} is not a valid semantic version.`);
+    }
+    return envVersion;
   }
   try {
     const result = await requireSuccess(
@@ -125,6 +129,7 @@ async function resolveLatestClaudeCodeVersion() {
     if (/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(version)) {
       return version;
     }
+    fail(`npm returned an invalid Claude Code version ${JSON.stringify(version)}.`);
   } catch (err) {
     console.warn(`[runtime-images] Note: Could not resolve latest Claude Code via npm in container, falling back to 2.1.280 (${err.message}).`);
   }

@@ -19,6 +19,12 @@ AGENTS.md
 !.claude/skills/excel-report/
 !.claude/skills/excel-report/**
 
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
 # Node
 node_modules/
 .pnpm-store/

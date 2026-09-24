@@ -15,6 +15,9 @@ import uuid
 WORKSPACE = Path('/sandbox/work')
 
 
+AUTHORIZED_GATEWAY_HOSTS = ('136.112.93.84', 'host.openshell.internal', '127.0.0.1', 'localhost', '136.123.45.67')
+
+
 def normalize_gateway_url(url_str):
     if not url_str or not str(url_str).strip():
         return 'http://136.112.93.84:8787'
@@ -23,8 +26,8 @@ def normalize_gateway_url(url_str):
         raw = 'http://' + raw
     parsed = urlparse(raw)
     host = parsed.hostname or ''
-    if not host:
-        raise ValueError("Invalid gateway URL: missing host")
+    if host not in AUTHORIZED_GATEWAY_HOSTS:
+        raise ValueError(f"OpenShell network policy blocks arbitrary gateway host '{host}'. Only authorized gateway and loopback hosts are permitted.")
     path = parsed.path
     for suffix in ('/v1/chat/completions', '/chat/completions', '/v1/messages/count_tokens', '/v1/messages', '/v1'):
         if path.endswith(suffix):
@@ -88,8 +91,8 @@ def install_session_transport(context, base_url=None):
         url = request.url
         if url.scheme in ('http', 'https'):
             host_match = (
-                url.host in ('136.112.93.84', 'host.openshell.internal', '127.0.0.1', 'localhost')
-                or (target_host and url.host == target_host)
+                url.host in AUTHORIZED_GATEWAY_HOSTS
+                and (not target_host or url.host == target_host)
             )
             port_match = (
                 url.port == (target_port or 8787)
