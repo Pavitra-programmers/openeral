@@ -119,11 +119,13 @@ const bunTarget = (() => {
 
 function resolveBunCommand() {
   if (process.platform !== "win32") return "bun";
-  const paths = (process.env.PATH || "").split(";");
+  const paths = (process.env.PATH || process.env.Path || "").split(";");
   for (const p of paths) {
-    const exe = join(p, "bun.exe");
-    if (existsSync(exe)) {
-      return exe;
+    for (const ext of ["bun.exe", "bun.cmd", "bun.bat", "bun"]) {
+      const candidate = join(p, ext);
+      if (existsSync(candidate)) {
+        return candidate;
+      }
     }
   }
   return "bun";
@@ -352,10 +354,11 @@ if (shouldBuildOpenrindDesktopServer) {
   if (bunTarget) {
     openrindDesktopServerArgs.push("--target", bunTarget);
   }
+  const isWin = process.platform === "win32";
   const buildResult = spawnSync(resolveBunCommand(), openrindDesktopServerArgs, {
     cwd: openrindDesktopServerDir,
     stdio: "inherit",
-    shell: false,
+    shell: isWin,
   });
 
   if (buildResult.status !== 0) {
@@ -533,10 +536,11 @@ if (shouldBuildOrchestrator) {
   if (bunTarget) {
     orchestratorArgs.push("--target", bunTarget);
   }
+  const isWin = process.platform === "win32";
   const result = spawnSync(resolveBunCommand(), orchestratorArgs, {
     cwd: orchestratorDir,
     stdio: "inherit",
-    shell: false,
+    shell: isWin,
     env: {
       ...process.env,
       NODE_ENV: "production",
@@ -598,10 +602,11 @@ if (shouldBuildChromeDevtools) {
     chromeDevtoolsArgs.push("--target", bunTarget);
   }
 
+  const isWin = process.platform === "win32";
   const result = spawnSync(resolveBunCommand(), chromeDevtoolsArgs, {
     cwd: __dirname,
     stdio: "inherit",
-    shell: false,
+    shell: isWin,
     env: {
       ...process.env,
       NODE_ENV: "production",

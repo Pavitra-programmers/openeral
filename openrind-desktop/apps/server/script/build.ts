@@ -93,11 +93,13 @@ function outputName(filename: string, target?: string) {
 
 function resolveBunCommand() {
   if (process.platform !== "win32") return "bun";
-  const paths = (process.env.PATH || "").split(";");
+  const paths = (process.env.PATH || process.env.Path || "").split(";");
   for (const p of paths) {
-    const exe = join(p, "bun.exe");
-    if (existsSync(exe)) {
-      return exe;
+    for (const ext of ["bun.exe", "bun.cmd", "bun.bat", "bun"]) {
+      const candidate = join(p, ext);
+      if (existsSync(candidate)) {
+        return candidate;
+      }
     }
   }
   return "bun";
@@ -113,7 +115,8 @@ async function buildOnce(entrypoint: string, outdir: string, filename: string, t
     args.push("--target", target);
   }
 
-  const result = spawnSync(resolveBunCommand(), args, { stdio: "inherit", shell: false });
+  const isWin = process.platform === "win32";
+  const result = spawnSync(resolveBunCommand(), args, { stdio: "inherit", shell: isWin });
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
   }

@@ -102,26 +102,33 @@ async function verifyImage(image, labelName, expectedContract, includeVersion = 
 }
 
 async function resolveLatestClaudeCodeVersion() {
-  const result = await requireSuccess(
-    [
-      "docker",
-      "run",
-      "--rm",
-      "--entrypoint",
-      "npm",
-      OPENSHELL_BASE_IMAGE,
-      "view",
-      `${CLAUDE_CODE_PACKAGE}@latest`,
-      "version",
-    ],
-    "Resolving the latest Claude Code version",
-    { capture: true },
-  );
-  const version = result.stdout.trim();
-  if (!/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(version)) {
-    fail(`npm returned an invalid Claude Code version ${JSON.stringify(version)}.`);
+  if (process.env.CLAUDE_CODE_VERSION?.trim()) {
+    return process.env.CLAUDE_CODE_VERSION.trim();
   }
-  return version;
+  try {
+    const result = await requireSuccess(
+      [
+        "docker",
+        "run",
+        "--rm",
+        "--entrypoint",
+        "npm",
+        OPENSHELL_BASE_IMAGE,
+        "view",
+        `${CLAUDE_CODE_PACKAGE}@latest`,
+        "version",
+      ],
+      "Resolving the latest Claude Code version",
+      { capture: true },
+    );
+    const version = result.stdout.trim();
+    if (/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(version)) {
+      return version;
+    }
+  } catch (err) {
+    console.warn(`[runtime-images] Note: Could not resolve latest Claude Code via npm in container, falling back to 2.1.280 (${err.message}).`);
+  }
+  return "2.1.280";
 }
 
 const flags = new Set(process.argv.slice(2));
