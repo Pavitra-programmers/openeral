@@ -38,7 +38,7 @@ Three nouns, kept strictly distinct:
 | Noun | What it is | Who creates it | Shape |
 |---|---|---|---|
 | **ConnectorType** | The adapter class itself (e.g., "github", "bitbucket", "npm", "local"). Code in our server. | Us — v1 is in-house. v2 could accept plugin-authored adapters. | Code |
-| **Integration** | An org's authorized grant to one ConnectorType + their selected sources (e.g., "GitHub account `different-ai`, 3 repos"). Persisted, scoped to an org. | End user via OAuth flow. | DB row |
+| **Integration** | An org's authorized grant to one ConnectorType + their selected sources (e.g., "GitHub account `openrind`, 3 repos"). Persisted, scoped to an org. | End user via OAuth flow. | DB row |
 | **Bundle** ("plugin" in UI copy) | A curated collection of primitives (skills, agents, commands, MCPs, code hooks) that can be installed as a unit. | Either: imported from a connector source (e.g., `.claude-plugin/marketplace.json` in a repo), or authored directly in the app. | DB row + BundleMembers |
 
 The UI already shipped on `/integrations` (PRs #1472, #1475) drives ConnectorType + Integration. The `/plugins` UI (PR #1472) will drive Bundle browsing/detail. **A new page is needed for workspace installation** (Phase 4 below).
