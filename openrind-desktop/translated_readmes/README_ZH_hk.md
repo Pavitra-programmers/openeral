@@ -31,7 +31,7 @@ Openrind Desktop 圍繞一個核心理念設計：讓您可以輕鬆地將智能
 
 ## 快速開始
 
-從 [openrind-desktoplabs.com/download](https://openrind-desktoplabs.com/download) 下載桌面應用，獲取最新的 [GitHub 發布版本](https://github.com/openrind/openrind-desktop/releases)，或按照下面的說明從原始碼安裝。
+從 [openrind-desktoplabs.com/download](https://openrind-desktoplabs.com/download) 下載桌面應用，獲取最新的 [GitHub 發布版本](https://github.com/openrind/openrind-shell/releases)，或按照下面的說明從原始碼安裝。
 
 - macOS 和 Linux 下載可直接使用。
 - Windows 訪問目前通過 [openrind-desktoplabs.com/pricing#windows-support](https://openrind-desktoplabs.com/pricing#windows-support) 上的付費支援計劃處理。

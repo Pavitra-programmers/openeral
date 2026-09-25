@@ -26,7 +26,7 @@ Openrind Desktopは、エージェントワークフローを再現可能なプ�
 
 ## クイックスタート
 
-デスクトップアプリを[openrind-desktoplabs.com/download](https://openrind-desktoplabs.com/download)からダウンロードするか、最新の[GitHubリリース](https://github.com/openrind/openrind-desktop/releases)を取得するか、以下の手順でソースからインストールしてください。
+デスクトップアプリを[openrind-desktoplabs.com/download](https://openrind-desktoplabs.com/download)からダウンロードするか、最新の[GitHubリリース](https://github.com/openrind/openrind-shell/releases)を取得するか、以下の手順でソースからインストールしてください。
 
 - macOSおよびLinux向けのダウンロードが直接利用可能です。
 - Windowsへのアクセスは現在、[openrind-desktoplabs.com/pricing#windows-support](https://openrind-desktoplabs.com/pricing#windows-support)の有料サポートプランで提供されています。

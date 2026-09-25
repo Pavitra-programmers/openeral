@@ -75,9 +75,9 @@ function isVersionGreater(a, b) {
 }
 
 const ELECTRON_UPDATER_FEEDS = Object.freeze({
-  stable: "https://github.com/openrind/openrind-desktop/releases/latest/download",
+  stable: "https://github.com/openrind/openrind-shell/releases/latest/download",
   alpha:
-    "https://github.com/openrind/openrind-desktop/releases/download/alpha-macos-latest",
+    "https://github.com/openrind/openrind-shell/releases/download/alpha-macos-latest",
 });
 
 function normalizeElectronUpdaterChannel(value) {

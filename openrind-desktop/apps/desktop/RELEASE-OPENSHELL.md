@@ -131,7 +131,7 @@ Existing `electron-builder.yml` config (unchanged by this integration):
 publish:
   - provider: github
     owner: openrind
-    repo: openrind-desktop
+    repo: openrind-shell
     releaseType: release
 ```
 

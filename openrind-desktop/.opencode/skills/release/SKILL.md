@@ -40,7 +40,7 @@ git push origin vX.Y.Z
 If a tag needs a rerun, dispatch the workflow.
 
 ```bash
-gh workflow run "Release App" --repo openrind/openrind-desktop -f tag=vX.Y.Z
+gh workflow run "Release App" --repo openrind/openrind-shell -f tag=vX.Y.Z
 ```
 
 ---
@@ -49,6 +49,6 @@ gh workflow run "Release App" --repo openrind/openrind-desktop -f tag=vX.Y.Z
 Confirm the run and the published release.
 
 ```bash
-gh run list --repo openrind/openrind-desktop --workflow "Release App" --limit 5
-gh release view vX.Y.Z --repo openrind/openrind-desktop
+gh run list --repo openrind/openrind-shell --workflow "Release App" --limit 5
+gh release view vX.Y.Z --repo openrind/openrind-shell
 ```

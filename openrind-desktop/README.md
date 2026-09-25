@@ -27,7 +27,7 @@ Openrind Desktop is designed around the idea that you can easily ship your agent
 
 ## Quick start
 
-Download the desktop app from [openrind-desktoplabs.com/download](https://openrind-desktoplabs.com/download), grab the latest [GitHub release](https://github.com/openrind/openrind-desktop/releases), or install from source below.
+Download the desktop app from [openrind-desktoplabs.com/download](https://openrind-desktoplabs.com/download), grab the latest [GitHub release](https://github.com/openrind/openrind-shell/releases), or install from source below.
 
 - macOS and Linux downloads are available directly.
 - Windows access is currently handled through the paid support plan on [openrind-desktoplabs.com/pricing#windows-support](https://openrind-desktoplabs.com/pricing#windows-support).

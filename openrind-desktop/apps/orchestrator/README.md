@@ -34,7 +34,7 @@ Use `--sidecar-source` to control where `openrind-desktop-server` and `opencode-
 apply the same policies via env vars.
 
 By default the manifest is fetched from
-`https://github.com/openrind/openrind-desktop/releases/download/openrind-desktop-orchestrator-v<version>/openrind-desktop-orchestrator-sidecars.json`.
+`https://github.com/openrind/openrind-shell/releases/download/openrind-desktop-orchestrator-v<version>/openrind-desktop-orchestrator-sidecars.json`.
 
 OpenCode Router is optional. If it exits, `openrind-desktop` continues running unless you pass
 `--opencode-router-required` or set `OPENRIND_DESKTOP_OPENCODE_ROUTER_REQUIRED=1`.
