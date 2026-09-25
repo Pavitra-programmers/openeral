@@ -130,7 +130,7 @@ Existing `electron-builder.yml` config (unchanged by this integration):
 ```yaml
 publish:
   - provider: github
-    owner: different-ai
+    owner: openrind
     repo: openrind-desktop
     releaseType: release
 ```

@@ -43,7 +43,7 @@ Contents written today:
 ## Tauri updater today
 
 - `apps/desktop/src-tauri/tauri.conf.json` →
-  `endpoints: ["https://github.com/different-ai/openwork/releases/latest/download/latest.json"]`
+  `endpoints: ["https://github.com/openrind/openrind-desktop/releases/latest/download/latest.json"]`
 - minisign signature required (pubkey baked into config)
 - installs a DMG/zip in place
 

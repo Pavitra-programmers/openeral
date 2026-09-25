@@ -396,7 +396,7 @@ export function SkillsView(props: SkillsViewProps) {
   );
 
   const hasDefaultHubRepo = useMemo(
-    () => hubRepos.some((repo) => `${repo.owner}/${repo.repo}@${repo.ref}` === "different-ai/openwork-hub@main"),
+    () => hubRepos.some((repo) => `${repo.owner}/${repo.repo}@${repo.ref}` === "different-ai/openrind-desktop-hub@main"),
     [hubRepos],
   );
 
