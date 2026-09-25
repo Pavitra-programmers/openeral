@@ -13,7 +13,7 @@
 - 樂於分享：在 localhost 上單獨開始，需要時顯式選擇加入遠端共享。
 
 <p align="center">
-  <img src="../app-demo.gif" alt="Openrind Desktop 演示" width="800" />
+  <img src="../docs/images/claude.gif" alt="Openrind Desktop Claude Code 演示" width="800" />
 </p>
 
 Openrind Desktop 圍繞一個核心理念設計：讓您可以輕鬆地將智能體工作流程作為可重複的、產品化的流程交付給您的團隊。
@@ -62,13 +62,21 @@ Openrind Desktop 的設計目標是：
   - 列出已安裝的 `.opencode/skills` 資料夾
   - 將本地技能資料夾導入到 `.opencode/skills/<skill-name>`
 
-## 技能管理器
+## OpenHands 與 OpenClaw 智能體沙箱
 
-<img width="1292" height="932" alt="image" src="https://github.com/user-attachments/assets/b500c1c6-a218-42ce-8a11-52787f5642b6" />
+<p align="center">
+  <img src="../docs/images/openhand.png" alt="Openrind Desktop OpenHands 支援" width="800" />
+</p>
 
-## 適用於本地電腦或伺服器
+<p align="center">
+  <img src="../docs/images/openclaw.png" alt="Openrind Desktop OpenClaw 支援" width="800" />
+</p>
 
-<img width="1292" height="932" alt="Screenshot 2026-01-13 at 7 05 16 PM" src="https://github.com/user-attachments/assets/9c864390-de69-48f2-82c1-93b328dd60c3" />
+## 沙箱與工作區設定
+
+<p align="center">
+  <img src="../docs/images/settings-sandbox.png" alt="Openrind Desktop 沙箱設定" width="800" />
+</p>
 
 ## 快速開始（開發者）
 

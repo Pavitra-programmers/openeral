@@ -9,7 +9,7 @@
 - Sharing is caring: start solo on localhost, then explicitly opt into remote sharing when you need it.
 
 <p align="center">
-  <img src="./app-demo.gif" alt="Openrind Desktop demo" width="800" />
+  <img src="./docs/images/claude.gif" alt="Openrind Desktop Claude Code demo" width="800" />
 </p>
 
 Openrind Desktop is designed around the idea that you can easily ship your agentic workflows for your team as a repeatable, productized process.
@@ -58,13 +58,21 @@ Openrind Desktop is designed to be:
   - list installed `.opencode/skills` folders
   - import a local skill folder into `.opencode/skills/<skill-name>`
 
-## Skill Manager
+## OpenHands & OpenClaw Agent Sandboxes
 
-<img width="1292" height="932" alt="image" src="https://github.com/user-attachments/assets/b500c1c6-a218-42ce-8a11-52787f5642b6" />
+<p align="center">
+  <img src="./docs/images/openhand.png" alt="Openrind Desktop OpenHands support" width="800" />
+</p>
 
-## Works on local computer or servers
+<p align="center">
+  <img src="./docs/images/openclaw.png" alt="Openrind Desktop OpenClaw support" width="800" />
+</p>
 
-<img width="1292" height="932" alt="Screenshot 2026-01-13 at 7 05 16 PM" src="https://github.com/user-attachments/assets/9c864390-de69-48f2-82c1-93b328dd60c3" />
+## Sandbox & Workspace Settings
+
+<p align="center">
+  <img src="./docs/images/settings-sandbox.png" alt="Openrind Desktop Sandbox Settings" width="800" />
+</p>
 
 ## Quick Start
 
