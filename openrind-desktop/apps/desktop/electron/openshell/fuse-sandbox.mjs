@@ -734,11 +734,6 @@ async function provisionOpenrindShellSandbox(options) {
     "--env",
     `OPENRIND_SHELL_OPENHANDS_MODE=${agent.mode || "cli"}`,
   );
-  if (process.env.OPENROUTER_API_KEY) {
-    sandboxArgs.push("--env", `OPENROUTER_API_KEY=${process.env.OPENROUTER_API_KEY.trim()}`);
-  }
-  const adminToken = (process.env.ADMIN_TOKEN || process.env.W8_BYOH_ADMIN_TOKEN || "w8-catalog-simulation-admin").trim();
-  sandboxArgs.push("--env", `ADMIN_TOKEN=${adminToken}`);
   if (haloop.endpoint) {
     try {
       const parsedUrl = new URL(haloop.endpoint);
