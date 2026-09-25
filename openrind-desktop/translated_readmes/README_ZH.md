@@ -16,10 +16,9 @@ Openrind Desktop 是 opencode 的最简单界面。双击，选择一个文件�
 它是 "Claude Work" 的**可扩展开源替代品**。
 
 
-<img width="1292" height="932" alt="Screenshot 2026-01-31 at 16 22 39" src="https://github.com/user-attachments/assets/5742be91-9cfb-4212-b32d-cf2a27b1c093" />
-
-
-<img width="1292" height="932" alt="Screenshot 2026-01-31 at 13 43 30" src="https://github.com/user-attachments/assets/6639d1ef-c831-406e-a812-87fde403e6d5" />
+<p align="center">
+  <img src="../app-demo.gif" alt="Openrind Desktop 演示" width="800" />
+</p>
 
 
 Openrind Desktop 围绕一个核心理念设计：让您可以轻松地将智能体工作流程作为可重复的、产品化的流程进行交付。
@@ -35,16 +34,14 @@ Openrind Desktop 围绕一个核心理念设计：让您可以轻松地将智能
 
 ## 其他界面
 
-- **Owpenbot (WhatsApp 机器人)**：为运行中的 OpenCode 服务器提供的轻量级 WhatsApp 桥接器。安装方法：
-  - `curl -fsSL https://raw.githubusercontent.com/different-ai/owpenbot/dev/install.sh | bash`
-  - 运行 `owpenbot setup`，然后 `owpenbot whatsapp login`，接着 `owpenbot start`
-  - 完整设置：https://github.com/different-ai/owpenbot/blob/dev/README.md
-- **Openwrk (CLI 主机)**：无需桌面 UI 即可运行 OpenCode + Openrind Desktop 服务器。使用 `npm install -g openwrk` 安装。
+- **Openrind Desktop Orchestrator（CLI 主机）**：无需桌面 UI 即可运行 OpenCode + Openrind Desktop 服务器。
+  - 安装：`npm install -g openrind-desktop-orchestrator`
+  - 运行：`openrind-desktop start --workspace /path/to/workspace --approval auto`
   - 文档：[apps/orchestrator/README.md](../apps/orchestrator/README.md)
 
 
 ## 快速开始
-在此处下载 dmg：https://github.com/different-ai/openwork/releases（或按照下面的说明从源代码安装）
+在此处下载安装包：https://github.com/openrind/openrind-shell/releases（或按照下面的说明从源代码安装）
 
 ## 为什么选择 Openrind Desktop
 
@@ -192,7 +189,11 @@ WEBKIT_DISABLE_COMPOSITING_MODE=1 openrind-desktop
 
 ## 面向团队和企业
 
-有兴趣在您的组织中使用 Openrind Desktop？我们很乐意听取您的意见 — 请发送邮件至 [benjamin.shafii@gmail.com](mailto:benjamin.shafii@gmail.com) 与我们讨论您的用例。
+有兴趣在您的组织中使用 Openrind Desktop？我们很乐意听取您的意见 — 请发送邮件至 [ben@openrindlabs.com](mailto:ben@openrindlabs.com) 与我们讨论您的用例。
+
+## 致谢与鸣谢
+
+Openrind Desktop 基于并借鉴了 [Different AI](https://github.com/different-ai) 的开源项目 [Openwork](https://github.com/different-ai/openwork)。我们对 Openwork 原作者和社区贡献者建立的开源基石表示诚挚的感谢与致敬。
 
 ## 许可证
 

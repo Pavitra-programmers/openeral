@@ -1899,7 +1899,7 @@ function resolveSidecarBaseUrl(
     readFlag(flags, "sidecar-base-url") ??
     process.env.OPENRIND_DESKTOP_SIDECAR_BASE_URL;
   if (override && override.trim()) return override.trim();
-  return `https://github.com/different-ai/openwork/releases/download/openrind-desktop-orchestrator-v${cliVersion}`;
+  return `https://github.com/openrind/openrind-shell/releases/download/openrind-desktop-orchestrator-v${cliVersion}`;
 }
 
 function resolveSidecarManifestUrl(
