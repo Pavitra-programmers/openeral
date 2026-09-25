@@ -65,28 +65,10 @@ def install_session_transport(context, base_url=None):
     target_host = parsed_base.hostname
     target_port = parsed_base.port
 
-    # Context format: v1.<conversation_id_32hex>.<issued>.<expires>.<signature>
-    match = CONTEXT_RE.match(context)
-    if match:
-        parts = context.split('.')
-        context_id = parts[1] if len(parts) > 1 and len(parts[1]) == 32 else hashlib.sha256(context.encode()).hexdigest()[:32]
-    else:
-        context_id = hashlib.sha256(context.encode()).hexdigest()[:32]
-
-    trace_id = context_id
-    session_id = f"openhands:{context_id}"
-
-    openrouter_key = (
-        os.environ.get('OPENROUTER_API_KEY')
-        or os.environ.get('OPENAI_API_KEY')
-        or ''
-    )
-
     def scoped(request):
         request.headers.pop('x-openrind-haloop-session', None)
         request.headers.pop('x-w8-haloop-provider', None)
-        request.headers.pop('x-w8-haloop-metadata', None)
-        request.headers.pop('x-w8-haloop-config', None)
+        request.headers.pop('x-w8-haloop-admin-token', None)
         request.headers.pop('x-w8-haloop-api-key', None)
         url = request.url
         if url.scheme in ('http', 'https'):
@@ -101,27 +83,27 @@ def install_session_transport(context, base_url=None):
             path_match = url.path in ('/v1/messages', '/v1/messages/count_tokens', '/v1/chat/completions', '/chat/completions')
             if host_match and port_match and path_match:
                 request.headers['x-openrind-haloop-session'] = context
+                credential = (
+                    os.environ.get('ANTHROPIC_API_KEY')
+                    or os.environ.get('OPENAI_API_KEY')
+                    or os.environ.get('LLM_API_KEY')
+                    or ''
+                )
+                openrouter_key = os.environ.get('OPENROUTER_API_KEY') or ''
+                admin_token = (
+                    os.environ.get('ADMIN_TOKEN')
+                    or os.environ.get('W8_BYOH_ADMIN_TOKEN')
+                    or 'w8-catalog-simulation-admin'
+                )
                 provider = os.environ.get('W8_HALOOP_PROVIDER') or os.environ.get('OPENRIND_GATEWAY_PROVIDER') or 'openrouter'
                 request.headers['x-w8-haloop-provider'] = provider
-                project = os.environ.get('W8_PROJECT') or os.environ.get('OPENRIND_SHELL_PROJECT') or os.environ.get('OPENRIND_SHELL_WORKSPACE_ID') or 'applied'
+                request.headers['x-w8-haloop-admin-token'] = admin_token
                 
-                request_id = uuid.uuid4().hex
-                metadata = {
-                    "project": project,
-                    "trace_id": trace_id,
-                    "session_id": session_id,
-                    "request_id": request_id,
-                }
-                request.headers['x-w8-haloop-metadata'] = json.dumps(metadata)
-                
-                collector_url = os.environ.get('W8_COLLECTOR_URL') or os.environ.get('COLLECTOR_HOST') or "http://136.112.93.84:8788"
-                haloop_config = {
-                    "input_guardrails": [{"halo.mark": {"collectorURL": collector_url}, "async": False, "deny": False}],
-                    "output_guardrails": [{"halo.export": {"collectorURL": collector_url, "defaultProject": project}, "async": False, "deny": False}],
-                }
-                request.headers['x-w8-haloop-config'] = json.dumps(haloop_config)
-                request.headers['authorization'] = f"Bearer {openrouter_key}"
-                request.headers['x-w8-haloop-api-key'] = openrouter_key
+                auth_key = openrouter_key or credential
+                if auth_key:
+                    request.headers['authorization'] = f"Bearer {auth_key}"
+                    request.headers['x-api-key'] = auth_key
+                    request.headers['x-w8-haloop-api-key'] = auth_key
                 return True
         return False
 
@@ -152,18 +134,16 @@ def main():
     if not credential.startswith('openshell:resolve:env:'):
         raise ValueError('The OpenShell Haloop provider credential is missing. Reconnect from Desktop.')
     base = normalize_gateway_url(os.environ.get('HALOOP_GATEWAY_URL') or os.environ.get('LLM_BASE_URL') or BASE_URL)
-    base = normalize_gateway_url(os.environ.get('HALOOP_GATEWAY_URL') or os.environ.get('LLM_BASE_URL') or 'http://136.112.93.84:8787')
     openai_base = f"{base}/v1" if not base.endswith('/v1') else base
     model = os.environ.get('OPENRIND_SHELL_OPENHANDS_MODEL') or os.environ.get('LLM_MODEL') or 'openai/inclusionai/ling-3.0-flash-sante:free'
-    openrouter_key = os.environ.get('OPENROUTER_API_KEY') or credential
     os.chdir(WORKSPACE)
     os.environ.update({
         'HOME': '/sandbox/openhands-home',
         'LLM_MODEL': model,
         'LLM_BASE_URL': openai_base,
-        'LLM_API_KEY': openrouter_key,
-        'OPENAI_API_KEY': openrouter_key,
-        'OPENROUTER_API_KEY': openrouter_key,
+        'LLM_API_KEY': credential,
+        'OPENAI_API_KEY': credential,
+        'OPENROUTER_API_KEY': credential,
         'ANTHROPIC_API_KEY': credential,
         'ANTHROPIC_BASE_URL': base,
         'ANTHROPIC_API_BASE': base,

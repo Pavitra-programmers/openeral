@@ -17,7 +17,7 @@ Openrind Desktop 是 opencode 的最简单界面。双击，选择一个文件�
 
 
 <p align="center">
-  <img src="../app-demo.gif" alt="Openrind Desktop 演示" width="800" />
+  <img src="../docs/images/claude.gif" alt="Openrind Desktop Claude Code 演示" width="800" />
 </p>
 
 
@@ -67,12 +67,21 @@ Openrind Desktop 的设计目标是：
   - 将本地技能文件夹导入到 `.opencode/skills/<skill-name>`
  
 
-## 技能管理器    
-<img width="1292" height="932" alt="image" src="https://github.com/user-attachments/assets/b500c1c6-a218-42ce-8a11-52787f5642b6" />
+## OpenHands 与 OpenClaw 智能体沙箱
 
+<p align="center">
+  <img src="../docs/images/openhand.png" alt="Openrind Desktop OpenHands 支持" width="800" />
+</p>
 
-## 适用于本地计算机或服务器
-<img width="1292" height="932" alt="Screenshot 2026-01-13 at 7 05 16 PM" src="https://github.com/user-attachments/assets/9c864390-de69-48f2-82c1-93b328dd60c3" />
+<p align="center">
+  <img src="../docs/images/openclaw.png" alt="Openrind Desktop OpenClaw 支持" width="800" />
+</p>
+
+## 沙箱与工作区设置
+
+<p align="center">
+  <img src="../docs/images/settings-sandbox.png" alt="Openrind Desktop 沙箱设置" width="800" />
+</p>
 
 
 ## 快速开始

@@ -37,7 +37,7 @@ test("authentication probe checks the configured inference edge and rejects an u
   await assert.rejects(__testing.requireAuthenticatedEdge(async (args) => {
     calls++;
     assert.ok(args.at(-1).includes(`fetch(${JSON.stringify(endpoint.href)},`));
-    assert.match(args.at(-1), /r\.status!==401 && r\.status!==403/);
+    assert.match(args.at(-1), /r\.status!==400 && r\.status!==401 && r\.status!==403/);
     return { exitCode: 1, stdout: "", stderr: "unexpected status 200" };
   }), /Configure Desktop scoped client profiles/);
   assert.equal(calls, 1);

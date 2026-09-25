@@ -25,8 +25,17 @@ if not defined VSDEVCMD (
 call "%VSDEVCMD%" -arch=%VS_ARCH% -host_arch=%HOST_ARCH% >nul
 if errorlevel 1 exit /b %errorlevel%
 
-if /I "%TARGET_ARCH%"=="x64" (
-  call corepack pnpm@10.27.0 --filter @openrind/desktop dev:windows:x64
+where pnpm >nul 2>nul
+if %errorlevel% equ 0 (
+  if /I "%TARGET_ARCH%"=="x64" (
+    call pnpm --filter @openrind/desktop dev:windows:x64
+  ) else (
+    call pnpm --filter @openrind/desktop dev:windows
+  )
 ) else (
-  call corepack pnpm@10.27.0 --filter @openrind/desktop dev:windows
+  if /I "%TARGET_ARCH%"=="x64" (
+    call corepack pnpm@10.27.0 --filter @openrind/desktop dev:windows:x64
+  ) else (
+    call corepack pnpm@10.27.0 --filter @openrind/desktop dev:windows
+  )
 )
