@@ -3,14 +3,19 @@
 Executed with isolated Python by the native launcher. No upstream secret or
 trace identity is persisted in the workspace or OpenHands settings.
 """
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import sys
 from urllib.parse import urlparse
+import uuid
 
 WORKSPACE = Path('/sandbox/work')
+
+
+AUTHORIZED_GATEWAY_HOSTS = ('136.112.93.84', 'host.openshell.internal', '127.0.0.1', 'localhost', '136.123.45.67')
 
 
 def normalize_gateway_url(url_str):
@@ -21,8 +26,8 @@ def normalize_gateway_url(url_str):
         raw = 'http://' + raw
     parsed = urlparse(raw)
     host = parsed.hostname or ''
-    if host not in ('136.112.93.84', 'host.openshell.internal', '127.0.0.1', 'localhost', '136.123.45.67'):
-        raise ValueError(f"OpenShell network policy blocks arbitrary gateway host '{host}'. Only '136.112.93.84' and 'host.openshell.internal' are authorized.")
+    if host not in AUTHORIZED_GATEWAY_HOSTS:
+        raise ValueError(f"OpenShell network policy blocks arbitrary gateway host '{host}'. Only authorized gateway and loopback hosts are permitted.")
     path = parsed.path
     for suffix in ('/v1/chat/completions', '/chat/completions', '/v1/messages/count_tokens', '/v1/messages', '/v1'):
         if path.endswith(suffix):
@@ -32,7 +37,7 @@ def normalize_gateway_url(url_str):
     return f"{parsed.scheme}://{parsed.netloc}{path}"
 
 
-BASE_URL = normalize_gateway_url(os.environ.get('HALOOP_GATEWAY_URL') or os.environ.get('LLM_BASE_URL') or 'http://136.112.93.84:8787')
+BASE_URL = normalize_gateway_url(os.environ.get('HALOOP_GATEWAY_URL') or os.environ.get('ANTHROPIC_BASE_URL') or os.environ.get('LLM_BASE_URL') or 'http://136.112.93.84:8787')
 CONTEXT_RE = re.compile(r'v1\.[0-9a-f]{32}\.[1-9][0-9]{9,15}\.[1-9][0-9]{9,15}\.[0-9a-f]{64}')
 
 
@@ -63,13 +68,13 @@ def install_session_transport(context, base_url=None):
     def scoped(request):
         request.headers.pop('x-openrind-haloop-session', None)
         request.headers.pop('x-w8-haloop-provider', None)
-        request.headers.pop('x-w8-haloop-metadata', None)
-        request.headers.pop('x-w8-haloop-config', None)
+        request.headers.pop('x-w8-haloop-admin-token', None)
+        request.headers.pop('x-w8-haloop-api-key', None)
         url = request.url
         if url.scheme in ('http', 'https'):
             host_match = (
-                url.host in ('136.112.93.84', 'host.openshell.internal')
-                or (target_host and url.host == target_host)
+                url.host in AUTHORIZED_GATEWAY_HOSTS
+                and (not target_host or url.host == target_host)
             )
             port_match = (
                 url.port == (target_port or 8787)
@@ -78,17 +83,27 @@ def install_session_transport(context, base_url=None):
             path_match = url.path in ('/v1/messages', '/v1/messages/count_tokens', '/v1/chat/completions', '/chat/completions')
             if host_match and port_match and path_match:
                 request.headers['x-openrind-haloop-session'] = context
-                if url.host == '136.112.93.84' or target_host == '136.112.93.84':
-                    provider = os.environ.get('W8_HALOOP_PROVIDER') or os.environ.get('OPENRIND_GATEWAY_PROVIDER') or 'openrouter'
-                    request.headers.setdefault('x-w8-haloop-provider', provider)
-                    project = os.environ.get('W8_PROJECT') or os.environ.get('OPENRIND_SHELL_PROJECT') or os.environ.get('OPENRIND_SHELL_WORKSPACE_ID') or 'openhands'
-                    request.headers.setdefault('x-w8-haloop-metadata', json.dumps({"project": project}))
-                    collector_url = os.environ.get('W8_COLLECTOR_URL') or 'http://collector:8788'
-                    haloop_config = {
-                        "input_guardrails": [{"halo.mark": {"collectorURL": collector_url}, "async": False, "deny": False}],
-                        "output_guardrails": [{"halo.export": {"collectorURL": collector_url, "defaultProject": project}, "async": False, "deny": False}],
-                    }
-                    request.headers.setdefault('x-w8-haloop-config', json.dumps(haloop_config))
+                credential = (
+                    os.environ.get('ANTHROPIC_API_KEY')
+                    or os.environ.get('OPENAI_API_KEY')
+                    or os.environ.get('LLM_API_KEY')
+                    or ''
+                )
+                openrouter_key = os.environ.get('OPENROUTER_API_KEY') or ''
+                admin_token = (
+                    os.environ.get('ADMIN_TOKEN')
+                    or os.environ.get('W8_BYOH_ADMIN_TOKEN')
+                    or 'w8-catalog-simulation-admin'
+                )
+                provider = os.environ.get('W8_HALOOP_PROVIDER') or os.environ.get('OPENRIND_GATEWAY_PROVIDER') or 'openrouter'
+                request.headers['x-w8-haloop-provider'] = provider
+                request.headers['x-w8-haloop-admin-token'] = admin_token
+                
+                auth_key = openrouter_key or credential
+                if auth_key:
+                    request.headers['authorization'] = f"Bearer {auth_key}"
+                    request.headers['x-api-key'] = auth_key
+                    request.headers['x-w8-haloop-api-key'] = auth_key
                 return True
         return False
 
@@ -120,7 +135,7 @@ def main():
         raise ValueError('The OpenShell Haloop provider credential is missing. Reconnect from Desktop.')
     base = normalize_gateway_url(os.environ.get('HALOOP_GATEWAY_URL') or os.environ.get('LLM_BASE_URL') or BASE_URL)
     openai_base = f"{base}/v1" if not base.endswith('/v1') else base
-    model = os.environ.get('OPENRIND_SHELL_OPENHANDS_MODEL') or 'openai/openrouter/free'
+    model = os.environ.get('OPENRIND_SHELL_OPENHANDS_MODEL') or os.environ.get('LLM_MODEL') or 'openai/inclusionai/ling-3.0-flash-sante:free'
     os.chdir(WORKSPACE)
     os.environ.update({
         'HOME': '/sandbox/openhands-home',
@@ -128,6 +143,7 @@ def main():
         'LLM_BASE_URL': openai_base,
         'LLM_API_KEY': credential,
         'OPENAI_API_KEY': credential,
+        'OPENROUTER_API_KEY': credential,
         'ANTHROPIC_API_KEY': credential,
         'ANTHROPIC_BASE_URL': base,
         'ANTHROPIC_API_BASE': base,

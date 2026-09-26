@@ -16,10 +16,9 @@ Openrind Desktop 是 opencode 的最簡單介面。雙擊，選擇一個資料�
 它是 "Claude Work" 的**可擴展開源替代品**。
 
 
-<img width="1292" height="932" alt="Screenshot 2026-01-31 at 16 22 39" src="https://github.com/user-attachments/assets/5742be91-9cfb-4212-b32d-cf2a27b1c093" />
-
-
-<img width="1292" height="932" alt="Screenshot 2026-01-31 at 13 43 30" src="https://github.com/user-attachments/assets/6639d1ef-c831-406e-a812-87fde403e6d5" />
+<p align="center">
+  <img src="../docs/images/claude.gif" alt="Openrind Desktop Claude Code 演示" width="800" />
+</p>
 
 
 Openrind Desktop 圍繞一個核心理念設計：讓您可以輕鬆地將智能體工作流程作為可重複的、產品化的流程進行交付。
@@ -35,16 +34,14 @@ Openrind Desktop 圍繞一個核心理念設計：讓您可以輕鬆地將智能
 
 ## 其他介面
 
-- **Owpenbot (WhatsApp 機器人)**：為運行中的 OpenCode 伺服器提供的輕量級 WhatsApp 橋接器。安裝方法：
-  - `curl -fsSL https://raw.githubusercontent.com/different-ai/owpenbot/dev/install.sh | bash`
-  - 運行 `owpenbot setup`，然後 `owpenbot whatsapp login`，接著 `owpenbot start`
-  - 完整設置：https://github.com/different-ai/owpenbot/blob/dev/README.md
-- **Openwrk (CLI 主機)**：無需桌面 UI 即可運行 OpenCode + Openrind Desktop 伺服器。使用 `npm install -g openwrk` 安裝。
+- **Openrind Desktop Orchestrator（CLI 主機）**：無需桌面 UI 即可運行 OpenCode + Openrind Desktop 伺服器。
+  - 安裝：`npm install -g openrind-desktop-orchestrator`
+  - 運行：`openrind-desktop start --workspace /path/to/workspace --approval auto`
   - 文檔：[apps/orchestrator/README.md](../apps/orchestrator/README.md)
 
 
 ## 快速開始
-在此處下載 dmg：https://github.com/different-ai/openwork/releases（或按照下面的說明從源代碼安裝）
+在此處下載安裝包：https://github.com/openrind/openrind-shell/releases（或按照下面的說明從源代碼安裝）
 
 ## 為什麼選擇 Openrind Desktop
 
@@ -70,12 +67,21 @@ Openrind Desktop 的設計目標是：
   - 將本地技能資料夾導入到 `.opencode/skills/<skill-name>`
  
 
-## 技能管理器    
-<img width="1292" height="932" alt="image" src="https://github.com/user-attachments/assets/b500c1c6-a218-42ce-8a11-52787f5642b6" />
+## OpenHands 與 OpenClaw 智能體沙箱
 
+<p align="center">
+  <img src="../docs/images/openhand.png" alt="Openrind Desktop OpenHands 支援" width="800" />
+</p>
 
-## 適用於本地電腦或伺服器
-<img width="1292" height="932" alt="Screenshot 2026-01-13 at 7 05 16 PM" src="https://github.com/user-attachments/assets/9c864390-de69-48f2-82c1-93b328dd60c3" />
+<p align="center">
+  <img src="../docs/images/openclaw.png" alt="Openrind Desktop OpenClaw 支援" width="800" />
+</p>
+
+## 沙箱與工作區設定
+
+<p align="center">
+  <img src="../docs/images/settings-sandbox.png" alt="Openrind Desktop 沙箱設定" width="800" />
+</p>
 
 
 ## 快速開始
@@ -192,7 +198,11 @@ WEBKIT_DISABLE_COMPOSITING_MODE=1 openrind-desktop
 
 ## 面向團隊和企業
 
-有興趣在您的組織中使用 Openrind Desktop？我們很樂意聽取您的意見 — 請發送郵件至 [benjamin.shafii@gmail.com](mailto:benjamin.shafii@gmail.com) 與我們討論您的用例。
+有興趣在您的組織中使用 Openrind Desktop？我們很樂意聽取您的意見 — 請發送郵件至 [ben@openrindlabs.com](mailto:ben@openrindlabs.com) 與我們討論您的用例。
+
+## 致謝與鳴謝
+
+Openrind Desktop 基於並借鑑了 [Different AI](https://github.com/different-ai) 的開源項目 [Openwork](https://github.com/different-ai/openwork)。我們對 Openwork 原作者和社群貢獻者建立的開源基石表示誠摯的感謝與致敬。
 
 ## 許可證
 

@@ -26,13 +26,18 @@ def transport():
 @pytest.mark.parametrize('url,expected', [
     (adapter.BASE_URL + '/v1/messages', CONTEXT),
     (adapter.BASE_URL + '/v1/messages/count_tokens', CONTEXT),
+    (adapter.BASE_URL + '/v1/chat/completions', CONTEXT),
     (adapter.BASE_URL + '/other', None),
     ('https://example.invalid/v1/messages', None),
     ('http://host.openshell.internal:9999/v1/messages', None),
 ])
-def test_scoped_header_sync_and_async(transport, url, expected):
+def test_scoped_header_sync_and_async(transport, monkeypatch, url, expected):
+    monkeypatch.setenv('ANTHROPIC_API_KEY', 'test-cred')
     def respond(request):
         assert request.headers.get('x-openrind-haloop-session') == expected
+        if expected:
+            assert request.headers.get('x-api-key') == 'test-cred'
+            assert request.headers.get('authorization') == 'Bearer test-cred'
         return httpx.Response(200, json={})
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         client.post(url, headers={'x-openrind-haloop-session': 'untrusted'})

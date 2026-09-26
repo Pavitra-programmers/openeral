@@ -119,14 +119,33 @@ const bunTarget = (() => {
 
 function resolveBunCommand() {
   if (process.platform !== "win32") return "bun";
-  const paths = (process.env.PATH || "").split(";");
+  const paths = (process.env.PATH || process.env.Path || "").split(";");
   for (const p of paths) {
-    const exe = join(p, "bun.exe");
-    if (existsSync(exe)) {
-      return exe;
+    for (const ext of ["bun.exe", "bun.cmd", "bun.bat", "bun"]) {
+      const candidate = join(p, ext);
+      if (existsSync(candidate)) {
+        return candidate;
+      }
     }
   }
   return "bun";
+}
+
+function spawnBun(bunCmd, args, options = {}) {
+  const isCmdOrBat =
+    process.platform === "win32" &&
+    (bunCmd.toLowerCase().endsWith(".cmd") || bunCmd.toLowerCase().endsWith(".bat"));
+  if (isCmdOrBat) {
+    const comspec = process.env.ComSpec || "cmd.exe";
+    return spawnSync(comspec, ["/d", "/s", "/c", bunCmd, ...args], {
+      ...options,
+      shell: false,
+    });
+  }
+  return spawnSync(bunCmd, args, {
+    ...options,
+    shell: false,
+  });
 }
 
 const spawnShell = false;
@@ -352,10 +371,9 @@ if (shouldBuildOpenrindDesktopServer) {
   if (bunTarget) {
     openrindDesktopServerArgs.push("--target", bunTarget);
   }
-  const buildResult = spawnSync(resolveBunCommand(), openrindDesktopServerArgs, {
+  const buildResult = spawnBun(resolveBunCommand(), openrindDesktopServerArgs, {
     cwd: openrindDesktopServerDir,
     stdio: "inherit",
-    shell: false,
   });
 
   if (buildResult.status !== 0) {
@@ -533,10 +551,9 @@ if (shouldBuildOrchestrator) {
   if (bunTarget) {
     orchestratorArgs.push("--target", bunTarget);
   }
-  const result = spawnSync(resolveBunCommand(), orchestratorArgs, {
+  const result = spawnBun(resolveBunCommand(), orchestratorArgs, {
     cwd: orchestratorDir,
     stdio: "inherit",
-    shell: false,
     env: {
       ...process.env,
       NODE_ENV: "production",
@@ -598,10 +615,9 @@ if (shouldBuildChromeDevtools) {
     chromeDevtoolsArgs.push("--target", bunTarget);
   }
 
-  const result = spawnSync(resolveBunCommand(), chromeDevtoolsArgs, {
+  const result = spawnBun(resolveBunCommand(), chromeDevtoolsArgs, {
     cwd: __dirname,
     stdio: "inherit",
-    shell: false,
     env: {
       ...process.env,
       NODE_ENV: "production",

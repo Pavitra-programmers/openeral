@@ -38,7 +38,7 @@ Three nouns, kept strictly distinct:
 | Noun | What it is | Who creates it | Shape |
 |---|---|---|---|
 | **ConnectorType** | The adapter class itself (e.g., "github", "bitbucket", "npm", "local"). Code in our server. | Us — v1 is in-house. v2 could accept plugin-authored adapters. | Code |
-| **Integration** | An org's authorized grant to one ConnectorType + their selected sources (e.g., "GitHub account `different-ai`, 3 repos"). Persisted, scoped to an org. | End user via OAuth flow. | DB row |
+| **Integration** | An org's authorized grant to one ConnectorType + their selected sources (e.g., "GitHub account `openrind`, 3 repos"). Persisted, scoped to an org. | End user via OAuth flow. | DB row |
 | **Bundle** ("plugin" in UI copy) | A curated collection of primitives (skills, agents, commands, MCPs, code hooks) that can be installed as a unit. | Either: imported from a connector source (e.g., `.claude-plugin/marketplace.json` in a repo), or authored directly in the app. | DB row + BundleMembers |
 
 The UI already shipped on `/integrations` (PRs #1472, #1475) drives ConnectorType + Integration. The `/plugins` UI (PR #1472) will drive Bundle browsing/detail. **A new page is needed for workspace installation** (Phase 4 below).
@@ -890,7 +890,7 @@ For agents running inside an OpenCode session to manage the catalog without leav
 
 ```
 openrind-desktop connector list
-openrind-desktop connector add github --repo different-ai/openwork-plugins [--ref main]
+openrind-desktop connector add github --repo openrind/openrind-desktop-plugins [--ref main]
 openrind-desktop connector remove <source-id>
 openrind-desktop connector sync <source-id>
 
@@ -1025,7 +1025,7 @@ No existing data to migrate — these are all new tables. The existing `/v1/orgs
 
 ### Integration
 
-- **Real GitHub**: a test org + throwaway repo under `different-ai/openwork-test-plugins` with fixture plugins. CI authenticates with a PAT; runs a full ingest + install + uninstall against a temp worktree. Skipped in local unless `OPENRIND_DESKTOP_TEST_GITHUB_PAT` is set.
+- **Real GitHub**: a test org + throwaway repo under `openrind/openrind-desktop-test-plugins` with fixture plugins. CI authenticates with a PAT; runs a full ingest + install + uninstall against a temp worktree. Skipped in local unless `OPENRIND_DESKTOP_TEST_GITHUB_PAT` is set.
 - **Real Openrind Desktop server**: spins up `packaging/docker/dev-up.sh`, provisions a workspace, runs materialization, diffs `.opencode/` against expectations.
 
 ### End-to-end

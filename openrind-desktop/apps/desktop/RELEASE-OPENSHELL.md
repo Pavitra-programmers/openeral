@@ -130,8 +130,8 @@ Existing `electron-builder.yml` config (unchanged by this integration):
 ```yaml
 publish:
   - provider: github
-    owner: different-ai
-    repo: openrind-desktop
+    owner: openrind
+    repo: openrind-shell
     releaseType: release
 ```
 
@@ -142,7 +142,7 @@ land on the same release for clients to pick it up.
 
 **For the fork**: change `owner` and `repo` to your fork's repository
 before cutting the first signed release. Otherwise clients auto-update
-to upstream different-ai/openwork, which doesn't have OpenShell.
+to upstream openrind/openrind-shell, which doesn't have OpenShell.
 
 ---
 

@@ -250,7 +250,7 @@ const initialSkillContents: Record<string, string> = {
 };
 
 const initialHubRepo: HubSkillRepo = {
-  owner: "different-ai",
+  owner: "openrind",
   repo: "openrind-desktop-hub",
   ref: "main",
 };
@@ -260,13 +260,13 @@ const initialHubSkills: HubSkillCard[] = [
     name: "worker-smoke",
     description: "Smoke-test remote worker setup and report any blockers.",
     trigger: "worker smoke",
-    source: { owner: "different-ai", repo: "openrind-desktop-hub", ref: "main", path: "skills/worker-smoke/SKILL.md" },
+    source: { owner: "openrind", repo: "openrind-desktop-hub", ref: "main", path: "skills/worker-smoke/SKILL.md" },
   },
   {
     name: "share-review",
     description: "Review share links, field labeling, and copy clarity.",
     trigger: "share review",
-    source: { owner: "different-ai", repo: "openrind-desktop-hub", ref: "main", path: "skills/share-review/SKILL.md" },
+    source: { owner: "openrind", repo: "openrind-desktop-hub", ref: "main", path: "skills/share-review/SKILL.md" },
   },
 ];
 

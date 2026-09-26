@@ -93,14 +93,33 @@ function outputName(filename: string, target?: string) {
 
 function resolveBunCommand() {
   if (process.platform !== "win32") return "bun";
-  const paths = (process.env.PATH || "").split(";");
+  const paths = (process.env.PATH || process.env.Path || "").split(";");
   for (const p of paths) {
-    const exe = join(p, "bun.exe");
-    if (existsSync(exe)) {
-      return exe;
+    for (const ext of ["bun.exe", "bun.cmd", "bun.bat", "bun"]) {
+      const candidate = join(p, ext);
+      if (existsSync(candidate)) {
+        return candidate;
+      }
     }
   }
   return "bun";
+}
+
+function spawnBun(bunCmd: string, args: string[], options: Record<string, any> = {}) {
+  const isCmdOrBat =
+    process.platform === "win32" &&
+    (bunCmd.toLowerCase().endsWith(".cmd") || bunCmd.toLowerCase().endsWith(".bat"));
+  if (isCmdOrBat) {
+    const comspec = process.env.ComSpec || "cmd.exe";
+    return spawnSync(comspec, ["/d", "/s", "/c", bunCmd, ...args], {
+      ...options,
+      shell: false,
+    });
+  }
+  return spawnSync(bunCmd, args, {
+    ...options,
+    shell: false,
+  });
 }
 
 async function buildOnce(entrypoint: string, outdir: string, filename: string, target?: string) {
@@ -113,7 +132,7 @@ async function buildOnce(entrypoint: string, outdir: string, filename: string, t
     args.push("--target", target);
   }
 
-  const result = spawnSync(resolveBunCommand(), args, { stdio: "inherit", shell: false });
+  const result = spawnBun(resolveBunCommand(), args, { stdio: "inherit" });
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
   }
