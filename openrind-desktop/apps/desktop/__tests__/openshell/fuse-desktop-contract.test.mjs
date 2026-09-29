@@ -223,9 +223,7 @@ test("Desktop settings expose required Haloop controls in a dedicated global tab
   assert.match(haloopView, /Trace capture is incomplete/);
   assert.match(state, /incomplete: number/);
   assert.match(haloopView, /Last connection error:/);
-  assert.match(haloopView, /Observability & Traces/);
-  assert.match(haloopView, /Open Web Dashboard/);
-  assert.doesNotMatch(haloopView, /Run analysis|Generate eval cases|Download report|Download Harbor dataset/);
+  assert.doesNotMatch(haloopView, /Observability & Traces|Open Web Dashboard|Run analysis|Generate eval cases|Download report|Download Harbor dataset/);
   assert.match(state, /openrindHaloopCaptureStatus/);
   assert.match(route, /onDownloadTraces/);
   assert.match(haloopView, /Restart Haloop/);
