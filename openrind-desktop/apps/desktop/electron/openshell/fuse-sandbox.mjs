@@ -121,11 +121,15 @@ function normalizeProviderRows(stdout) {
 async function ensureHaloopProvider(providerName, clientToken, onProgress) {
   // Claude, OpenClaw, and OpenHands look for ANTHROPIC_API_KEY, OPENAI_API_KEY,
   // or LLM_API_KEY. The value supplied here is resolved at request time by OpenShell.
+  const openrouterKey = (process.env.OPENROUTER_API_KEY || "").trim();
+  const adminToken = (process.env.ADMIN_TOKEN || process.env.W8_BYOH_ADMIN_TOKEN || "w8-catalog-simulation-admin").trim();
   const env = buildFuseWslEnv({
     ANTHROPIC_API_KEY: clientToken,
     OPENAI_API_KEY: clientToken,
     LLM_API_KEY: clientToken,
     HALOOP_CLIENT_TOKEN: clientToken,
+    ...(openrouterKey ? { OPENROUTER_API_KEY: openrouterKey } : {}),
+    ...(adminToken ? { ADMIN_TOKEN: adminToken } : {}),
   });
   const listed = await runFuseOpenShell(
     ["provider", "list", "-o", "json"],
@@ -156,8 +160,16 @@ async function ensureHaloopProvider(providerName, clientToken, onProgress) {
     replaced = true;
   }
 
+  const credentialArgs = ["--credential", "ANTHROPIC_API_KEY"];
+  if (openrouterKey) {
+    credentialArgs.push("--credential", "OPENROUTER_API_KEY");
+  }
+  if (adminToken) {
+    credentialArgs.push("--credential", "ADMIN_TOKEN");
+  }
+
   const command = current && !replaced
-    ? ["provider", "update", providerName, "--credential", "ANTHROPIC_API_KEY"]
+    ? ["provider", "update", providerName, ...credentialArgs]
     : [
         "provider",
         "create",
@@ -165,8 +177,7 @@ async function ensureHaloopProvider(providerName, clientToken, onProgress) {
         providerName,
         "--type",
         "haloop-anthropic",
-        "--credential",
-        "ANTHROPIC_API_KEY",
+        ...credentialArgs,
       ];
   onProgress?.({
     phase: "provider",
@@ -734,11 +745,6 @@ async function provisionOpenrindShellSandbox(options) {
     "--env",
     `OPENRIND_SHELL_OPENHANDS_MODE=${agent.mode || "cli"}`,
   );
-  if (process.env.OPENROUTER_API_KEY) {
-    sandboxArgs.push("--env", `OPENROUTER_API_KEY=${process.env.OPENROUTER_API_KEY.trim()}`);
-  }
-  const adminToken = (process.env.ADMIN_TOKEN || process.env.W8_BYOH_ADMIN_TOKEN || "w8-catalog-simulation-admin").trim();
-  sandboxArgs.push("--env", `ADMIN_TOKEN=${adminToken}`);
   if (haloop.endpoint) {
     try {
       const parsedUrl = new URL(haloop.endpoint);
