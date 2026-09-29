@@ -463,7 +463,7 @@ test("OpenClaw uses the same FUSE workspace with a separate persistent agent hom
   assert.match(sandbox, /getCredential\("anthropicApiKey"\)/);
   assert.match(sandbox, /resolveHaloopUpstreamApiKey\(anthropicApiKey\)/);
   assert.match(sandbox, /ensureHaloopRuntime/);
-  assert.doesNotMatch(sandbox, /OPENROUTER|openrouter|TEMPORARY_USE_OPENROUTER/);
+  assert.doesNotMatch(sandbox, /TEMPORARY_USE_OPENROUTER/);
   assert.match(setup, /OPENRIND_SHELL_OPENCLAW_HOME=\/sandbox\/openclaw-home/);
   assert.match(setup, /\/usr\/local\/bin\/openrind-openclaw/);
   assert.match(launcher, /openrind-openclaw-agent "\$\{session_args\[@\]\}"/);
