@@ -54,14 +54,8 @@ USER root
 ARG OPENCLAW_VERSION=2026.7.1-2
 ARG CLAUDE_CODE_VERSION=latest
 
-# Provider-only client defaults. Browser activation is separate from Claude.
-ENV AGENT_BROWSER_PROVIDER=kernel \
-    KERNEL_ENDPOINT=http://127.0.0.1:19300 \
-    KERNEL_API_KEY=openrind-compat \
-    KERNEL_HEADLESS=true \
-    KERNEL_STEALTH=false \
-    KERNEL_TIMEOUT_SECONDS=300 \
-    AGENT_BROWSER_ACTION_POLICY=/opt/openrind/browser/agent-browser-policy.json
+# The installed agent-browser launcher supplies provider defaults at invocation.
+# OpenShell exec/SSH sessions do not inherit Dockerfile ENV.
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl gnupg python3 python3-venv \

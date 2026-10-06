@@ -5,6 +5,24 @@ This package implements the initial Kernel path in
 Normal Desktop launch does not enable it. Development setup is in
 [BUILD.md](../../../BUILD.md#experimental-browser-pods).
 
+## First Run
+
+For a new Linux checkout, follow
+[Real Linux Browser Test](../../../BUILD.md#real-linux-browser-test). It installs
+the host dependency, builds the native runtime and both images, and runs the
+isolated fixture. It needs no provider keys or database. Require exit code 0,
+13 checks, a screenshot, and no cleanup error. It removes its own sandboxes.
+
+For normal Claude use, follow the root
+[Desktop guide](../../../README.md#start-claude-in-desktop). Browser pods are not
+enabled by that flow. `openrind-browser` is an in-owner action skill, not a host
+installer. Use `openrind-dev` for this package's setup and tests.
+
+The only implemented client provider is agent-browser's built-in `kernel` with
+`KERNEL_ENDPOINT=http://127.0.0.1:19300`. Our API creates real Chromium pods; it
+does not contact Kernel cloud. The compatibility key is non-secret. Native
+OpenShell provider injection supplies the separate real broker credential.
+
 ## Implemented
 
 - A private SQLite registry with one broker lock, owner quotas, create intent,
@@ -19,6 +37,8 @@ Normal Desktop launch does not enable it. Development setup is in
   browser-instance checks, and confirmed process-group stop with deletion fallback.
 - Primary image recipes for agent-browser v0.38.2, release checksums, license,
   native upload/download denial policy, helper, and the `openrind-browser` skill.
+  A launcher supplies Kernel defaults before it executes the unchanged binary.
+  OpenShell exec/SSH sessions clear image environment variables.
 - Removal of the old automatic Desktop MCP launch hook. The new Claude wrapper
   ignores the retired managed descriptor and credentials. User MCP configuration
   and Control Chrome are unchanged. The FUSE contract remains v29.
@@ -27,11 +47,8 @@ Normal Desktop launch does not enable it. Development setup is in
 
 The following are release gates, not optional follow-up tests:
 
-- Real Chromium under the vendored seccomp and Landlock rules, including tmpfs
-  mounts, startup, process detachment, browser stop, and policy denials.
-- Native provider credential replacement on HTTP and WebSocket upgrade requests.
-- An unchanged shipped agent-browser binary, multiple commands in one session,
-  client-driven replacement, action-policy denials, and a real Claude skill test.
+- Full Desktop activation with a real Claude skill session and FUSE screenshot
+  persistence. The passing Linux fixture below has a browser-only owner image.
 - Cold-start and health-probe tail latency under concurrent load. The current
   SQLite path is synchronous; it must not delay the client's three-second probe.
 - Whole-process memory and file limits. The current relay limits each assembled
@@ -73,15 +90,30 @@ cannot bind a port.
 FUSE owner. It saves screenshot evidence on `/sandbox/work`. It is a smoke test,
 not the full Stage 0 acceptance suite.
 
-On 2026-10-06, all 32 browser-pod unit tests, all 261 Desktop OpenShell tests,
+On 2026-10-06, all 34 browser-pod unit tests, all 261 Desktop OpenShell tests,
 Electron typecheck, and the real TCP/WebSocket test passed. The transport test
 relayed its 17 MiB payload through the helper and broker with a fake CDP peer.
 
-Earlier runs were blocked by tool-session restrictions on sockets and child
-processes. Those restrictions were removed before this rerun. Docker access now
-works too. The unchanged Haloop configurator test passes. No real Chromium,
-OpenShell browser-pod, image-build, or unchanged-agent-browser compatibility result
-is claimed. The remaining release gates above still apply.
+`test/live/openshell-e2e.mjs` also passed against a real isolated Docker gateway,
+the vendored supervisor, Chromium 154.0.8037.92, and the unchanged agent-browser
+v0.38.2 Linux x64 release. Its 13 checks cover runtime provider attachment,
+HTTP/WebSocket credential injection, navigation, snapshots, screenshots,
+click/fill, session reuse, destination denial, client upload/download denial,
+browser-crash replacement, client DELETE, and confirmed registry cleanup.
+Seccomp, Landlock, executable identity checks, and the website allowlist remain on.
+
+One run created and navigated in 3.8 seconds. Ten later commands took 72-117 ms
+each, including native exec. These are samples, not concurrent-load p95/p99 claims.
+The owner has no FUSE, Claude, Haloop, or Desktop UI. Screenshot evidence is saved
+on its temporary disk and copied to the host. This does not prove FUSE persistence
+or Argide compatibility. The remaining release gates above still apply.
+
+The test found and fixed missing Docker build-context files, overlong pod names,
+missing OpenShell network tools in the pod image, and missing client settings in
+exec sessions. An unoptimized SHA-256 build of the supervisor also caused cold
+Chromium identity checks to outlast navigation timeouts. The passing run optimized
+the `sha2` dependency, without changing security checks. See BUILD.md for the
+exact build command and evidence files.
 
 ## Operation Rules
 

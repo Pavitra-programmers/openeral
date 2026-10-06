@@ -1,8 +1,9 @@
 # Openrind Desktop + Openrind Shell FUSE
 
 This document describes the desktop integration for the repository's primary
-FUSE runtime. The root [`README.md`](../../../README.md) is the source of truth
-for image creation, persistence, initialization, and security.
+FUSE runtime. Start with the root [`README.md`](../../../README.md) for the
+customer flow. Use [`BUILD.md`](../../../BUILD.md#windows-desktop-source-setup)
+for source builds and image creation. The managed installer targets Windows 11.
 
 ## User flow
 
@@ -68,7 +69,8 @@ The production tags are accepted only when both images report
 available through the desktop package's
 `verify:openshell-haloop-images:production` script.
 
-The first sandbox creation follows the root README command shape exactly:
+Desktop performs the first sandbox creation with this low-level command shape.
+It is an implementation reference, not a standalone customer launch recipe:
 
 ```text
 openshell --gateway-endpoint http://127.0.0.1:18770 sandbox create

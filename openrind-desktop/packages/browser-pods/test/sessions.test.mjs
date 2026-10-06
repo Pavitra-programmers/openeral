@@ -60,6 +60,7 @@ test('owner and broker quotas include allocated sessions', async t => {
   const { core } = await fixture(t, {}, { ownerLimit: 1 });
   const session = await core.create(owner, normalizeKernel({}));
   assert.equal(session.state, 'Ready');
+  assert.match(session.name, /^br-[a-f0-9]{16}$/);
   await assert.rejects(core.create(owner, normalizeKernel({})), { code: 'CAPACITY_EXHAUSTED' });
   await assert.rejects(core.stop({ ...owner, generation: 'different' }, session.id), { code: 'SESSION_NOT_FOUND' });
   await assert.rejects(core.stop({ ...owner, workspaceId: 'different' }, session.id), { code: 'SESSION_NOT_FOUND' });

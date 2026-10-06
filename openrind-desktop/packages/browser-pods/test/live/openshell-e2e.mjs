@@ -1,0 +1,267 @@
+// Real Linux OpenShell + Chromium + unchanged agent-browser acceptance fixture.
+// The owner fixture has no FUSE, Haloop, Claude, or Desktop UI. Test those separately.
+import assert from 'node:assert/strict';
+import { spawn, execFile } from 'node:child_process';
+import { generateKeyPairSync, randomBytes } from 'node:crypto';
+import { mkdir, mkdtemp, open, readFile, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { DatabaseSync } from 'node:sqlite';
+import { browserPodBinding } from '../../../../apps/desktop/electron/openshell/browser-binding.mjs';
+
+const exec = promisify(execFile);
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
+const binaryDir = resolve(process.env.OPENSHELL_BINARY_DIR || join(root, 'vendor/openshell/target/debug'));
+const binary = join(binaryDir, 'openshell');
+const ownerImage = process.env.BROWSER_OWNER_IMAGE || 'openrind-browser-owner:e2e';
+const podImage = process.env.BROWSER_POD_IMAGE || 'openrind-browser-pod:e2e';
+const state = await mkdtemp(join(tmpdir(), 'openrind-browser-live-'));
+const tag = randomBytes(4).toString('hex');
+const ownerName = `bowner-${tag}`;
+const namespace = `browser-e2e-${tag}`;
+const network = `browser-e2e-${tag}`;
+const token = randomBytes(32).toString('base64url');
+const env = { ...process.env, XDG_CONFIG_HOME: join(state, 'xdg'), OPENSHELL_TELEMETRY_DISABLED: '1' };
+const evidence = { state, tests: [], fixture: 'native-browser-only', startedAt: new Date().toISOString() };
+let gateway; let broker; let endpoint; let binding; let networkCreated = false; let gatewayReady = false;
+
+async function run(file, args, options = {}) {
+  try {
+    const task = exec(file, args, { env, timeout: 90_000, maxBuffer: 4 * 1024 * 1024, ...options });
+    task.child.stdin.end(options.stdin);
+    const result = await task;
+    return (result.stdout + (options.includeStderr ? result.stderr : '')).trim();
+  } catch (error) {
+    const detail = `${error.stdout || ''}\n${error.stderr || ''}`.trim() || error.message;
+    throw new Error(`${file.split('/').pop()} failed: ${detail.replaceAll(token, '[redacted]').slice(-8192)}`);
+  }
+}
+const os = (args, options) => run(binary, ['--gateway-endpoint', endpoint, ...args], options);
+const inside = (args, options) => os(['sandbox', 'exec', '-n', ownerName, '--no-tty', '--', ...args], options);
+async function service(file, args, name, extraEnv = {}) {
+  const log = await open(join(state, `${name}.log`), 'wx', 0o600);
+  try {
+    const child = spawn(file, args, { env: { ...env, ...extraEnv }, stdio: ['ignore', log.fd, log.fd] });
+    await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+    return child;
+  } finally { await log.close(); }
+}
+async function until(action, timeout = 30_000) {
+  const end = Date.now() + timeout;
+  let last;
+  while (Date.now() < end) {
+    try { return await action(); } catch (error) { last = error; await sleep(500); }
+  }
+  throw last || new Error('Timed out');
+}
+function pass(name, details = {}) {
+  evidence.tests.push({ name, ...details });
+  console.log(`PASS ${name}`);
+}
+async function pods() {
+  return JSON.parse(await os(['sandbox', 'list', '-o', 'json']))
+    .filter(s => s.labels?.['openrind.browser.session']);
+}
+async function stopChild(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  child.kill('SIGTERM');
+  const exit = new Promise(resolve => child.once('exit', resolve));
+  await Promise.race([exit, sleep(20_000, undefined, { ref: false })]);
+  if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await exit; }
+}
+
+console.log(`Evidence directory: ${state}`);
+try {
+  await run('docker', ['image', 'inspect', ownerImage]);
+  const podDigest = await run('docker', ['image', 'inspect', '--format', '{{.Id}}', podImage]);
+  evidence.podImage = podDigest;
+  await run('docker', ['network', 'create', network]); networkCreated = true;
+  const bridge = await run('docker', ['network', 'inspect', '--format', '{{(index .IPAM.Config 0).Gateway}}', network]);
+  endpoint = 'http://127.0.0.1:19770';
+  await mkdir(join(state, 'jwt'), { mode: 0o700 });
+  await mkdir(join(state, 'broker'), { mode: 0o700 });
+  const keys = generateKeyPairSync('ed25519', { publicKeyEncoding: { type: 'spki', format: 'pem' },
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' } });
+  await writeFile(join(state, 'jwt/key.pem'), keys.privateKey, { mode: 0o600 });
+  await writeFile(join(state, 'jwt/public.pem'), keys.publicKey, { mode: 0o600 });
+  await writeFile(join(state, 'jwt/kid'), `browser-${tag}`, { mode: 0o600 });
+  const toml = `[openshell]
+version = 1
+[openshell.gateway]
+bind_address = "127.0.0.1:19770"
+log_level = "${process.env.BROWSER_E2E_LOG_LEVEL === 'debug' ? 'debug' : 'info'}"
+compute_drivers = ["docker"]
+disable_tls = true
+[openshell.gateway.auth]
+allow_unauthenticated_users = true
+[openshell.gateway.gateway_jwt]
+signing_key_path = "${state}/jwt/key.pem"
+public_key_path = "${state}/jwt/public.pem"
+kid_path = "${state}/jwt/kid"
+gateway_id = "${namespace}"
+ttl_secs = 0
+[openshell.drivers.docker]
+default_image = "${ownerImage}"
+image_pull_policy = "Never"
+sandbox_namespace = "${namespace}"
+network_name = "${network}"
+grpc_endpoint = "http://host.openshell.internal:19770"
+supervisor_bin = "${binaryDir}/openshell-sandbox"
+`;
+  await writeFile(join(state, 'gateway.toml'), toml, { mode: 0o600 });
+  gateway = await service(join(binaryDir, 'openshell-gateway'), ['--config', join(state, 'gateway.toml'),
+    '--db-url', `sqlite:${state}/gateway.db?mode=rwc`], 'gateway');
+  await until(async () => {
+    assert.equal(gateway.exitCode, null, 'Test gateway exited before readiness');
+    assert.match(await readFile(join(state, 'gateway.log'), 'utf8'), /Gateway listener bound address=127\.0\.0\.1:19770/);
+    await os(['gateway', 'info'], { timeout: 3000 });
+  });
+  gatewayReady = true;
+  pass('isolated vendored gateway ready');
+  binding = browserPodBinding({ endpoint: 'http://host.openshell.internal:19301', bridgeAddress: bridge, bindingId: tag });
+  await writeFile(join(state, 'profile.json'), JSON.stringify(binding.profile), { mode: 0o600 });
+  await os(['provider', 'profile', 'import', '--file', join(state, 'profile.json')]);
+  await os(['provider', 'create', '--name', binding.name, '--type', binding.name,
+    '--credential', 'OPENRIND_BROWSER_POD_TOKEN'], { env: { ...env, OPENRIND_BROWSER_POD_TOKEN: token } });
+  const policy = { version: 1, filesystem_policy: { include_workdir: true,
+    read_only: ['/usr', '/lib', '/etc', '/opt', '/proc', '/dev/urandom'], read_write: ['/sandbox', '/tmp', '/dev/null'] },
+    landlock: { compatibility: 'best_effort' }, process: { run_as_user: 'sandbox', run_as_group: 'sandbox' },
+    network_policies: { browser: binding.networkPolicy } };
+  await writeFile(join(state, 'owner-policy.json'), JSON.stringify(policy), { mode: 0o600 });
+  await os(['sandbox', 'create', '--name', ownerName, '--from', ownerImage,
+    '--policy', join(state, 'owner-policy.json'), '--no-auto-providers', '--no-tty', '--', '/bin/true']);
+  await os(['sandbox', 'provider', 'attach', ownerName, binding.name]);
+  const owner = JSON.parse(await os(['sandbox', 'get', ownerName, '-o', 'json']));
+  const config = { listen: { host: bridge, port: 19301 }, runtime: { binary, gateway: endpoint,
+    image: podDigest, stateDir: join(state, 'broker'), websiteHosts: ['example.com'], acceptNoSandbox: true },
+    owners: [{ serviceToken: token, owner: { id: owner.id, generation: 'openshell-e2e', workspaceId: tag,
+      helperOrigin: 'http://127.0.0.1:19300', providers: ['kernel'] } }] };
+  await writeFile(join(state, 'broker.json'), JSON.stringify(config), { mode: 0o600 });
+  broker = await service(process.execPath, [join(root, 'openrind-desktop/packages/browser-pods/bin/broker.mjs'),
+    join(state, 'broker.json')], 'broker', { OPENRIND_BROWSER_PODS_EXPERIMENTAL: '1' });
+  await until(async () => { assert.match(await readFile(join(state, 'broker.log'), 'utf8'), /Kernel broker ready/); });
+  // Provider attachment is asynchronous. Probe a new process after each refresh.
+  await until(async () => {
+    const placeholderCheck = await inside(['node', '-e', 'console.log(Boolean(process.env.OPENRIND_BROWSER_POD_TOKEN))']);
+    assert.equal(placeholderCheck, 'true');
+  });
+  await inside(['env', 'OPENRIND_BROWSER_PODS_EXPERIMENTAL=1', 'openrind-browser-pod-ensure']);
+  pass('runtime provider attach and proxy-authenticated helper registration');
+  if (process.env.BROWSER_E2E_DIAGNOSE === '1') {
+    const created = JSON.parse(await inside(['node', '-e', 'fetch("http://127.0.0.1:19300/browsers",{method:"POST",headers:{"content-type":"application/json"},body:"{}"}).then(r=>r.json()).then(x=>console.log(JSON.stringify(x)))']));
+    const pod = (await pods())[0];
+    const probe = await os(['sandbox', 'exec', '-n', pod.name, '--no-tty', '--', 'node', '--input-type=module', '-'],
+      { timeout: 15_000, stdin: await readFile(new URL('./cdp-probe.mjs', import.meta.url), 'utf8') });
+    console.log(`Direct CDP diagnosis (not acceptance): ${probe}`);
+    await inside(['node', '-e', `fetch("http://127.0.0.1:19300/browsers/${created.session_id}",{method:"DELETE"}).then(r=>console.log(r.status))`]);
+    await until(async () => { assert.equal((await pods()).length, 0); });
+  }
+  assert.match(await inside(['agent-browser', '--version']), /0\.38\.2/);
+  const client = args => inside(['agent-browser', '--session', tag, '--json', ...args], { timeout: 90_000 });
+  const start = performance.now();
+  const opened = JSON.parse(await client(['open', 'https://example.com']));
+  assert.equal(opened.success, true);
+  pass('unchanged agent-browser Kernel create and real Chromium navigation', { durationMs: Math.round(performance.now() - start) });
+  const first = await pods();
+  assert.equal(first.length, 1);
+  assert.match(await client(['snapshot', '-i']), /Example Domain|Learn more/);
+  assert.match(await client(['get', 'title']), /Example Domain/);
+  const after = await pods();
+  assert.equal(after.length, 1); assert.equal(after[0].id, first[0].id);
+  pass('separate native exec/client commands reuse one provider browser');
+  const screenshot = JSON.parse(await client(['screenshot', '/sandbox/browser-evidence.png']));
+  assert.equal(screenshot.success, true);
+  const png = Buffer.from(await inside(['node', '-e', 'console.log(require("fs").readFileSync("/sandbox/browser-evidence.png").toString("base64"))']), 'base64');
+  assert.equal(png.toString('hex', 0, 8), '89504e470d0a1a0a');
+  await writeFile(join(state, 'page.png'), png, { mode: 0o600 });
+  pass('real screenshot bytes reach the owner', { bytes: png.length });
+  await client(['eval', 'document.body.innerHTML = \'<label>Name <input id="name"></label><button id="submit">Submit</button>\'; document.querySelector("#submit").onclick = () => { document.title = "Submitted: " + document.querySelector("#name").value; }; "fixture-ready"']);
+  await client(['fill', '#name', 'Openrind browser test']);
+  await client(['click', '#submit']);
+  assert.match(await client(['get', 'title']), /Submitted: Openrind browser test/);
+  pass('real click and fill on a deterministic in-page fixture');
+  const commandTimes = [];
+  for (let i = 0; i < 10; i++) {
+    const began = performance.now();
+    assert.match(await client(['get', 'title']), /Submitted: Openrind browser test/);
+    commandTimes.push(Math.round(performance.now() - began));
+  }
+  assert.equal((await pods())[0].id, first[0].id);
+  pass('ten successive client liveness probes retain the page', { commandTimesMs: commandTimes });
+  await assert.rejects(client(['open', 'https://example.org']), /ERR_TUNNEL_CONNECTION_FAILED/);
+  const podContainer = await run('docker', ['ps', '--filter', `name=-${first[0].id}`, '--format', '{{.ID}}']);
+  assert.match(podContainer, /^[a-f0-9]+$/);
+  const policyLog = await run('docker', ['logs', '--tail', '2000', podContainer], { includeStderr: true });
+  assert.match(policyLog, /DENIED \/usr\/lib\/chromium\/chromium\(\d+\) -> example\.org:443 .*reason:endpoint example\.org:443 is not allowed by any policy/);
+  await writeFile(join(state, 'pod-policy.log'), policyLog.replaceAll(token, '[redacted]'), { mode: 0o600 });
+  pass('native website allowlist rejects a denied destination');
+  await assert.rejects(client(['download', 'https://example.com', '/tmp/denied']), /denied|policy|blocked/i);
+  pass('managed client rejects native download');
+  await assert.rejects(client(['upload', '#name', '/sandbox/not-in-the-browser']), /denied|policy|blocked/i);
+  pass('managed client rejects native upload');
+  await os(['sandbox', 'exec', '-n', first[0].name, '--no-tty', '--', 'node', '-e',
+    'const fs=require("fs");let killed=0;for(const p of fs.readdirSync("/proc").filter(x=>/^\\d+$/.test(x))){try{const c=fs.readFileSync(`/proc/${p}/cmdline`,"utf8").split("\\0");if(c[0]==="/usr/lib/chromium/chromium"&&!c.some(a=>a.startsWith("--type="))){process.kill(Number(p),"SIGKILL");killed++}}catch{}}if(killed!==1)process.exit(1);']);
+  await until(async () => { assert.equal((await pods()).length, 0); }, 30_000);
+  const recovered = JSON.parse(await client(['open', 'https://example.com']));
+  assert.equal(recovered.success, true);
+  const replacement = await pods();
+  assert.equal(replacement.length, 1); assert.notEqual(replacement[0].id, first[0].id);
+  assert.match(await client(['get', 'title']), /Example Domain/);
+  pass('client replaces a crashed browser with one new pod');
+  await client(['close']);
+  await until(async () => { assert.equal((await pods()).length, 0); }, 60_000);
+  pass('provider DELETE removes its browser pod');
+  await stopChild(broker);
+  const db = new DatabaseSync(join(state, 'broker', 'sessions.sqlite'), { readOnly: true });
+  try {
+    const sessions = db.prepare('SELECT data FROM sessions').all().map(row => JSON.parse(row.data));
+    assert.ok(sessions.length > 0);
+    assert.ok(sessions.every(s => s.resourceDeletedAt !== null && s.browserStoppedAt !== null));
+    assert.ok(db.prepare("SELECT COUNT(*) AS count FROM audit WHERE code='STOP_REQUEST'").get().count > 0);
+  } finally { db.close(); }
+  pass('durable registry confirms client DELETE, browser stop, and quota release');
+  evidence.result = 'passed';
+} catch (error) {
+  evidence.result = 'failed'; evidence.error = error.message.replaceAll(token, '[redacted]');
+  console.error(evidence.error); process.exitCode = 1;
+  if (gatewayReady && gateway?.exitCode === null) {
+    try {
+      const diagnostics = await inside(['sh', '-c', 'test ! -f /tmp/openrind-browser-pods/helper.log || cat /tmp/openrind-browser-pods/helper.log'], { timeout: 5000 });
+      await writeFile(join(state, 'helper.log'), diagnostics.replaceAll(token, '[redacted]'), { mode: 0o600 });
+      const profile = await inside(['node', '--input-type=module', '-e', 'import {validateClientProfile} from "/opt/openrind-browser-pods/src/client-profile.mjs"; const keys=["AGENT_BROWSER_PROVIDER","KERNEL_ENDPOINT","KERNEL_HEADLESS","KERNEL_STEALTH","AGENT_BROWSER_ACTION_POLICY"]; console.log(Object.fromEntries(keys.map(k=>[k,process.env[k]??null]))); console.log("kernel_key_present",Boolean(process.env.KERNEL_API_KEY)); try{await validateClientProfile();console.log("profile_ok")}catch(e){console.log(e.code??e.message)}'], { timeout: 5000 });
+      await writeFile(join(state, 'client-profile.log'), profile, { mode: 0o600 });
+      for (const pod of await pods()) {
+        const container = await run('docker', ['ps', '-a', '--filter', `name=-${pod.id}`, '--format', '{{.ID}}']);
+        if (container) {
+          const logs = await run('docker', ['logs', '--tail', '2000', container], { includeStderr: true });
+          await writeFile(join(state, `${pod.name}-supervisor.log`), logs.replaceAll(token, '[redacted]'), { mode: 0o600 });
+        }
+        const logs = await os(['sandbox', 'exec', '-n', pod.name, '--no-tty', '--', 'sh', '-c',
+          'cat /tmp/openrind-browser/agent.log /tmp/openrind-browser/chromium.log'], { timeout: 5000 });
+        await writeFile(join(state, `${pod.name}.log`), logs.replaceAll(token, '[redacted]'), { mode: 0o600 });
+        const probe = await os(['sandbox', 'exec', '-n', pod.name, '--no-tty', '--', 'node', '--input-type=module', '-'],
+          { timeout: 15_000, stdin: await readFile(new URL('./cdp-probe.mjs', import.meta.url), 'utf8') });
+        await writeFile(join(state, `${pod.name}-cdp.log`), probe, { mode: 0o600 });
+      }
+    } catch {}
+  }
+} finally {
+  await stopChild(broker);
+  // The namespace and resources below were created by this invocation only.
+  if (gatewayReady && gateway?.exitCode === null) {
+    try {
+      const sandboxes = JSON.parse(await os(['sandbox', 'list', '-o', 'json']));
+      for (const sandbox of sandboxes) await os(['sandbox', 'delete', sandbox.name]);
+      if (binding) await os(['provider', 'delete', binding.name]).catch(() => {});
+    } catch (error) { evidence.cleanupError = error.message; }
+  }
+  await stopChild(gateway);
+  if (networkCreated) await run('docker', ['network', 'rm', network]).catch(error => { evidence.cleanupError = error.message; });
+  evidence.finishedAt = new Date().toISOString();
+  await writeFile(join(state, 'evidence.json'), JSON.stringify(evidence, null, 2), { mode: 0o600 });
+  if (evidence.cleanupError) { console.error('Cleanup needs review in evidence.json'); process.exitCode = 1; }
+  console.log(`Result: ${evidence.result}. Evidence: ${join(state, 'evidence.json')}`);
+}

@@ -36,3 +36,20 @@ test('primary images agree on client packaging without another FUSE contract bum
   const skill = await readFile(new URL('.claude/skills/openrind-browser/SKILL.md', root), 'utf8');
   assert.match(skill, /name: openrind-browser/);
 });
+
+test('client defaults work without image ENV and preserve explicit conflicts', async () => {
+  const defaults = new URL('../packaging/client-env.sh', import.meta.url).pathname;
+  const run = env => spawnSync('/bin/sh', ['-c', '. "$1"; printf "%s\\n" "$AGENT_BROWSER_PROVIDER" "$KERNEL_ENDPOINT" "$KERNEL_API_KEY" "$AGENT_BROWSER_ACTION_POLICY"', 'test', defaults],
+    { env, encoding: 'utf8' });
+  const clean = run({ PATH: '/usr/bin:/bin' });
+  assert.equal(clean.status, 0);
+  assert.equal(clean.stdout, 'kernel\nhttp://127.0.0.1:19300\nopenrind-compat\n/opt/openrind/browser/agent-browser-policy.json\n');
+  assert.match(run({ AGENT_BROWSER_PROVIDER: 'wrong' }).stdout, /^wrong\n/);
+});
+
+test('Docker context includes the browser-pod image assets', async () => {
+  const ignore = await readFile(new URL('.dockerignore', root), 'utf8');
+  for (const path of ['package.json', 'package-lock.json', 'src/**', 'bin/**', 'native/**', 'packaging/**']) {
+    assert.ok(ignore.split('\n').includes(`!openrind-desktop/packages/browser-pods/${path}`), path);
+  }
+});

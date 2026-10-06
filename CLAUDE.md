@@ -21,6 +21,25 @@ writing principles. Strict compliance is not required.
 - `FUSE.md` records alternatives and source research.
 - `FUSE-DESIGN.md` is the detailed FUSE correctness contract.
 
+## First-Time Setup
+
+Read README's **Start Here** before running setup. Choose the requested path:
+
+- Customer Claude launch: `openrind-shell` skill; Windows 11 Desktop, matched WSL
+  assets, PostgreSQL, and the required Haloop route. Desktop starts Claude.
+- Browser validation on Linux: `openrind-dev` skill and BUILD's **Real Linux
+  Browser Test**. Use its isolated fixture; no database or provider keys needed.
+- Web task in an already enabled owner: `openrind-browser` skill. Do not treat
+  that skill as a host installer or a way to enable a normal Desktop sandbox.
+
+`AGENTS.md` points to this file. `.agents/skills` and `.codex/skills` point to
+`.claude/skills`. Keep one canonical copy. If a checkout does not preserve links,
+read these canonical files directly instead of overwriting user configuration.
+
+State the operating system, Docker context, selected runtime, and missing
+prerequisites before setup. Desktop does not import repository `.env` files.
+Never infer successful activation from an installed executable or a unit test.
+
 Public names use **Openrind Shell** and `openrind-shell`. Historical source paths,
 Cargo package names, legacy aliases, and the `_openeral` PostgreSQL schema remain
 until an explicit compatibility migration exists.
@@ -49,10 +68,19 @@ flowchart LR
 
 - `BROWSER-PODS.md` defines the provider-compatible target. The current package
   status is in `openrind-desktop/packages/browser-pods/README.md`.
-- The initial path uses agent-browser's Kernel provider and a separate Chromium
-  sandbox. Do not install a browser in the owner sandbox.
-- Normal Desktop browser activation remains disabled until real OpenShell tests
-  pass. Unit tests and fake-CDP tests do not prove client compatibility.
+- The initial path uses agent-browser v0.38.2's built-in Kernel provider against
+  our Kernel-compatible broker. It is API emulation, not the Kernel cloud.
+  Real Chromium runs in a separate sandbox. No browser belongs in the owner.
+- The launcher supplies `KERNEL_ENDPOINT=http://127.0.0.1:19300` and a non-secret
+  compatibility key. Real broker credentials use native provider injection.
+  OpenShell clears Docker ENV for exec/SSH; do not rely on it for client setup.
+- The real Linux fixture passed 13 checks. Normal Desktop browser activation
+  remains disabled pending Desktop/Claude/FUSE and load tests. Unit and fake-CDP
+  results alone do not prove client compatibility. Argide and artifacts are not
+  implemented end to end.
+- Use existing native exec, provider injection, and ForwardTcp. Browser pods
+  need no additional OpenShell patch or custom TLS terminator. Never replace
+  this path with local Chromium, public CDP, or vendor-domain interception.
 - Preserve Control Chrome and user MCP configuration. Do not bump the FUSE contract
   or replace an active owner to retire the old managed MCP dependency.
 

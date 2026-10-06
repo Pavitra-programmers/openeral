@@ -1,7 +1,12 @@
 # Building And Developing Openrind Shell
 
-This guide covers source builds. The GHCR compatibility target requires registry pull
-access; [README.md](./README.md) also shows the local child-image fallback.
+This guide covers source builds and operator tests. Read [README.md](./README.md)
+first to choose a runtime. Run commands from the repository root unless a block
+changes directory. Do not switch branches or replace existing sandboxes as setup.
+
+For a browser-only trial, start at [Real Linux Browser Test](#real-linux-browser-test).
+That section is self-contained. It does not need PostgreSQL, Haloop, or Claude.
+For the customer Desktop path, use [Windows Desktop Source Setup](#windows-desktop-source-setup).
 
 ## Source Layout
 
@@ -38,13 +43,15 @@ default-off Openrind Shell FUSE patch.
 
 ## Prerequisites
 
-- Linux Docker host with `/dev/fuse`.
+- Linux Docker host with `/dev/fuse` for FUSE tests. The browser-only fixture does
+  not use the FUSE device.
 - Rust 1.95 toolchain.
 - Node.js 22 and pnpm for `openeral-js` development.
 - OpenShell build dependencies, including Protobuf and Z3 (Z3 is also needed at
   runtime by the patched gateway; see below).
 - External PostgreSQL with TLS for primary-runtime tests.
-- Optional Anthropic, AWS, and Openrind Gateway providers for live agent tests.
+- Desktop-managed Haloop and an Anthropic key for primary live Claude tests.
+  Do not substitute a legacy direct-provider recipe.
 
 The primary image pulls this existing base and does not rebuild it:
 
@@ -52,8 +59,70 @@ The primary image pulls this existing base and does not rebuild it:
 docker pull ghcr.io/nvidia/openshell-community/sandboxes/base:latest
 ```
 
-If an anonymous GHCR pull is denied, remove stale registry credentials with
-`docker logout ghcr.io` and retry before changing the image source.
+If a GHCR pull is denied, check the exact image name, Docker context, and registry
+credentials. Do not remove a user's registry login without approval. Do not
+rebuild NVIDIA's Community base to work around image resolution.
+
+## Windows Desktop Source Setup
+
+The managed OpenShell installer targets Windows 11 and creates a dedicated WSL2
+distribution named `openrind-desktop-openshell`. Running the Electron UI on Linux
+is not a test of that installer. These source steps match the current scripts;
+the Linux browser fixture does not validate the Windows setup.
+
+Before starting, obtain Node.js 22.19 or newer, pnpm 10.27.0, Bun for the native
+sidecar build, Docker access, and permission to install WSL2. The Windows source
+launcher can also use Visual Studio Build Tools and LLVM for native builds.
+Use a Windows checkout path, not an unresolved Linux path passed to PowerShell.
+
+The source runtime needs a compatible `w8-haloop` checkout outside this repository.
+It must contain `Dockerfile` and `halo-loop/Dockerfile`. Set
+`OPENRIND_DESKTOP_HALOOP_SOURCE` if it is not a sibling of this repository.
+If that source or the matched release assets are unavailable, report the missing
+dependency. This checkout alone is not a replacement for them. Do not bypass Haloop.
+
+In PowerShell at the repository root, install Desktop dependencies:
+
+```powershell
+pnpm --dir openrind-desktop install --frozen-lockfile
+```
+
+The installer needs
+`openrind-desktop/apps/desktop/resources/openshell/ubuntu-24.04-openshell.tar.gz`.
+Use the matched release artifact, or build this Desktop root filesystem when it
+is absent. This is not a rebuild of NVIDIA's Community sandbox base:
+
+```powershell
+node openrind-desktop/apps/desktop/scripts/build-openshell-rootfs.mjs
+```
+
+Start the current Electron app, not the older Tauri instructions in historical
+Desktop documents:
+
+```powershell
+node openrind-desktop/apps/desktop/scripts/dev-windows.mjs
+```
+
+In **Settings -> Sandbox**, complete installation and the environment checks.
+Then, in a second PowerShell terminal at the repository root, build and verify
+the three runtime images in the **dedicated WSL Docker daemon**:
+
+```powershell
+$env:OPENRIND_DESKTOP_HALOOP_SOURCE = 'C:\path\to\w8-haloop'
+node openrind-desktop/apps/desktop/scripts/build-openshell-runtime-images.mjs
+node openrind-desktop/apps/desktop/scripts/build-openshell-runtime-images.mjs --verify-only
+```
+
+Replace the illustrative path. The required local tags are
+`openrind-shell-fuse:local`, `haloop-gateway:local`, and `haloop-collector:local`.
+Source setup uses pull policy `Never`. Building in Docker Desktop alone does not
+populate the WSL daemon. Do not rename an unrelated image to satisfy a check.
+
+Now follow [README: First Launch](./README.md#first-launch). Save credentials in
+Desktop Settings; merely creating `.env` does not populate those fields. Desktop
+owns the signed Claude launch and scoped provider. Browser activation remains a
+separate, unfinished integration. A normal successful Claude launch does not
+mean browser pods are enabled.
 
 ## Build Openrind Shell
 
@@ -166,8 +235,9 @@ vendor/openshell/target/debug/openshell-gateway \
   --db-url "sqlite:$OPENRIND_SHELL_GATEWAY_DIR/state/gateway.db?mode=rwc"
 ```
 
-This repository does not install, start, or mutate a gateway automatically. The
-operator owns the gateway and Docker `enable_fuse` decision.
+This manual development flow does not install a gateway service. The operator
+owns it and the Docker `enable_fuse` decision. The Windows Desktop flow instead
+installs its paired, managed gateway.
 
 In another terminal:
 
@@ -179,6 +249,30 @@ export OPENSHELL_GATEWAY_ENDPOINT="http://127.0.0.1:18770"
   --gateway-endpoint "$OPENSHELL_GATEWAY_ENDPOINT" \
   gateway info
 ```
+
+### Primary FUSE Diagnostics
+
+Use the paired CLI in the same Linux environment as its gateway. Desktop's
+managed CLI is `/opt/openrind-desktop/fuse-runtime/openshell` inside
+`openrind-desktop-openshell`. A manual source gateway uses the built CLI below.
+Do not use a stock `openshell` on PATH as a fallback.
+
+For a source gateway and an **existing** sandbox, replace the sandbox name:
+
+```bash
+export OPENSHELL_BIN="$PWD/vendor/openshell/target/debug/openshell"
+export OPENSHELL_GATEWAY_ENDPOINT='http://127.0.0.1:18770'
+export OWNER_SANDBOX='replace-with-existing-sandbox-name'
+"$OPENSHELL_BIN" --gateway-endpoint "$OPENSHELL_GATEWAY_ENDPOINT" \
+  sandbox list
+"$OPENSHELL_BIN" --gateway-endpoint "$OPENSHELL_GATEWAY_ENDPOINT" \
+  sandbox exec -n "$OWNER_SANDBOX" --no-tty -- openrind-shell-fused health
+```
+
+Require `state: writable`. `sandbox connect` opens a diagnostic shell; it does not
+provide a signed Haloop conversation. Use Desktop to start or resume Claude.
+Never infer a scoped provider ID, upload a raw Anthropic key, or create a second
+writer for the workspace. Delete Desktop-owned resources through Desktop only.
 
 ## Build The Sandbox Images
 
@@ -240,6 +334,9 @@ The primary image recipes install the unchanged agent-browser v0.38.2 Linux
 release for x64 or arm64. The manifest records its commit and SHA-256. The image
 build checks both checksum and version. No browser or package is downloaded on
 first use. A version check does not prove the native daemon works under OpenShell.
+The installed launcher supplies Kernel settings and validates the file-action
+policy before it executes the unchanged binary at `/opt/openrind/browser/agent-browser`.
+Do not rely on Dockerfile `ENV`: OpenShell clears it for exec/SSH sessions.
 
 The separate pod image requires an explicit Debian Chromium package version:
 
@@ -260,6 +357,130 @@ use the same Docker daemon. The broker's local image check does not verify eithe
 condition. Without `Never`, OpenShell can still pull during create, for example
 if an image disappears after preflight or the gateway uses `Always`.
 Image publication and a cross-platform tested Chromium pin remain release work.
+
+### Real Linux Browser Test
+
+Use this path for a first browser test from a clean checkout. It creates its own
+gateway, Docker network, provider, owner, and browser pods. It does not use or
+delete existing sandboxes. It uses agent-browser's built-in **Kernel** provider;
+only the vendor API is emulated. Chromium and OpenShell are real.
+
+#### 1. Check The Host
+
+Use Linux x64, including a suitable WSL2 Linux environment, with a local Docker
+daemon. The recorded live result is x64; an arm64 image build is not a live arm64
+compatibility result. Run from the repository root in a Linux shell.
+
+You need Node.js 22.19 or newer, npm for the one host relay dependency, Rust 1.95
+as pinned in `vendor/openshell/rust-toolchain.toml`, and native build tools.
+Debian/Ubuntu build dependencies include `build-essential`, `clang`, `libclang-dev`,
+`cmake`, `pkg-config`, `libssl-dev`, `libz3-dev`, `protobuf-compiler`, and
+`openssh-client`. See the vendored
+[contributor guide](./vendor/openshell/CONTRIBUTING.md) for platform build details.
+
+```bash
+docker info --format '{{.ServerVersion}}'
+docker context show
+node --version
+cargo --version
+protoc --version
+```
+
+The gateway, broker, and image builds must use the same local Docker daemon.
+Do not use a remote Docker context: the fixture uses host binaries and local
+bridge addresses. Ensure `127.0.0.1:19770` is free for the gateway and that the
+new Docker bridge can listen on ports 19770 and 19301. Port 19300 is inside the
+owner's network namespace. The host needs network access to source/package
+registries and the test website `example.com`.
+
+This fixture needs **no** `/dev/fuse`, database URL, Anthropic key, Kernel account,
+Haloop checkout, or running Desktop. Do not load `.env` to run it.
+
+#### 2. Install And Build
+
+Install just the host browser-pod package from its lockfile. This standalone
+package install avoids installing the full Desktop workspace. If you already
+use the workspace install, use its pnpm instructions above instead; do not mix
+package managers in an existing `node_modules` directory.
+
+```bash
+npm --prefix openrind-desktop/packages/browser-pods ci --ignore-scripts --no-audit --no-fund
+```
+
+Build the native binaries. Optimize SHA-256 even for this debug build. Chromium
+is a large binary; unoptimized concurrent cold identity checks caused navigation
+timeouts during testing. Do not disable identity checks.
+
+```bash
+cd vendor/openshell
+cargo build --locked -j 4 -p openshell-cli -p openshell-server -p openshell-sandbox \
+  --config 'profile.dev.package.sha2.opt-level=3' \
+  --config 'profile.dev.package.sha2.debug-assertions=false'
+cd ../..
+docker pull ghcr.io/nvidia/openshell-community/sandboxes/base:latest
+docker build --pull=false \
+  -f openrind-desktop/packages/browser-pods/test/live/Dockerfile.owner \
+  -t openrind-browser-owner:e2e .
+docker build --pull=false -f sandboxes/browser-pod/Dockerfile \
+  --build-arg CHROMIUM_VERSION=154.0.8037.92-1~deb12u1 \
+  -t openrind-browser-pod:e2e sandboxes/browser-pod
+```
+
+The Chromium package pin above was available and tested on 2026-10-06. If Debian
+removes it, select and record a new available version. Do not omit the pin.
+To check an available version, query the pod's Debian base rather than guess:
+
+```bash
+docker run --rm node:22.19.0-bookworm-slim \
+  sh -c 'apt-get update >/dev/null && apt-cache policy chromium'
+```
+
+Changing the pin requires a new live result. The owner build downloads and
+checksum-verifies the unchanged agent-browser release. It does not download a
+browser into the owner. Do not rebuild NVIDIA's base.
+
+#### 3. Run And Check Evidence
+
+Run from the repository root:
+
+```bash
+node openrind-desktop/packages/browser-pods/test/live/openshell-e2e.mjs
+```
+
+`OPENSHELL_BINARY_DIR`, `BROWSER_OWNER_IMAGE`, and `BROWSER_POD_IMAGE` override the
+fixture defaults. A release build can use `OPENSHELL_BINARY_DIR` set to the
+absolute `vendor/openshell/target/release` path. If Z3 is not installed system-wide,
+set `LD_LIBRARY_PATH` to its library directory before running the fixture.
+
+Require exit code 0 and the final `Result: passed` line. Inspect `evidence.json`:
+`result` must be `passed`, `tests` must contain all 13 checks, and `cleanupError`
+must be absent. Open `page.png` to inspect the screenshot. Record the commit,
+architecture, image ID, versions, and evidence path when reporting a result.
+Do not report only the number of unit tests.
+
+The runner prints a private `/tmp/openrind-browser-live-*` evidence directory.
+It retains `evidence.json`, `page.png`, gateway/broker logs, and failure diagnostics.
+The directory also contains private test credentials; do not publish it as a whole.
+It removes its containers and network on normal success or failure. Abruptly killing
+the runner can leave test resources that need operator cleanup.
+
+The owner uses the published NVIDIA base plus the real helper and pinned client.
+It contains no Chromium, FUSE, Claude, Haloop, or Desktop UI. The browser pod runs
+under actual OpenShell restrictions. The test covers real navigation, click/fill,
+screenshots, session reuse, a deliberate browser crash, and cleanup. It is not a
+substitute for `owner-smoke.sh` in a FUSE owner or the full Desktop release gates.
+
+#### Failure Checks
+
+| Failure | Check |
+|---|---|
+| Docker socket or TCP permission error | Run the preflight commands and record the exact failure. Fix access; do not skip the live test |
+| `libz3.so.4` not found | Install the runtime library or set `LD_LIBRARY_PATH`; a successful Rust build does not prove runtime linkage |
+| `ws` module not found | Install the host package dependency before starting the fixture |
+| Address already in use | Stop only a test process you own, or free the requested port with operator approval |
+| Browser create or navigation times out | Read private gateway, pod, and helper logs; confirm the optimized debug SHA build and the image's `ip`, `nft`, and `nsenter` tools |
+| Chromium package pin unavailable | Query the Debian repository as above, record a new exact pin, rebuild the pod, and rerun |
+| Cleanup error | Keep the evidence and identify test resources by their recorded IDs. Do not delete unrelated containers or volumes |
 
 ### Broker Process
 
@@ -297,8 +518,9 @@ a template, not a ready-to-run customer configuration:
 
 Use the actual private Docker bridge address. Never bind all interfaces or use
 the gateway's port 18770 for the broker. The owner ID, generation, and workspace
-come from trusted host setup, not a browser request. Runtime observation of this
-binding remains a Stage 0 gate. The service token must be 32-128 base64url characters.
+come from trusted host setup, not a browser request. The Linux fixture proves a
+single configured binding; ongoing owner-lifecycle observation remains unfinished.
+The service token must be 32-128 base64url characters.
 
 ```bash
 OPENRIND_BROWSER_PODS_EXPERIMENTAL=1 \
@@ -328,6 +550,9 @@ It uses `protocol: rest`, `tls: none`, one bridge `/32`, and no request-body or
 WebSocket-frame credential rewrite. Store the real token only in the host broker
 config and OpenShell provider. The helper receives `OPENRIND_BROWSER_POD_TOKEN`
 as a native provider placeholder. Do not copy the host token into the sandbox.
+Attachment refresh is asynchronous. Wait for a new exec process to receive the
+placeholder before starting the helper. Attaching a provider does not update the
+environment of an already-running Claude process.
 
 Trusted provisioning must install `/etc/openrind-browser-pods/helper.json`, owned
 by root and not writable by the agent:
@@ -339,9 +564,11 @@ by root and not writable by the agent:
 }
 ```
 
-The new primary image supplies static Kernel settings and a root-owned action
-policy. Start a fresh shell after attaching the provider. Do not reuse an
-agent-browser daemon started with other settings. In that shell:
+The new primary image's client launcher supplies Kernel defaults at invocation
+and checks a root-owned action policy. Image ENV is not sufficient. The launcher
+uses a non-secret `KERNEL_API_KEY` only for client compatibility; never put the
+host broker token there. Start a fresh shell after attaching the provider. Do not
+reuse an agent-browser daemon started with other settings. In that shell:
 
 ```bash
 OPENRIND_BROWSER_PODS_EXPERIMENTAL=1 openrind-browser-pod-ensure
@@ -391,17 +618,12 @@ It verifies:
 The crash-restart assertion uses Docker inspection and therefore intentionally targets
 the v1 Docker driver.
 
-To include a real Claude write, attach a configured provider:
-
-```bash
-export OPENRIND_SHELL_FUSE_REAL_CLAUDE=1
-export OPENRIND_SHELL_FUSE_E2E_PROVIDER=claude
-tests/fuse/test_openshell_e2e.sh
-```
-
-For AWS Bedrock, build `tests/fuse/Dockerfile.bedrock`, attach an `aws` provider, and
-set `CLAUDE_CODE_USE_BEDROCK`, `AWS_REGION`, and `ANTHROPIC_MODEL`. Raw provider
-credentials must never be passed with `--env`.
+For a real primary Claude write, use Desktop's signed Haloop launch and verify the
+file and final flush in that session. The harness's historical real-Claude/provider
+flags and the Bedrock overlay are not a validated route through the current
+required Haloop contract. Do not attach a direct Anthropic or AWS provider to make
+this test pass. Storage conformance, browser transport, and signed agent inference
+are separate test results. Raw provider credentials must never use `--env`.
 
 ### Local TLS PostgreSQL Fixture
 

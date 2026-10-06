@@ -5,13 +5,21 @@ description: Query PostgreSQL with pg and navigate Openrind Shell's primary FUSE
 
 # Openrind Shell Navigate
 
-Identify the runtime from the kernel mount, not an image tag:
+First identify whether this is an owner sandbox. Browser pods contain no FUSE
+mount, owner home, or `pg` helper. The separate browser-only test owner also has
+no persistence. Absence of FUSE alone does not identify compatibility mode.
+
+Check the kernel mount and installed runtime, not an image tag:
 
 ```bash
 if mountpoint -q /sandbox/work 2>/dev/null; then
   echo primary-fuse
+elif command -v openrind-shell-fused >/dev/null 2>&1; then
+  echo primary-fuse-not-mounted
+elif command -v openrind-shell >/dev/null 2>&1; then
+  echo compatibility-check-init-and-datasource
 else
-  echo compatibility
+  echo no-openrind-storage-runtime
 fi
 ```
 
@@ -20,9 +28,11 @@ fi
 ```mermaid
 flowchart TB
   detect{"mountpoint /sandbox/work?"}
-  detect -->|Yes| primary["Primary FUSE<br/>HOME=/sandbox/work"]
-  primary --> all["Every descendant file<br/>PostgreSQL-backed"]
-  detect -->|No| compat["Compatibility<br/>HOME=/sandbox"]
+  detect -->|Yes| primary["Primary FUSE<br/>cwd=/sandbox/work"]
+  primary --> all["Project files<br/>PostgreSQL-backed"]
+  primary --> home["Claude HOME=/sandbox/claude-home<br/>device-local named volume"]
+  detect -->|No| check["Check installed runtime and init<br/>do not assume persistence"]
+  check --> compat["Compatibility, when selected<br/>HOME=/sandbox"]
   compat --> scoped["Persisted: .claude, .claude.json,<br/>.openrind-shell and legacy .openeral"]
   compat --> ephemeral["Everything else<br/>sandbox-local"]
   custom["createOpenrindShell custom agent"] --> db["/db read-only PgFs"]
@@ -43,6 +53,8 @@ The helper prints a JSON array and exits nonzero on database or policy failure.
 
 Use normal tools below `/sandbox/work`. `fsync` is an explicit durability barrier;
 clean Claude exit also flushes pending dirty data.
+Claude's settings and history are in `/sandbox/claude-home`, not on FUSE.
+They survive only while the device-local named volume is retained.
 
 ```bash
 openrind-shell-fused health
@@ -73,8 +85,20 @@ Run from the relevant project directory:
 
 ```bash
 openrind-shell memory refresh --query "current project"
-claude -c
 ```
+
+In primary Desktop sessions, use Desktop **Reconnect** for the next signed Claude
+launch. Do not run an unsigned `claude -c` as recovery. That command is an option
+only in the separately configured compatibility runtime.
+
+## Browser Results
+
+Use the `openrind-browser` skill only in an already enabled owner. It uses the
+Kernel-compatible service with a separate real Chromium sandbox. Screenshots can
+return to the owner and be written under `/sandbox/work`. Check the file and run
+`openrind-shell-fused flush-all` before claiming durability. Browser downloads,
+profiles, and cookies do not appear on FUSE automatically. File artifact APIs
+are not implemented; native client `upload` and `download` are denied.
 
 ## `/db` Virtual Filesystem
 

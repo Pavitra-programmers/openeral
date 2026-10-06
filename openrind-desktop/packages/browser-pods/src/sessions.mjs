@@ -49,7 +49,8 @@ export class BrowserSessions {
         'CAPACITY_EXHAUSTED', 429);
       const now = this.clock();
       const id = randomUUID();
-      const session = { id, name: `browser-${id}`, ownerId: owner.id, ownerGeneration: owner.generation,
+      // OpenShell routable names have a 19-character limit. Keep the full ID in labels.
+      const session = { id, name: `br-${randomBytes(8).toString('hex')}`, ownerId: owner.id, ownerGeneration: owner.generation,
         workspaceId: owner.workspaceId, brokerGeneration: this.generation, options,
         state: 'Creating', createdAt: now, expiresAt: now + options.effective.lifetimeMs,
         idleExpiresAt: null, attachment: randomBytes(32).toString('base64url'),

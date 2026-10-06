@@ -1,0 +1,28 @@
+# Browser transport fixture, not the full FUSE/Haloop Desktop image.
+# Build from the repository root. It contains no browser.
+FROM node:22.19.0-bookworm-slim AS helper-builder
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /opt/openrind-browser-pods
+COPY openrind-desktop/packages/browser-pods/package.json openrind-desktop/packages/browser-pods/package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+COPY openrind-desktop/packages/browser-pods/src/ ./src/
+COPY openrind-desktop/packages/browser-pods/bin/ ./bin/
+COPY openrind-desktop/packages/browser-pods/native/helper.c ./
+RUN cc -std=c11 -D_POSIX_C_SOURCE=200809L -O2 -Wall -Wextra -Werror -o helper helper.c
+
+FROM ghcr.io/nvidia/openshell-community/sandboxes/base:latest
+USER root
+COPY --from=helper-builder /usr/local/bin/node /usr/bin/node
+COPY --from=helper-builder /opt/openrind-browser-pods/ /opt/openrind-browser-pods/
+COPY --from=helper-builder /opt/openrind-browser-pods/helper /usr/local/bin/openrind-browser-pod-helper
+COPY openrind-desktop/packages/browser-pods/packaging/ /opt/openrind/browser/
+RUN node /opt/openrind/browser/install-agent-browser.mjs \
+    && chmod 0755 /opt/openrind-browser-pods/bin/helper-ensure.sh \
+    && ln -s /opt/openrind-browser-pods/bin/helper-ensure.sh /usr/local/bin/openrind-browser-pod-ensure \
+    && install -d -m 0755 /etc/openrind-browser-pods \
+    && printf '%s\n' '{"brokerOrigin":"http://host.openshell.internal:19301","generation":"openshell-e2e"}' \
+       > /etc/openrind-browser-pods/helper.json
+USER sandbox
+WORKDIR /sandbox
+CMD ["sleep", "infinity"]

@@ -40,7 +40,7 @@ flowchart TB
     init["openrind-shell-init one-shot"]
     database["Migrate V1-V8, bridge renamed rows,<br/>prepare volume and one-time legacy import"]
     verify["Verify writer lease in PostgreSQL<br/>and fsync/read/unlink through mount"]
-    configure["Prepare user-owned Claude home,<br/>configure Openrind Gateway, remove upload"]
+    configure["Prepare user-owned Claude home,<br/>configure required Haloop route, remove upload"]
     marker["Write init marker and exit 0"]
   end
 
@@ -180,18 +180,57 @@ UID; Claude can read runtime files and signal the daemon. Network policy, TLS, l
 fencing, and least-privilege PostgreSQL roles remain required. A separate storage UID
 and supervisor-mediated secret channel are future hardening work.
 
-Provider keys are different from the uploaded PostgreSQL URL. OpenShell injects
-provider placeholders and resolves them only in approved HTTPS routes. Openrind
-Gateway presign creation is constrained to `POST /v1/presign` with request-body
-credential rewriting. Raw PostgreSQL cannot use that placeholder mechanism, so its
-URL is a mode-0600 upload consumed into runtime state and removed from `/sandbox`
-after init. Legacy StringCost routes remain temporarily for existing providers.
+Provider credentials are different from the uploaded PostgreSQL URL. OpenShell
+supplies placeholders and replaces them at approved endpoints. Raw PostgreSQL
+cannot use that HTTP-header mechanism, so its URL is a mode-0600 upload consumed
+into runtime state and removed from `/sandbox` after init. Legacy presign and
+StringCost code is not a primary Desktop inference fallback.
+
+## Primary Inference
+
+Desktop starts the host-managed Haloop edge and private trace collector. It
+registers an Anthropic route and a scoped OpenShell provider for the selected
+workspace, sandbox, and agent. The upstream Anthropic key stays on the host.
+The sandbox uses an endpoint-bound placeholder; OpenShell replaces it with the
+scoped edge token at the allowed endpoint. The browser broker uses a separate
+provider and credential. It is not on the inference path.
+
+```mermaid
+sequenceDiagram
+  actor User
+  participant Desktop
+  participant Shell as Owner sandbox
+  participant Proxy as OpenShell proxy
+  participant Haloop as Host Haloop edge
+  participant Model as Anthropic
+  User->>Desktop: Create or reconnect Claude session
+  Desktop->>Haloop: Register server-owned route and scope
+  Desktop->>Shell: Launch Claude with signed conversation context
+  Shell->>Proxy: Model request with provider placeholder
+  Proxy->>Haloop: Substitute scoped token at approved endpoint
+  Haloop->>Haloop: Verify signed context and derive trace identity
+  Haloop->>Model: Model request with upstream credential
+  Model-->>Haloop: Model response
+  Haloop-->>Proxy: Response
+  Proxy-->>Shell: Response
+```
+
+The edge rejects missing or invalid conversation context. A raw SSH shell does
+not supply that context, so manually running `claude` is not the primary customer
+launch. Startup readiness is required. Trace capture after startup is best-effort;
+check capture counters before claiming a trace exists. Desktop cleanup closes
+agents and revokes scoped providers before it removes a sandbox. Use that managed
+cleanup for Desktop-owned resources.
 
 ## Experimental Browser Pods
 
-This is a separate browser runtime, not a new persistence path. Its Kernel service
-and relay code exist. Normal Desktop activation remains disabled until the live
-checks in [BROWSER-PODS.md](./BROWSER-PODS.md) pass.
+This is a separate browser runtime, not a new persistence path. The Kernel API
+adapter and relay run outside the model's MCP tool path. The real Linux fixture
+passed 13 checks with agent-browser v0.38.2 and Chromium 154.0.8037.92 on
+2026-10-06. Normal Desktop activation remains disabled pending the separate
+Desktop/Claude/FUSE, installation, and load requirements. See the
+[package status](./openrind-desktop/packages/browser-pods/README.md), not the target
+spec alone, for current availability.
 
 ```mermaid
 flowchart LR
@@ -223,21 +262,75 @@ flowchart LR
   webproxy --> web["Allowed websites"]
 ```
 
+The installed client launcher sets `AGENT_BROWSER_PROVIDER=kernel` and
+`KERNEL_ENDPOINT=http://127.0.0.1:19300`, then executes the unchanged release
+binary. OpenShell clears Docker ENV in exec/SSH sessions. The launcher's defaults
+therefore apply at each client invocation. `KERNEL_API_KEY` contains a non-secret
+compatibility value. The real broker token is an OpenShell provider credential,
+not a Kernel cloud key or an agent environment secret.
+
+The helper is installed in our owner images. It is not a binary-free transport
+for arbitrary third-party images. It has one fixed loopback port per owner. Its
+native parent supplies the policy-attributed binary identity while Node relays
+traffic through the OpenShell CONNECT proxy. Native header injection authenticates
+the HTTP requests and WebSocket upgrades. The broker endpoint uses `protocol: rest`
+with no request-body or WebSocket-frame credential rewrite. It is a private host
+HTTP endpoint, not a public service route or a custom TLS termination service.
+
+```mermaid
+sequenceDiagram
+  participant Client as agent-browser Kernel provider
+  participant Helper as Owner loopback helper
+  participant Broker as Host Kernel-compatible broker
+  participant OS as Native OpenShell
+  participant Pod as Chromium pod
+  Client->>Helper: POST /browsers
+  Helper->>Broker: Request through OpenShell proxy and provider injection
+  Broker->>Broker: Reserve quota and store create intent in SQLite
+  Broker->>OS: Create isolated sandbox and exec detached pod agent
+  OS->>Pod: Apply policy and launch real Chromium
+  Broker->>OS: ForwardTcp for control and CDP
+  Broker->>Helper: Probe CDP through the complete owner route
+  Broker-->>Client: session_id and owner-loopback cdp_ws_url
+  Client->>Helper: Open CDP WebSocket
+  Helper->>Pod: Relay through broker and native ForwardTcp
+  Pod-->>Client: Page results and screenshot bytes
+  Client->>Helper: DELETE /browsers/id
+  Helper->>Broker: Stop request
+  Broker->>Broker: Revoke attachment
+  Broker->>Pod: Stop browser and confirm
+  Broker-->>Client: 204 after confirmed stop
+  Broker->>OS: Delete container and retain quota until confirmed
+```
+
+Only Kernel create/delete routes ship. Hyperbrowser option validation exists,
+but the HTTP adapter, Argide fixture, and file artifact API do not. No request
+falls back to a vendor endpoint. The service does not impersonate vendor domains.
+Local browser executable selection and path translation are outside this design.
+
 The helper has no path translation API. Client `upload` and `download` commands
 are denied by a native client policy. This is a client guardrail, not a security
 boundary. Direct CDP controls the assigned browser. Website allowlists constrain
 destinations, not the content sent to them.
 
 The pod uses `--no-sandbox` with explicit host operator acceptance. OpenShell is
-the outer isolation boundary. The source specifies a 2 GiB memory limit, a 1 GiB
-`/tmp` tmpfs, and a 256 MiB `/dev/shm` tmpfs. A real sandbox must verify these
-settings and Chrome compatibility before release.
+the outer isolation boundary. The runtime requests a 2 GiB memory limit, a 1 GiB
+`/tmp` tmpfs, and a 256 MiB `/dev/shm` tmpfs. These run in the Linux fixture;
+concurrent-load and whole-process resource-bound tests remain required. The pod
+receives no FUSE mount, owner home, or owner provider credentials. Website HTTPS
+uses `tls: skip`: Chromium verifies website TLS through a policy-controlled tunnel.
 
 Create persists its intent before allocation. It waits for a real browser probe
 through the owner's helper before it returns a CDP URL. Stop revokes access first.
 It reports success only after confirmed browser stop or container deletion.
 Cleanup-pending rows retain quota. Broker restart ends old sessions; it does not
 replay website actions. A helper disconnect also ends its owner's sessions.
+
+Before each command the client checks browser liveness. A failed three-second
+probe can cause it to delete the old provider session and create another. This
+is replacement, not reconnection to the same page. Broker restart and session
+expiry also do not restore cookies or tabs. Do not replay a possibly completed
+website action on the assumption that replacement rolled it back.
 
 The broker has native gateway and Docker authority. It must not be reachable
 from browser pods. No public CDP route or Desktop viewer is added. FUSE, the old

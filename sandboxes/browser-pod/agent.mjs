@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { closeSync, openSync, writeSync } from 'node:fs';
 import http from 'node:http';
 import { setTimeout as sleep } from 'node:timers/promises';
 
@@ -10,14 +11,22 @@ const proxy = new URL(process.env.HTTPS_PROXY || process.env.HTTP_PROXY || 'miss
 if (proxy.protocol !== 'http:' || proxy.username || proxy.password) throw new Error('OPENSHELL_PROXY_REQUIRED');
 const instance = randomUUID();
 let state = 'starting'; let cdpPath; let leaseUntil = Date.now() + 30_000; let stopping;
+// Keep bounded startup diagnostics private to this disposable browser pod.
+const chromeLog = openSync('/tmp/openrind-browser/chromium.log', 'wx', 0o600);
+let logBytes = 0;
 const child = spawn('/usr/lib/chromium/chromium', [
   '--headless=new', '--no-sandbox', '--disable-quic', '--disable-background-networking',
   '--no-first-run', '--no-default-browser-check', '--remote-debugging-address=127.0.0.1',
   '--remote-debugging-port=9222', '--user-data-dir=/tmp/openrind-browser/profile',
   `--window-size=${config.screen.width},${config.screen.height}`,
   `--proxy-server=${proxy.origin}`, '--proxy-bypass-list=<-loopback>', 'about:blank',
-], { detached: true, stdio: ['ignore', 'ignore', 'ignore'],
+], { detached: true, stdio: ['ignore', 'ignore', 'pipe'],
   env: { PATH: '/usr/bin:/bin', LANG: 'C.UTF-8', HOME: '/tmp/openrind-browser', TMPDIR: '/tmp' } });
+child.stderr.on('data', chunk => {
+  const part = chunk.subarray(0, Math.max(0, 64 * 1024 - logBytes));
+  if (part.length) { try { writeSync(chromeLog, part); logBytes += part.length; } catch { logBytes = 64 * 1024; } }
+});
+child.stderr.on('close', () => closeSync(chromeLog));
 child.on('error', () => { state = 'failed'; });
 child.on('exit', () => { if (state !== 'stopped') state = 'failed'; });
 

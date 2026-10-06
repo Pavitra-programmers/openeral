@@ -16,7 +16,10 @@ for await (const part of response.body) {
 }
 const bytes = Buffer.concat(parts);
 if (createHash('sha256').update(bytes).digest('hex') !== target.sha256) throw new Error('agent-browser checksum mismatch');
-await writeFile('/usr/local/bin/agent-browser', bytes, { flag: 'wx', mode: 0o755 });
-await chmod('/usr/local/bin/agent-browser', 0o755);
-const version = execFileSync('/usr/local/bin/agent-browser', ['--version'], { encoding: 'utf8', timeout: 15_000 });
+const binary = '/opt/openrind/browser/agent-browser';
+await writeFile(binary, bytes, { flag: 'wx', mode: 0o755 });
+await chmod(binary, 0o755);
+const version = execFileSync(binary, ['--version'], { encoding: 'utf8', timeout: 15_000 });
 if (!version.trim().endsWith(manifest.version)) throw new Error('agent-browser version mismatch');
+await writeFile('/usr/local/bin/agent-browser', await readFile(new URL('./agent-browser.sh', import.meta.url)),
+  { flag: 'wx', mode: 0o755 });

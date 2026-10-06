@@ -1,17 +1,31 @@
 ---
 name: openrind-dev
-description: Develop Openrind Shell's OpenShell-supervised PostgreSQL FUSE runtime, compatibility sync runtime, and just-bash library.
-disable-model-invocation: false
-user-invocable: true
+description: Build, test, and diagnose Openrind Shell from source, including the real Linux browser-pod test and host provisioning. Use for repository setup, not browser actions inside an enabled sandbox.
 allowed-tools: Read, Grep, Glob, Bash
-argument-hint: [task description]
 ---
 
 # Openrind Shell Development
 
-Read `README.md`, `ARCHITECTURE.md`, `BUILD.md`, `FUSE-DESIGN.md`, and the files
-being changed before implementation. Keep the primary FUSE, compatibility, and
-custom-agent library paths distinct.
+Paths below are relative to the repository root. Read `CLAUDE.md`, `README.md`,
+and the relevant section of `BUILD.md` first. Read `ARCHITECTURE.md` before runtime
+changes and `FUSE-DESIGN.md` before changing FUSE. Keep primary FUSE, compatibility,
+the custom-agent library, and browser-only fixtures distinct.
+
+## Fresh Checkout
+
+1. Check the operating system and Docker context. The managed Desktop installer
+   targets Windows 11/WSL2. The browser-only live fixture was tested on Linux x64.
+2. Select the requested path. For a first browser proof, use BUILD's **Real Linux
+   Browser Test**. It does not need Desktop, `/dev/fuse`, PostgreSQL, Haloop, or keys.
+3. Follow the dependency and image steps in that section. Keep the package-manager
+   choice consistent. Confirm Docker server access, not only `docker --version`.
+4. If a prerequisite fails, report the command and error before further work.
+   Do not skip a live test, invent an image tag, or select a weaker runtime.
+5. Record what ran and what did not. Source inspection is not a runtime result.
+
+For Windows source setup, BUILD's **Windows Desktop Source Setup** lists the
+required rootfs and external Haloop source. Stop and report missing assets.
+Do not follow historical Tauri setup or change branches to obtain an older flow.
 
 ## Runtime Architecture
 
@@ -176,8 +190,9 @@ changing the experimental browser path. The implemented first path is the built-
 Kernel provider of pinned agent-browser. Chromium runs in a separate OpenShell
 sandbox. Do not add a browser to the owner image or route browser state through FUSE.
 
-Normal Desktop activation is disabled until the real OpenShell gates pass. Keep
-unit tests, fake-CDP transport tests, and actual client/runtime evidence distinct.
+Normal Desktop activation is still disabled. The Linux fixture passed; full
+Desktop/Claude/FUSE and load tests remain. Keep unit tests, fake-CDP transport
+tests, and actual client/runtime evidence distinct.
 The existing Control Chrome option and user MCP settings are outside this migration.
 Do not add a FUSE contract bump to retire managed browser assets.
 
@@ -190,6 +205,66 @@ failure into a passing test or bypass the restriction.
 Use `pnpm --filter @openrind/browser-pods test` from `openrind-desktop` for unit
 tests. The separate `test:transport` command needs TCP sockets. Full setup and test
 limits are in `BUILD.md` under "Experimental Browser Pods".
+
+### Real Browser Proof
+
+Use `openrind-desktop/packages/browser-pods/test/live/openshell-e2e.mjs`. Follow
+[BUILD.md](../../../BUILD.md#real-linux-browser-test) in order, starting with host
+dependencies rather than assuming `node_modules` or native binaries exist.
+
+The fixture uses these components:
+
+| Component | Role |
+|---|---|
+| Vendored CLI, gateway, supervisor | Real native OpenShell; not the stock binary on PATH |
+| `test/live/Dockerfile.owner` | Browser-only agent image with helper and pinned client; no FUSE or Claude |
+| `sandboxes/browser-pod/Dockerfile` | Actual headless Chromium with OpenShell network tools |
+| Built-in `kernel` client provider | Sends real requests to our Kernel-compatible API, not a vendor |
+| Host broker and owner loopback helper | Provider/header-authenticated route through OpenShell to the browser pod |
+
+After completing BUILD's setup, run from the repository root:
+
+```bash
+node openrind-desktop/packages/browser-pods/test/live/openshell-e2e.mjs
+```
+
+Require exit code 0, all 13 checks, `result: passed`, no `cleanupError`, and a valid
+`page.png` in the printed evidence directory. Check navigation, click/fill,
+screenshots, retained sessions, proxy denial, client file-action denial, deliberate
+Chromium crash replacement, and resource cleanup. The test creates and removes
+only its own resources. It does not leave a persistent browser service running.
+
+Report the commit, platform, versions, image ID, exit code, checks, and evidence
+path. Keep the evidence directory private; it contains test credentials. Do not
+claim FUSE screenshot durability, a Claude skill run, Windows Desktop support,
+concurrent-load latency, or Argide compatibility from this fixture.
+
+For a debug supervisor, optimize `sha2` as BUILD documents. Cold identity checks
+on Chromium can time out otherwise. Never bypass identity enforcement. The pod
+requires `ip`, `nft`, and `nsenter`. Do not diagnose missing image tools as a
+Docker permission failure.
+
+### Persistent Host Setup
+
+Read BUILD's **Broker Process** and **Owner Activation** before configuring an
+existing owner. There is no complete production installer yet. The live runner
+is the executable setup example, not an installer for the user's current sandbox.
+
+Match the broker's owner ID and generation to trusted helper configuration.
+Use `browserPodBinding()` and native provider attachment. Keep the real broker
+token host-side. `KERNEL_API_KEY` is a non-secret client compatibility value.
+The helper's parent binary is `/usr/local/bin/openrind-browser-pod-helper`.
+The broker endpoint must use `protocol: rest`, with header injection only and no
+WebSocket-frame or request-body rewrite. Do not grant browser pods this endpoint.
+
+OpenShell exec clears image ENV. Client defaults come from the installed launcher.
+Provider attachment is asynchronous and does not update a running agent's env.
+Wait for a fresh exec to see the placeholder before starting the helper. The
+experimental flag alone cannot create a broker, policy, provider, or helper config.
+
+For an approved FUSE owner, `test/live/owner-smoke.sh` is a separate test. It
+writes evidence to `/sandbox/work` and flushes FUSE. Get approval before using an
+existing customer workspace; do not replace or delete it to install new assets.
 
 ## Source Pin Discipline
 

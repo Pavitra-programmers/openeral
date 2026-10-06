@@ -8,6 +8,11 @@ RUN test -n "$CHROMIUM_VERSION" \
     && groupadd sandbox \
     && useradd -m -d /sandbox -g sandbox -s /bin/bash sandbox \
     && ln -s /usr/local/bin/node /usr/bin/node
+# The side-loaded OpenShell supervisor uses these before workload restrictions.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends iproute2 nftables util-linux \
+    && rm -rf /var/lib/apt/lists/* \
+    && command -v ip && command -v nft && command -v nsenter
 COPY agent.mjs launch.mjs /opt/openrind-browser-pod/
 RUN node --check /opt/openrind-browser-pod/agent.mjs \
     && node --check /opt/openrind-browser-pod/launch.mjs \
