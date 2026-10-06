@@ -1,15 +1,25 @@
-import { browserBinding } from './browser-binding.mjs';
+import { browserBinding, browserPodBinding } from './browser-binding.mjs';
 import { buildFuseCliCommand, buildFuseWslEnv, runFuseOpenShell } from './fuse-runtime.mjs';
 import { DISTRO_NAME, wslRun } from './wsl.mjs';
 
 // Called by trusted sandbox provisioning after the private service is ready.
 // No renderer-provided profile files, shell commands or credential arguments.
 export async function attachBrowserProvider({ endpoint, bridgeAddress, bindingId, sandboxName, serviceToken }) {
+  return attachProvider({ binding: browserBinding({ endpoint, bridgeAddress, bindingId }), sandboxName,
+    serviceToken, credentialEnv: 'OPENRIND_BROWSER_SERVICE_TOKEN' });
+}
+
+// Explicit Stage 0 setup only. Desktop does not call this until the live gates pass.
+export async function attachBrowserPodProvider({ endpoint, bridgeAddress, bindingId, sandboxName, serviceToken }) {
+  return attachProvider({ binding: browserPodBinding({ endpoint, bridgeAddress, bindingId }), sandboxName,
+    serviceToken, credentialEnv: 'OPENRIND_BROWSER_POD_TOKEN' });
+}
+
+async function attachProvider({ binding, sandboxName, serviceToken, credentialEnv }) {
   if (typeof sandboxName !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(sandboxName) ||
       typeof serviceToken !== 'string' || !/^[A-Za-z0-9_-]{32,128}$/.test(serviceToken)) {
     throw new Error('Invalid browser provider provisioning');
   }
-  const binding = browserBinding({ endpoint, bridgeAddress, bindingId });
   const run = async (args, options = {}) => {
     const response = await runFuseOpenShell(args, { ensure: false, timeout: 20_000, ...options });
     if (response.exitCode !== 0) throw new Error('Browser provider provisioning failed');
@@ -25,8 +35,8 @@ export async function attachBrowserProvider({ endpoint, bridgeAddress, bindingId
   // A launch binding is unique; create failure must not update someone else's
   // provider or rotate a credential underneath another active sandbox.
   await run(['provider', 'create', '--name', binding.name, '--type', binding.name,
-    '--credential', 'OPENRIND_BROWSER_SERVICE_TOKEN'], {
-    env: buildFuseWslEnv({ OPENRIND_BROWSER_SERVICE_TOKEN: serviceToken }),
+    '--credential', credentialEnv], {
+    env: buildFuseWslEnv({ [credentialEnv]: serviceToken }),
   });
   try {
     await run(['sandbox', 'provider', 'attach', sandboxName, binding.name]);

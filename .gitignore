@@ -3,6 +3,7 @@ node_modules/
 dist/
 package-lock.json
 !openrind-desktop/packaging/browser-client/package-lock.json
+!openrind-desktop/packages/browser-pods/package-lock.json
 agent-task.txt
 openeral-shell/.env
 target/
@@ -10,6 +11,7 @@ target/
 .codex/*
 !.codex/skills
 AGENTS.md
+!/AGENTS.md
 .claude/skills/*
 !.claude/skills/openrind-dev/
 !.claude/skills/openrind-dev/**
@@ -17,6 +19,8 @@ AGENTS.md
 !.claude/skills/openrind-navigate/**
 !.claude/skills/openrind-shell/
 !.claude/skills/openrind-shell/**
+!.claude/skills/openrind-browser/
+!.claude/skills/openrind-browser/**
 !.claude/skills/excel-report/
 !.claude/skills/excel-report/**
 

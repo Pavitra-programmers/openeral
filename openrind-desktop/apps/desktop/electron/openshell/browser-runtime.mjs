@@ -5,6 +5,18 @@ import { browserBinding } from './browser-binding.mjs';
 import { DISTRO_NAME, wslRun, wslSpawn } from './wsl.mjs';
 import { resolveBrowserResources } from './browser-resources.mjs';
 
+/**
+ * @param {unknown} message
+ * @returns {{type: 'ready'} | {type: 'result', id: string, ok: boolean, value: unknown} | null}
+ */
+export function parseBrowserWorkerMessage(message) {
+  if (!message || typeof message !== 'object' || Array.isArray(message) || !('type' in message)) return null;
+  if (message.type === 'ready' && 'protocol' in message && message.protocol === 1) return { type: 'ready' };
+  if (message.type !== 'result' || !('id' in message) || typeof message.id !== 'string' ||
+      !/^[a-f0-9]{32}$/.test(message.id) || !('ok' in message) || typeof message.ok !== 'boolean') return null;
+  return { type: 'result', id: message.id, ok: message.ok, value: 'value' in message ? message.value : undefined };
+}
+
 export async function startInstalledBrowserRuntime({ resourcesPath, databasePath, port, image, onDisconnect }) {
   const resources = await resolveBrowserResources(resourcesPath);
   return startBrowserRuntime({ ...resources, databasePath, port, image, onDisconnect });
@@ -29,12 +41,16 @@ export async function startBrowserRuntime({ resourceRoot, nodeExecutable, databa
   const serviceToken = randomBytes(32).toString('base64url');
   const container = `openrind-browser-${bindingId}`;
   // Do not inherit Node injection settings, model credentials or database URLs.
+  /** @type {NodeJS.ProcessEnv} */
   const env = {};
   for (const key of ['SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'PATH']) if (process.env[key]) env[key] = process.env[key];
-  const worker = fork(join(resourceRoot, 'worker.cjs'), [], {
+  // Node forwards fork options to spawn; ForkOptions omits windowsHide.
+  /** @type {import('node:child_process').ForkOptions & Pick<import('node:child_process').SpawnOptions, 'windowsHide'>} */
+  const workerOptions = {
     execPath: nodeExecutable, execArgv: [], env,
     stdio: ['pipe', 'pipe', 'pipe', 'ipc'], windowsHide: true,
-  });
+  };
+  const worker = fork(join(resourceRoot, 'worker.cjs'), [], workerOptions);
   let edge;
   let ready = false;
   let closing;
@@ -83,9 +99,10 @@ export async function startBrowserRuntime({ resourceRoot, nodeExecutable, databa
       let workerReady = false, edgeReady = false;
       const finish = () => { if (workerReady && edgeReady) resolve(); };
       startupTimer = setTimeout(() => reject(new Error('Browser runtime startup timed out')), 15_000);
-      worker.on('message', message => {
-        if (message?.type === 'ready' && message.protocol === 1) { workerReady = true; finish(); return; }
-        if (message?.type !== 'result' || typeof message.id !== 'string') return failed();
+      worker.on('message', data => {
+        const message = parseBrowserWorkerMessage(data);
+        if (!message) return failed();
+        if (message.type === 'ready') { workerReady = true; finish(); return; }
         const request = pending.get(message.id);
         if (!request) return failed();
         pending.delete(message.id); clearTimeout(request.timer);

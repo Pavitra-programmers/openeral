@@ -1,5 +1,18 @@
 # CLAUDE.md
 
+## Response Style
+
+Use a relaxed ASD-STE100 style in replies and progress updates. Follow the main
+writing principles. Strict compliance is not required.
+
+- Use short sentences. Give each sentence one main idea.
+- Prefer active voice and common words.
+- Use consistent technical terms. Explain unfamiliar terms when needed.
+- Avoid idioms, metaphors, filler, and unnecessary jargon.
+- Do not change code, commands, paths, identifiers, or quoted text to fit this style.
+- State facts, assumptions, uncertainty, and test limits clearly.
+- Keep answers concise without losing necessary technical detail.
+
 ## Documentation Layout
 
 - `README.md` is the end-user OpenShell flow. Keep package-manager commands out.
@@ -29,6 +42,19 @@ flowchart LR
 - Compatibility supports optional PostgreSQL or sandbox-lifetime PGlite.
 - `sync.ts` is compatibility-only. Never watch or mirror `/sandbox/work`.
 - Claude uses native bash in both images. `/db` is custom-agent-only.
+- Claude's primary HOME is `/sandbox/claude-home` on a named volume. Project files
+  use `/sandbox/work` on FUSE. Browser pods receive neither mount.
+
+## Browser Runtime
+
+- `BROWSER-PODS.md` defines the provider-compatible target. The current package
+  status is in `openrind-desktop/packages/browser-pods/README.md`.
+- The initial path uses agent-browser's Kernel provider and a separate Chromium
+  sandbox. Do not install a browser in the owner sandbox.
+- Normal Desktop browser activation remains disabled until real OpenShell tests
+  pass. Unit tests and fake-CDP tests do not prove client compatibility.
+- Preserve Control Chrome and user MCP configuration. Do not bump the FUSE contract
+  or replace an active owner to retire the old managed MCP dependency.
 
 ## Build And Test
 

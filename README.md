@@ -20,6 +20,9 @@ version yet. Do not present the `:just-bash` publication target as the FUSE runt
 The primary image inherits NVIDIA's published Community base directly. Openrind Shell does
 not rebuild that base image.
 
+Browser pods are experimental. Normal Desktop setup does not enable them.
+See [Browser Support](#browser-support) for the current limits.
+
 The source tree and PostgreSQL schema retain some `openeral` names for upgrade
 compatibility. In particular, `_openeral` is the stable on-disk database namespace;
 renaming public commands does not abandon existing workspaces. Migration V8 also
@@ -76,6 +79,56 @@ starts `openrind-shell-fused` through the normal unprivileged `ProcessHandle` pa
 daemon inherits Landlock, child seccomp, the network namespace, proxy variables, TLS
 roots, and two supervisor-selected descriptors: the FUSE channel and a readiness
 channel. The compatibility image does not use this path.
+
+## Browser Support
+
+The browser-pod code uses agent-browser's built-in `kernel` provider. Here,
+`kernel` means the Openrind API adapter, not a real Kernel account. Chromium runs
+in a separate OpenShell sandbox. It does not run in the agent's FUSE sandbox.
+
+```mermaid
+flowchart LR
+  agent["Claude in the FUSE sandbox<br/>bundled browser skill"] --> cli["agent-browser<br/>Kernel provider"]
+  cli --> helper["Owner loopback helper<br/>127.0.0.1:19300"]
+  helper --> proxy["OpenShell egress proxy"]
+  proxy --> broker["Host broker<br/>session ownership and cleanup"]
+  broker --> forward["Native OpenShell ForwardTcp"]
+  forward --> pod["Separate headless Chromium sandbox"]
+  pod --> policy["OpenShell website allowlist"]
+```
+
+| Capability | Current state |
+|---|---|
+| Kernel API, session registry, helper, and pod launcher | Initial implementation; live OpenShell checks still required |
+| agent-browser CLI and `openrind-browser` skill | Included in new primary image recipes; existing containers are not updated automatically |
+| Normal Desktop browser activation | Disabled until live tests pass |
+| Argide through a Hyperbrowser-compatible API | Not implemented end to end |
+| Website file upload, download archives, and export to FUSE | Not implemented; native client `upload` and `download` are denied |
+| Control Chrome | Separate existing option; unchanged |
+| Browser sidebar or viewer | Not part of this design |
+
+Normal Claude tasks do not need browser activation. The new wrapper no longer
+requires the retired managed MCP service. User MCP settings remain unchanged.
+Old containers can still contain the old wrapper. Do not delete a workspace or
+replace a live container just to obtain browser assets.
+
+For an explicitly enabled development sandbox, these checks use the paired
+OpenShell CLI and gateway:
+
+```bash
+"$OPENSHELL_BIN" --gateway-endpoint "$OPENSHELL_GATEWAY_ENDPOINT" \
+  sandbox exec -n "$OWNER_SANDBOX" --no-tty -- agent-browser --version
+"$OPENSHELL_BIN" --gateway-endpoint "$OPENSHELL_GATEWAY_ENDPOINT" \
+  sandbox exec -n "$OWNER_SANDBOX" --no-tty -- \
+  node /opt/openrind-browser-pods/bin/helper-probe.mjs
+```
+
+A version check does not prove that a real browser works. A failed helper check
+does not justify installing local Chrome or bypassing the proxy. Development
+setup is in [BUILD.md](./BUILD.md#experimental-browser-pods). The
+[implementation status](./openrind-desktop/packages/browser-pods/README.md) records
+the remaining release checks. Do not claim agent-browser or Argide compatibility
+until their unchanged clients pass those checks.
 
 ## Primary FUSE Runtime
 

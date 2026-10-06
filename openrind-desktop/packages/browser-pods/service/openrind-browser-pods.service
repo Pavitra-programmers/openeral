@@ -1,0 +1,30 @@
+[Unit]
+Description=Openrind experimental browser-pod broker
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=openrind-browser
+Group=openrind-browser
+SupplementaryGroups=docker
+Environment=OPENRIND_BROWSER_PODS_EXPERIMENTAL=1
+Environment=NODE_NO_WARNINGS=1
+Environment=HOME=/var/lib/openrind-browser-pods
+Environment=XDG_CONFIG_HOME=/var/lib/openrind-browser-pods/config
+ExecStart=/usr/bin/node /opt/openrind-browser-pods/bin/broker.mjs /etc/openrind-browser-pods/broker.json
+WorkingDirectory=/var/lib/openrind-browser-pods
+StateDirectory=openrind-browser-pods
+StateDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=75
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/openrind-browser-pods
+
+[Install]
+WantedBy=multi-user.target

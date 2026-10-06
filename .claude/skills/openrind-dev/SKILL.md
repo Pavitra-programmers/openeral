@@ -27,9 +27,11 @@ flowchart TB
   subgraph primary["Primary sandbox image"]
     init["TypeScript one-shot init<br/>migrations, volume, legacy import"]
     fused["Rust openrind-shell-fused<br/>VFS, cache, lease, fencing"]
-    home["/sandbox/work<br/>native persisted HOME"]
+    home["/sandbox/work<br/>PostgreSQL-backed project files"]
+    claudehome["/sandbox/claude-home<br/>agent-home named volume"]
     proxy["OpenShell CONNECT proxy<br/>end-to-end PostgreSQL TLS"]
     init --> home
+    init --> claudehome
     home <--> fused
     fused --> proxy
   end
@@ -166,6 +168,28 @@ derived image with `--build-arg BASE_IMAGE=openrind-shell-fuse:local`, then set
 - synchronous namespace/metadata commits;
 - uncertain-commit operation deduplication;
 - one-writer advisory lock, lease epoch, and terminal fencing.
+
+## Browser-Pod Work
+
+Read `BROWSER-PODS.md` and `openrind-desktop/packages/browser-pods/README.md` before
+changing the experimental browser path. The implemented first path is the built-in
+Kernel provider of pinned agent-browser. Chromium runs in a separate OpenShell
+sandbox. Do not add a browser to the owner image or route browser state through FUSE.
+
+Normal Desktop activation is disabled until the real OpenShell gates pass. Keep
+unit tests, fake-CDP transport tests, and actual client/runtime evidence distinct.
+The existing Control Chrome option and user MCP settings are outside this migration.
+Do not add a FUSE contract bump to retire managed browser assets.
+
+Kernel HTTP routes exist. Hyperbrowser HTTP routes and artifact APIs do not.
+An option-normalizer test is not an Argide compatibility test. Keep the README's
+availability table, bundled browser skill, and package status consistent with code.
+Record blocked tests as blocked. Do not convert a socket or Docker permission
+failure into a passing test or bypass the restriction.
+
+Use `pnpm --filter @openrind/browser-pods test` from `openrind-desktop` for unit
+tests. The separate `test:transport` command needs TCP sockets. Full setup and test
+limits are in `BUILD.md` under "Experimental Browser Pods".
 
 ## Source Pin Discipline
 

@@ -187,6 +187,65 @@ credential rewriting. Raw PostgreSQL cannot use that placeholder mechanism, so i
 URL is a mode-0600 upload consumed into runtime state and removed from `/sandbox`
 after init. Legacy StringCost routes remain temporarily for existing providers.
 
+## Experimental Browser Pods
+
+This is a separate browser runtime, not a new persistence path. Its Kernel service
+and relay code exist. Normal Desktop activation remains disabled until the live
+checks in [BROWSER-PODS.md](./BROWSER-PODS.md) pass.
+
+```mermaid
+flowchart LR
+  subgraph owner["Existing FUSE owner sandbox"]
+    claude["Claude<br/>bundled openrind-browser skill"]
+    client["agent-browser v0.38.2<br/>Kernel provider"]
+    helper["Native helper parent + Node relay<br/>127.0.0.1:19300"]
+    ownerproxy["OpenShell CONNECT proxy<br/>REST header credential injection"]
+    files["/sandbox/work<br/>existing PostgreSQL FUSE"]
+    claude --> client --> helper --> ownerproxy
+    client -->|"screenshot bytes"| files
+  end
+  subgraph host["Gateway host"]
+    broker["Experimental Kernel broker<br/>private host endpoint"]
+    db[("Private SQLite<br/>owner, lease, cleanup state")]
+    native["Native sandbox create/exec<br/>and ForwardTcp"]
+    broker --> db
+    broker --> native
+  end
+  subgraph pod["Separate browser sandbox; no FUSE or owner home"]
+    control["Detached pod agent<br/>loopback control + lease"]
+    chromium["Headless Chromium<br/>loopback CDP"]
+    webproxy["OpenShell website policy<br/>allowlist + tls: skip"]
+    control --> chromium --> webproxy
+  end
+  ownerproxy --> broker
+  native --> control
+  native <--> chromium
+  webproxy --> web["Allowed websites"]
+```
+
+The helper has no path translation API. Client `upload` and `download` commands
+are denied by a native client policy. This is a client guardrail, not a security
+boundary. Direct CDP controls the assigned browser. Website allowlists constrain
+destinations, not the content sent to them.
+
+The pod uses `--no-sandbox` with explicit host operator acceptance. OpenShell is
+the outer isolation boundary. The source specifies a 2 GiB memory limit, a 1 GiB
+`/tmp` tmpfs, and a 256 MiB `/dev/shm` tmpfs. A real sandbox must verify these
+settings and Chrome compatibility before release.
+
+Create persists its intent before allocation. It waits for a real browser probe
+through the owner's helper before it returns a CDP URL. Stop revokes access first.
+It reports success only after confirmed browser stop or container deletion.
+Cleanup-pending rows retain quota. Broker restart ends old sessions; it does not
+replay website actions. A helper disconnect also ends its owner's sessions.
+
+The broker has native gateway and Docker authority. It must not be reachable
+from browser pods. No public CDP route or Desktop viewer is added. FUSE, the old
+compatibility watcher, and user-owned MCP settings stay separate.
+
+See [implementation limits](./openrind-desktop/packages/browser-pods/README.md)
+and [developer setup](./BUILD.md#experimental-browser-pods) before testing.
+
 ## Compatibility Runtime
 
 `Dockerfile.openrind-shell-compat` retains the previous model:

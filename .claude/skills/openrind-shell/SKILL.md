@@ -35,6 +35,23 @@ with the managed gateway endpoint. The filesystem state must be `writable`.
 `Ready` alone does not prove initialization succeeded. A manual
 `sandbox connect` opens a diagnostic shell, not a signed agent launch.
 
+## Browser Diagnostics
+
+Normal Desktop setup does not enable browser pods yet. Do not make a browser
+service a prerequisite for ordinary Claude launch. The new image ignores the
+retired managed MCP descriptor, but an existing container may still have the old
+wrapper. Do not delete or replace that container without the user's approval.
+
+For a host-enabled development sandbox, check the installed `agent-browser`
+version and run `/opt/openrind-browser-pods/bin/helper-probe.mjs` with Node through
+OpenShell `sandbox exec`. Use the `openrind-browser` skill only after that check
+passes. Report missing assets, denied destinations, or a stopped helper. Do not
+start local Chrome, switch providers, or change the network policy as recovery.
+
+The provider path is experimental. Argide and file artifact APIs are not ready.
+Control Chrome and user MCP servers are separate and must remain unchanged.
+Read `openrind-desktop/packages/browser-pods/README.md` for current test limits.
+
 ## Persistence and safety
 
 - `/sandbox/work` is PostgreSQL-backed FUSE, not a watched or mirrored folder.

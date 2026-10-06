@@ -1,0 +1,15 @@
+{
+  "version": "0.38.2",
+  "sourceCommit": "39a74c70d7759d5a6de7a22c04570bb626bbd081",
+  "license": "Apache-2.0",
+  "targets": {
+    "x64": {
+      "url": "https://github.com/vercel-labs/agent-browser/releases/download/v0.38.2/agent-browser-linux-x64",
+      "sha256": "a54b765192db774666f0513fa8b545a298753b6f29e73bcdf4a1e78f18e7c0e1"
+    },
+    "arm64": {
+      "url": "https://github.com/vercel-labs/agent-browser/releases/download/v0.38.2/agent-browser-linux-arm64",
+      "sha256": "690c02d952de8497bba4f8cc58b59acbf27dc27b346755869b518f4b411c7f40"
+    }
+  }
+}

@@ -211,6 +211,161 @@ bash build-image.sh
 It invokes OpenShell's public build/create flow and never imports images through
 containerd, changes Docker networking, or rebuilds NVIDIA's base.
 
+## Experimental Browser Pods
+
+This is the initial Kernel implementation, not the completed v1 release.
+Read the [status and remaining gates](./openrind-desktop/packages/browser-pods/README.md).
+Do not enable it for normal Desktop launches until Stage 0 passes. It uses the
+existing FUSE fork without adding OpenShell patches.
+
+Run unit and local transport tests on Node.js 22.19 or newer:
+
+```bash
+cd openrind-desktop
+pnpm --filter @openrind/browser-pods install --frozen-lockfile
+pnpm --filter @openrind/browser-pods test
+pnpm --filter @openrind/browser-pods test:transport
+cd ..
+cc -std=c11 -D_POSIX_C_SOURCE=200809L -O2 -Wall -Wextra -Werror \
+  -fsyntax-only openrind-desktop/packages/browser-pods/native/helper.c
+```
+
+The transport test needs TCP loopback access, including port 19300. It uses a fake
+CDP peer. It does not prove OpenShell or Chromium compatibility. It is not skipped
+when the test runner denies sockets.
+
+### Build Assets
+
+The primary image recipes install the unchanged agent-browser v0.38.2 Linux
+release for x64 or arm64. The manifest records its commit and SHA-256. The image
+build checks both checksum and version. No browser or package is downloaded on
+first use. A version check does not prove the native daemon works under OpenShell.
+
+The separate pod image requires an explicit Debian Chromium package version:
+
+```bash
+docker build --pull=false -f sandboxes/browser-pod/Dockerfile \
+  --build-arg CHROMIUM_VERSION='<exact Debian package version>' \
+  -t openrind-browser-pod:stage0 sandboxes/browser-pod
+docker image inspect --format '{{.Id}}' openrind-browser-pod:stage0
+```
+
+Select a version available in the base image's Debian repository and record it in
+the test evidence. Do not invent a version or accept `latest` in broker config.
+Pre-pull or build in the gateway's Docker daemon. On Windows, use the managed WSL
+daemon. The broker requires an image digest and fails preflight if it is absent.
+Set `image_pull_policy = "Never"` in the gateway's `[openshell.drivers.docker]`
+configuration, as in the local gateway example above. The broker and gateway must
+use the same Docker daemon. The broker's local image check does not verify either
+condition. Without `Never`, OpenShell can still pull during create, for example
+if an image disappears after preflight or the gateway uses `Always`.
+Image publication and a cross-platform tested Chromium pin remain release work.
+
+### Broker Process
+
+The broker runs on the gateway host. Node's SQLite database enforces a single
+broker. Install the package with its production dependency, `ws@8.19.0`, at
+`/opt/openrind-browser-pods`. The standalone `package-lock.json` supports `npm ci`
+for that deployment. The workspace uses the existing pnpm lockfile.
+
+Create a private JSON configuration owned by the broker user, mode 0600. This is
+a template, not a ready-to-run customer configuration:
+
+```json
+{
+  "listen": { "host": "172.18.0.1", "port": 19301 },
+  "runtime": {
+    "binary": "/opt/openshell/bin/openshell",
+    "gateway": "http://127.0.0.1:18770",
+    "image": "sha256:<verified local image ID>",
+    "stateDir": "/var/lib/openrind-browser-pods",
+    "websiteHosts": ["example.com"],
+    "acceptNoSandbox": true
+  },
+  "owners": [{
+    "serviceToken": "<random host-only base64url token>",
+    "owner": {
+      "id": "<native owner sandbox ID>",
+      "generation": "<fresh owner generation>",
+      "workspaceId": "<registered workspace ID>",
+      "helperOrigin": "http://127.0.0.1:19300",
+      "providers": ["kernel"]
+    }
+  }]
+}
+```
+
+Use the actual private Docker bridge address. Never bind all interfaces or use
+the gateway's port 18770 for the broker. The owner ID, generation, and workspace
+come from trusted host setup, not a browser request. Runtime observation of this
+binding remains a Stage 0 gate. The service token must be 32-128 base64url characters.
+
+```bash
+OPENRIND_BROWSER_PODS_EXPERIMENTAL=1 \
+node openrind-desktop/packages/browser-pods/bin/broker.mjs \
+  /etc/openrind-browser-pods/broker.json
+```
+
+The optional service unit is at
+`openrind-desktop/packages/browser-pods/service/openrind-browser-pods.service`.
+It expects an `openrind-browser` system account with Docker access and the installed
+package. Docker access is host administrative authority. Review that grant before
+installation. The unit supplies a private HOME/config directory for the native CLI.
+Broker shutdown revokes sessions and retains incomplete cleanup in SQLite. Startup
+will not admit new sessions until old resources are removed.
+
+### Owner Activation
+
+This step is still explicit developer provisioning. No production Desktop UI calls
+it. `browserPodBinding()` in `browser-binding.mjs` creates the native profile and
+network rule. `attachBrowserPodProvider()` in `browser-provider.mjs` can attach it
+through the existing Windows/WSL runtime. Linux setup uses the same native profile
+import and provider attach commands. A common cross-platform installer is pending.
+
+The profile grants the dedicated helper only `POST /browsers`,
+`DELETE /browsers/*`, and WebSocket upgrades at `/control` and `/cdp/*`.
+It uses `protocol: rest`, `tls: none`, one bridge `/32`, and no request-body or
+WebSocket-frame credential rewrite. Store the real token only in the host broker
+config and OpenShell provider. The helper receives `OPENRIND_BROWSER_POD_TOKEN`
+as a native provider placeholder. Do not copy the host token into the sandbox.
+
+Trusted provisioning must install `/etc/openrind-browser-pods/helper.json`, owned
+by root and not writable by the agent:
+
+```json
+{
+  "brokerOrigin": "http://host.openshell.internal:19301",
+  "generation": "<same owner generation as the broker>"
+}
+```
+
+The new primary image supplies static Kernel settings and a root-owned action
+policy. Start a fresh shell after attaching the provider. Do not reuse an
+agent-browser daemon started with other settings. In that shell:
+
+```bash
+OPENRIND_BROWSER_PODS_EXPERIMENTAL=1 openrind-browser-pod-ensure
+node /opt/openrind-browser-pods/bin/helper-probe.mjs
+```
+
+The helper is detached with its native parent intact. It serves one sandbox's
+loopback port 19300. It stops on broker connection loss. It does not restart or
+replay browser operations automatically. Client policy validation is a guardrail;
+arbitrary client flags and user configuration are not a server-side boundary.
+
+Run the installed-client smoke from the host against a disposable enabled owner:
+
+```bash
+"$OPENSHELL_BIN" --gateway-endpoint "$OPENSHELL_GATEWAY_ENDPOINT" \
+  sandbox exec -n "$OWNER_SANDBOX" --no-tty -- /bin/sh -s \
+  < openrind-desktop/packages/browser-pods/test/live/owner-smoke.sh
+```
+
+This stores evidence on FUSE. It does not test the full failure matrix, concurrent
+create latency, raw credential injection, or Argide. Those checks still block release.
+Existing owner containers are not patched automatically. Do not delete or replace
+one to obtain these assets without a separate user-approved migration.
+
 ## Real FUSE E2E
 
 The Docker-driver harness requires a running patched gateway and an image whose policy

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
+import vm from "node:vm";
 
 import {
   HALOOP_COLLECTOR_CONTAINER_NAME,
@@ -37,10 +38,36 @@ test("authentication probe checks the configured inference edge and rejects an u
   await assert.rejects(__testing.requireAuthenticatedEdge(async (args) => {
     calls++;
     assert.ok(args.at(-1).includes(`fetch(${JSON.stringify(endpoint.href)},`));
-    assert.match(args.at(-1), /r\.status!==400 && r\.status!==401 && r\.status!==403/);
     return { exitCode: 1, stdout: "", stderr: "unexpected status 200" };
   }), /Configure Desktop scoped client profiles/);
   assert.equal(calls, 1);
+});
+
+test("authentication probe accepts only the expected rejection statuses", async () => {
+  let probe;
+  await __testing.requireAuthenticatedEdge(async args => {
+    probe = args.at(-1);
+    return { exitCode: 0, stdout: "", stderr: "" };
+  });
+  for (const status of [200, 204, 302, 400, 401, 403, 404, 429, 500, 503]) {
+    const exits = [];
+    const requests = [];
+    // Execute the generated probe with a fake HTTP peer, not a source-text regex.
+    await vm.runInNewContext(probe, {
+      fetch: async (...args) => { requests.push(args); return { status }; },
+      process: { exit: code => exits.push(code) }, console: { error() {} },
+    }, { timeout: 1000 });
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0][1].method, "POST");
+    assert.equal(JSON.parse(requests[0][1].body).max_tokens, 1);
+    assert.deepEqual(exits, [400, 401, 403].includes(status) ? [] : [1], `status ${status}`);
+  }
+  const exits = [];
+  await vm.runInNewContext(probe, {
+    fetch: async () => { throw new Error("unreachable"); },
+    process: { exit: code => exits.push(code) }, console: { error() {} },
+  }, { timeout: 1000 });
+  assert.deepEqual(exits, [1]);
 });
 
 const scopedProfile = {

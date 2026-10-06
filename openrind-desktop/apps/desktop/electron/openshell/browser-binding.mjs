@@ -27,3 +27,28 @@ export function browserBinding({ endpoint, bridgeAddress, bindingId }) {
     networkPolicy: { name, endpoints: [route], binaries: [{ path: '/usr/local/bin/openrind-browser-client' }] },
   });
 }
+
+// Experimental provider-compatible service. Reuse the native credential profile
+// shape, but grant only these routes to the dedicated helper's native parent.
+export function browserPodBinding({ endpoint, bridgeAddress, bindingId }) {
+  const url = new URL(endpoint);
+  if (url.protocol !== 'http:' || url.pathname !== '/' || url.search || url.hash ||
+      Number(url.port || 80) === 18770) throw new Error('Browser pods require a separate private HTTP endpoint');
+  const base = browserBinding({ endpoint: new URL('/mcp', url).href, bridgeAddress, bindingId });
+  const route = { ...base.networkPolicy.endpoints[0],
+    websocket_credential_rewrite: false, request_body_credential_rewrite: false,
+    rules: [
+      { allow: { method: 'POST', path: '/browsers' } },
+      { allow: { method: 'DELETE', path: '/browsers/*' } },
+      { allow: { method: 'GET', path: '/control' } },
+      { allow: { method: 'GET', path: '/cdp/*' } },
+    ] };
+  const binary = '/usr/local/bin/openrind-browser-pod-helper';
+  return Object.freeze({ name: `${base.name}-pods`,
+    profile: { ...base.profile, id: `${base.name}-pods`, display_name: 'Openrind browser pods (experimental)',
+      credentials: [{ name: 'pod_token', env_vars: ['OPENRIND_BROWSER_POD_TOKEN'], required: true,
+        auth_style: 'bearer', header_name: 'Authorization' }],
+      discovery: { credentials: ['pod_token'] }, endpoints: [route], binaries: [binary] },
+    networkPolicy: { name: `${base.name}-pods`, endpoints: [route], binaries: [{ path: binary }] },
+  });
+}

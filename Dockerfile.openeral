@@ -19,6 +19,13 @@ COPY openrind-desktop/packages/browser-providers/src/ /source/openrind-desktop/p
 COPY openrind-desktop/packages/browser-service/src/ /source/openrind-desktop/packages/browser-service/src/
 RUN npm run build
 
+FROM node:22.19.0-bookworm-slim AS browser-pod-helper-builder
+WORKDIR /opt/openrind-browser-pods
+COPY openrind-desktop/packages/browser-pods/package.json openrind-desktop/packages/browser-pods/package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+COPY openrind-desktop/packages/browser-pods/src/ ./src/
+COPY openrind-desktop/packages/browser-pods/bin/ ./bin/
+
 FROM rust:1.95-bookworm AS fused-builder
 
 WORKDIR /source
@@ -26,6 +33,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY sandboxes/openeral/openclaw-agent-launcher.c sandboxes/openeral/openhands-agent-launcher.c ./
 COPY openrind-desktop/packages/browser-client/native/launcher.c browser-client-launcher.c
+COPY openrind-desktop/packages/browser-pods/native/helper.c browser-pod-helper.c
 RUN cargo build --locked --release -p openeral-fused \
     && cc -std=c11 -D_POSIX_C_SOURCE=200809L -O2 -Wall -Wextra -Werror \
         -o openrind-openclaw-agent openclaw-agent-launcher.c \
@@ -33,7 +41,9 @@ RUN cargo build --locked --release -p openeral-fused \
         -o openrind-openhands-agent openhands-agent-launcher.c \
     && cc -std=c11 -D_POSIX_C_SOURCE=200809L -O2 -Wall -Wextra -Werror \
         -o openrind-browser-client browser-client-launcher.c \
-    && strip target/release/openeral-fused openrind-openclaw-agent openrind-openhands-agent openrind-browser-client
+    && cc -std=c11 -D_POSIX_C_SOURCE=200809L -O2 -Wall -Wextra -Werror \
+        -o openrind-browser-pod-helper browser-pod-helper.c \
+    && strip target/release/openeral-fused openrind-openclaw-agent openrind-openhands-agent openrind-browser-client openrind-browser-pod-helper
 
 FROM ghcr.io/nvidia/openshell-community/sandboxes/base:latest
 
@@ -43,6 +53,15 @@ USER root
 
 ARG OPENCLAW_VERSION=2026.7.1-2
 ARG CLAUDE_CODE_VERSION=latest
+
+# Provider-only client defaults. Browser activation is separate from Claude.
+ENV AGENT_BROWSER_PROVIDER=kernel \
+    KERNEL_ENDPOINT=http://127.0.0.1:19300 \
+    KERNEL_API_KEY=openrind-compat \
+    KERNEL_HEADLESS=true \
+    KERNEL_STEALTH=false \
+    KERNEL_TIMEOUT_SECONDS=300 \
+    AGENT_BROWSER_ACTION_POLICY=/opt/openrind/browser/agent-browser-policy.json
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl gnupg python3 python3-venv \
@@ -56,6 +75,11 @@ RUN apt-get update \
 RUN /usr/bin/python3.12 -m venv --copies /opt/openrind-openhands \
     && /opt/openrind-openhands/bin/python3.12 -m pip install --no-cache-dir "openhands==1.16.0" \
     && /opt/openrind-openhands/bin/python3.12 -I -c 'import sys; from openhands_cli.entrypoint import main; sys.argv = ["openhands", "--help"]; main()'
+
+COPY openrind-desktop/packages/browser-pods/packaging/ /opt/openrind/browser/
+RUN node /opt/openrind/browser/install-agent-browser.mjs \
+    && chown -R root:root /opt/openrind/browser /usr/local/bin/agent-browser \
+    && chmod -R a+rX /opt/openrind/browser
 
 COPY openeral-js/ /opt/openrind-shell/
 RUN cd /opt/openrind-shell && npm install && npm run build && npm prune --omit=dev \
@@ -76,6 +100,12 @@ COPY --from=fused-builder /source/target/release/openeral-fused /usr/local/bin/o
 COPY --from=fused-builder /source/openrind-openclaw-agent /usr/local/bin/openrind-openclaw-agent
 COPY --from=fused-builder /source/openrind-openhands-agent /usr/local/bin/openrind-openhands-agent
 COPY --from=fused-builder /source/openrind-browser-client /usr/local/bin/openrind-browser-client
+COPY --from=fused-builder /source/openrind-browser-pod-helper /usr/local/bin/openrind-browser-pod-helper
+COPY --from=browser-pod-helper-builder /opt/openrind-browser-pods/ /opt/openrind-browser-pods/
+RUN install -d -o root -g root -m 0755 /etc/openrind-browser-pods \
+    && chmod -R a+rX /opt/openrind-browser-pods \
+    && chmod 0755 /opt/openrind-browser-pods/bin/helper-ensure.sh \
+    && ln -s /opt/openrind-browser-pods/bin/helper-ensure.sh /usr/local/bin/openrind-browser-pod-ensure
 COPY --from=browser-client-builder /source/openrind-desktop/packaging/browser-client/dist/ /opt/openrind-browser/
 # The endpoint descriptor is installed by trusted provisioning, not baked with
 # a default endpoint or credentials. Unprovisioned client startup fails closed.
