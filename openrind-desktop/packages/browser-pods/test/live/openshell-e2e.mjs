@@ -11,6 +11,7 @@ import { promisify } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { DatabaseSync } from 'node:sqlite';
 import { browserPodBinding } from '../../../../apps/desktop/electron/openshell/browser-binding.mjs';
+import { startWidgetFixture } from './argide/widget-host.mjs';
 
 const exec = promisify(execFile);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
@@ -18,6 +19,9 @@ const binaryDir = resolve(process.env.OPENSHELL_BINARY_DIR || join(root, 'vendor
 const binary = join(binaryDir, 'openshell');
 const ownerImage = process.env.BROWSER_OWNER_IMAGE || 'openrind-browser-owner:e2e';
 const podImage = process.env.BROWSER_POD_IMAGE || 'openrind-browser-pod:e2e';
+const testHyperbrowser = process.argv.includes('--hyperbrowser');
+const testArgide = process.argv.includes('--argide');
+const testWidget = process.argv.includes('--argide-widget');
 const state = await mkdtemp(join(tmpdir(), 'openrind-browser-live-'));
 const tag = randomBytes(4).toString('hex');
 const ownerName = `bowner-${tag}`;
@@ -27,6 +31,7 @@ const token = randomBytes(32).toString('base64url');
 const env = { ...process.env, XDG_CONFIG_HOME: join(state, 'xdg'), OPENSHELL_TELEMETRY_DISABLED: '1' };
 const evidence = { state, tests: [], fixture: 'native-browser-only', startedAt: new Date().toISOString() };
 let gateway; let broker; let endpoint; let binding; let networkCreated = false; let gatewayReady = false;
+let widgetFixture; let widgetLog;
 
 async function run(file, args, options = {}) {
   try {
@@ -75,6 +80,11 @@ async function stopChild(child) {
 
 console.log(`Evidence directory: ${state}`);
 try {
+  if (testWidget) {
+    assert.ok(testArgide, '--argide-widget requires --argide and its test image');
+    assert.ok(process.env.ARGIDE_WIDGET_BUNDLE, 'ARGIDE_WIDGET_BUNDLE is required');
+    assert.ok(process.env.ARGIDE_BACKEND_URL, 'ARGIDE_BACKEND_URL is required');
+  }
   await run('docker', ['image', 'inspect', ownerImage]);
   const podDigest = await run('docker', ['image', 'inspect', '--format', '{{.Id}}', podImage]);
   evidence.podImage = podDigest;
@@ -138,7 +148,8 @@ supervisor_bin = "${binaryDir}/openshell-sandbox"
   const config = { listen: { host: bridge, port: 19301 }, runtime: { binary, gateway: endpoint,
     image: podDigest, stateDir: join(state, 'broker'), websiteHosts: ['example.com'], acceptNoSandbox: true },
     owners: [{ serviceToken: token, owner: { id: owner.id, generation: 'openshell-e2e', workspaceId: tag,
-      helperOrigin: 'http://127.0.0.1:19300', providers: ['kernel'] } }] };
+      helperOrigin: 'http://127.0.0.1:19300', providers: testHyperbrowser || testArgide ? ['kernel', 'hyperbrowser'] : ['kernel'],
+      ...(testHyperbrowser || testArgide ? { compatibilityProfile: 'argide-0.91-browser-pods-v1' } : {}) } }] };
   await writeFile(join(state, 'broker.json'), JSON.stringify(config), { mode: 0o600 });
   broker = await service(process.execPath, [join(root, 'openrind-desktop/packages/browser-pods/bin/broker.mjs'),
     join(state, 'broker.json')], 'broker', { OPENRIND_BROWSER_PODS_EXPERIMENTAL: '1' });
@@ -191,6 +202,32 @@ supervisor_bin = "${binaryDir}/openshell-sandbox"
   }
   assert.equal((await pods())[0].id, first[0].id);
   pass('ten successive client liveness probes retain the page', { commandTimesMs: commandTimes });
+  const children = (await readFile(`/proc/${broker.pid}/task/${broker.pid}/children`, 'utf8')).trim().split(/\s+/).filter(Boolean);
+  const forwards = [];
+  for (const pid of children) {
+    const args = await readFile(`/proc/${pid}/cmdline`, 'utf8').then(text => text.split('\0')).catch(() => []);
+    if (args[0] === binary && args.includes(first[0].name) && args.includes('forward') &&
+      args[args.indexOf('--target-port') + 1] === '9230') forwards.push(Number(pid));
+  }
+  assert.equal(forwards.length, 1, 'fault injection must identify one test-owned control forward');
+  process.kill(forwards[0], 'SIGSTOP');
+  try {
+    await sleep(3500);
+    assert.equal((await pods())[0]?.id, first[0].id);
+    assert.match(await client(['get', 'title']), /Submitted: Openrind browser test/);
+  } finally { try { process.kill(forwards[0], 'SIGCONT'); } catch (error) { if (error.code !== 'ESRCH') throw error; } }
+  await sleep(2000);
+  assert.equal((await pods())[0]?.id, first[0].id);
+  assert.match(await client(['get', 'title']), /Submitted: Openrind browser test/);
+  pass('a delayed control lease preserves the real browser and page');
+  for (const direction of ['response', 'request']) {
+    const receipt = JSON.parse(await inside(['node', '--input-type=module', '-', tag, direction], {
+      stdin: await readFile(new URL('./large-messages.mjs', import.meta.url), 'utf8'), timeout: 90_000,
+    }));
+    assert.equal(receipt.result, 'passed'); assert.equal(receipt.bytes, 17 * 1024 * 1024);
+    assert.equal((await pods())[0].id, first[0].id);
+    pass(`17 MiB CDP ${direction} crosses the real OpenShell proxy`, { bytes: receipt.bytes });
+  }
   await assert.rejects(client(['open', 'https://example.org']), /ERR_TUNNEL_CONNECTION_FAILED/);
   const podContainer = await run('docker', ['ps', '--filter', `name=-${first[0].id}`, '--format', '{{.ID}}']);
   assert.match(podContainer, /^[a-f0-9]+$/);
@@ -202,6 +239,8 @@ supervisor_bin = "${binaryDir}/openshell-sandbox"
   pass('managed client rejects native download');
   await assert.rejects(client(['upload', '#name', '/sandbox/not-in-the-browser']), /denied|policy|blocked/i);
   pass('managed client rejects native upload');
+  await assert.rejects(client(['wait', '--download', '/sandbox/work/report.pdf']), /denied|policy|blocked/i);
+  pass('managed client rejects wait --download');
   await os(['sandbox', 'exec', '-n', first[0].name, '--no-tty', '--', 'node', '-e',
     'const fs=require("fs");let killed=0;for(const p of fs.readdirSync("/proc").filter(x=>/^\\d+$/.test(x))){try{const c=fs.readFileSync(`/proc/${p}/cmdline`,"utf8").split("\\0");if(c[0]==="/usr/lib/chromium/chromium"&&!c.some(a=>a.startsWith("--type="))){process.kill(Number(p),"SIGKILL");killed++}}catch{}}if(killed!==1)process.exit(1);']);
   await until(async () => { assert.equal((await pods()).length, 0); }, 30_000);
@@ -214,6 +253,56 @@ supervisor_bin = "${binaryDir}/openshell-sandbox"
   await client(['close']);
   await until(async () => { assert.equal((await pods()).length, 0); }, 60_000);
   pass('provider DELETE removes its browser pod');
+  if (testHyperbrowser) {
+    const receipt = JSON.parse(await inside(['node', '/opt/hyperbrowser-fixture/consumer.mjs'], { timeout: 180_000 }));
+    assert.equal(receipt.result, 'passed'); assert.equal(receipt.checks.length, 8);
+    await writeFile(join(state, 'hyperbrowser.json'), JSON.stringify(receipt, null, 2), { mode: 0o600 });
+    for (const name of receipt.checks) pass(name);
+    await until(async () => { assert.equal((await pods()).length, 0); }, 60_000);
+    pass('Hyperbrowser pod cleanup releases its resource');
+  }
+  if (testArgide) {
+    const output = await inside(['node', '/opt/argide-test/consumer.mjs'], { timeout: 180_000 });
+    const line = output.split('\n').find(line => line.startsWith('ARGIDE_RESULT='));
+    assert.ok(line, 'The actual Argide consumer did not return a receipt');
+    const receipt = JSON.parse(line.slice('ARGIDE_RESULT='.length));
+    assert.equal(receipt.result, 'passed'); assert.equal(receipt.checks.length, 5);
+    await writeFile(join(state, 'argide.json'), JSON.stringify(receipt, null, 2), { mode: 0o600 });
+    for (const name of receipt.checks) pass(name);
+    await until(async () => { assert.equal((await pods()).length, 0); }, 60_000);
+    pass('Actual Argide consumer releases its browser pod');
+  }
+  if (testWidget) {
+    const bridge = await run('docker', ['network', 'inspect', '--format', '{{(index .IPAM.Config 0).Gateway}}', network]);
+    widgetFixture = await startWidgetFixture(bridge, {
+      bundle: process.env.ARGIDE_WIDGET_BUNDLE, backend: process.env.ARGIDE_BACKEND_URL,
+    });
+    // Fixture-only addition to the next pod's initial policy. Hot policy changes
+    // can invalidate an existing native relay; they are not part of this test.
+    const policyPath = join(state, 'broker', 'pod-policy.json');
+    const policy = JSON.parse(await readFile(policyPath, 'utf8'));
+    policy.network_policies.argide_fixture = widgetFixture.policy;
+    await writeFile(policyPath, JSON.stringify(policy), { mode: 0o600 });
+    const task = inside(['node', '/opt/argide-test/widget-consumer.mjs'], { timeout: 180_000 });
+    task.catch(() => {});
+    await until(() => inside(['test', '-f', '/tmp/argide-widget-session-ready'], { timeout: 5000 }), 60_000);
+    const pod = await until(async () => { const found = await pods(); assert.equal(found.length, 1); return found[0]; });
+    const container = await run('docker', ['ps', '--filter', `name=-${pod.id}`, '--format', '{{.ID}}']);
+    assert.ok(container, 'The widget browser pod has no running container');
+    widgetLog = await service('docker', ['logs', '--follow', container], 'argide-supervisor');
+    await inside(['touch', '/tmp/argide-widget-ready']);
+    const output = await task;
+    const line = output.split('\n').find(line => line.startsWith('ARGIDE_WIDGET_RESULT='));
+    assert.ok(line, 'The actual Argide widget did not return a receipt');
+    const receipt = JSON.parse(line.slice('ARGIDE_WIDGET_RESULT='.length));
+    assert.equal(receipt.result, 'passed'); assert.equal(receipt.checks.length, 4);
+    await writeFile(join(state, 'argide-widget.json'), JSON.stringify(receipt, null, 2), { mode: 0o600 });
+    for (const name of receipt.checks) pass(name);
+    const png = Buffer.from(await inside(['node', '-e', 'console.log(require("fs").readFileSync("/sandbox/argide-widget.png").toString("base64"))']), 'base64');
+    await writeFile(join(state, 'argide-widget.png'), png, { mode: 0o600 });
+    await until(async () => { assert.equal((await pods()).length, 0); }, 60_000);
+    pass('Actual Argide widget test releases its browser pod');
+  }
   await stopChild(broker);
   const db = new DatabaseSync(join(state, 'broker', 'sessions.sqlite'), { readOnly: true });
   try {
@@ -228,6 +317,14 @@ supervisor_bin = "${binaryDir}/openshell-sandbox"
   evidence.result = 'failed'; evidence.error = error.message.replaceAll(token, '[redacted]');
   console.error(evidence.error); process.exitCode = 1;
   if (gatewayReady && gateway?.exitCode === null) {
+    if (testWidget) {
+      for (const file of ['argide-widget-failure.json', 'argide-widget.png']) {
+        try {
+          const data = await inside(['node', '-e', `console.log(require("fs").readFileSync("/sandbox/${file}").toString("base64"))`], { timeout: 5000 });
+          await writeFile(join(state, file), Buffer.from(data, 'base64'), { mode: 0o600 });
+        } catch {}
+      }
+    }
     try {
       const diagnostics = await inside(['sh', '-c', 'test ! -f /tmp/openrind-browser-pods/helper.log || cat /tmp/openrind-browser-pods/helper.log'], { timeout: 5000 });
       await writeFile(join(state, 'helper.log'), diagnostics.replaceAll(token, '[redacted]'), { mode: 0o600 });
@@ -249,6 +346,8 @@ supervisor_bin = "${binaryDir}/openshell-sandbox"
     } catch {}
   }
 } finally {
+  await stopChild(widgetLog);
+  await widgetFixture?.close();
   await stopChild(broker);
   // The namespace and resources below were created by this invocation only.
   if (gatewayReady && gateway?.exitCode === null) {

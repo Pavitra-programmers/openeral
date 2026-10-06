@@ -37,6 +37,11 @@ jobs:
       - name: Electron typecheck
         working-directory: openrind-desktop/apps/desktop
         run: pnpm typecheck:electron
+      - name: Browser pod artifact tests
+        working-directory: sandboxes/browser-pod
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm test
       - name: App typecheck
         working-directory: openrind-desktop/apps/app
         run: pnpm typecheck

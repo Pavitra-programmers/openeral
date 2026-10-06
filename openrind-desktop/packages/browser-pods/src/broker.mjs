@@ -4,6 +4,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { HELPER_ORIGIN, MAX_CDP, PodError, deadline, digest, errorResponse, normalizeKernel, parseProbeResult,
   requireThat, validateOwner } from './contracts.mjs';
 import { boundedServer, clientRequest, jsonBody, openWebSocket, rejectUpgrade, relayWebSockets, reply } from './transport.mjs';
+import { artifactRoute, hyperbrowserRequest, ownedHyperbrowser, sessionRoute } from './hyperbrowser.mjs';
 
 export async function kernelRequest(core, owner, { method, path, body, requestId, signal }) {
   if (method === 'POST' && path === '/browsers') {
@@ -16,7 +17,6 @@ export async function kernelRequest(core, owner, { method, path, body, requestId
     await core.stop(owner, deleted[1]);
     return { status: 204 };
   }
-  // Stage 2 artifacts and Hyperbrowser routes are deliberately not fake successes.
   throw new PodError('ROUTE_NOT_FOUND', 404);
 }
 
@@ -67,16 +67,44 @@ export function createBroker({ core, owners, runtime }) {
       const url = clientRequest(req);
       const owner = authorize(req);
       requireThat(controls.get(ownerKey(owner))?.readyState === WebSocket.OPEN, 'HELPER_UNAVAILABLE');
-      const body = req.method === 'POST' ? await jsonBody(req) : undefined;
-      const result = await kernelRequest(core, owner, { method: req.method, path: url.pathname, body,
-        requestId: req.headers['idempotency-key'], signal: controller.signal });
+      const sessionMatch = url.pathname.match(sessionRoute);
+      const artifactMatch = url.pathname.match(artifactRoute);
+      const upload = req.method === 'POST' && sessionMatch?.[2] === 'uploads';
+      const archive = req.method === 'GET' && sessionMatch?.[2] === 'downloads-url';
+      if (upload || archive || (req.method === 'GET' && artifactMatch)) {
+        const id = sessionMatch?.[1] ?? artifactMatch[1];
+        ownedHyperbrowser(core, owner, id, { live: true });
+        const transfer = core.beginTransfer(owner, id);
+        const signal = AbortSignal.any([transfer.signal, controller.signal, AbortSignal.timeout(60_000)]);
+        try {
+          if (artifactMatch) await runtime.streamArtifact(transfer.session, artifactMatch[2], req, res, signal);
+          else {
+            const result = upload ? await runtime.upload(transfer.session, req, signal) : await runtime.downloads(transfer.session, signal);
+            requireThat(core.isLive(core.registry.get(id)), 'SESSION_REVOKED', 410);
+            if (archive && result.status === 'completed') {
+              requireThat(/^[a-f0-9]{32}$/.test(result.artifactId), 'INVALID_ARTIFACT');
+              reply(res, 200, { status: 'completed', downloadsUrl: `${HELPER_ORIGIN}/artifacts/${id}/${result.artifactId}` });
+            } else reply(res, 200, result);
+          }
+        } finally { transfer.release(); }
+        return;
+      }
+      const body = req.method === 'POST' ? await jsonBody(req, { allowEmpty: url.pathname === '/api/session' }) : undefined;
+      const request = { method: req.method, path: url.pathname, url, body,
+        requestId: req.headers['idempotency-key'], signal: controller.signal };
+      const result = url.pathname.startsWith('/api/') ? await hyperbrowserRequest(core, owner, request) :
+        await kernelRequest(core, owner, request);
       reply(res, result.status, result.body);
-    } catch (error) { const result = errorResponse(error); reply(res, result.status, result.body); }
+    } catch (error) {
+      if (res.headersSent) res.destroy();
+      else { const result = errorResponse(error); reply(res, result.status, { ...result.body,
+        code: result.body.error.code, message: result.body.error.message }); }
+    }
   }));
 
   server.on('upgrade', async (req, socket, head) => {
     socket.on('error', () => {});
-    let lease; let remote;
+    let lease; let remote; let upgraded = false;
     try {
       const url = clientRequest(req);
       requireThat(req.method === 'GET', 'METHOD_NOT_ALLOWED', 405);
@@ -84,9 +112,10 @@ export function createBroker({ core, owners, runtime }) {
       const key = ownerKey(owner);
       if (url.pathname === '/control') {
         requireThat(core.ready, 'BROKER_NOT_READY');
-        requireThat(!controls.has(key), 'HELPER_ALREADY_REGISTERED', 409);
         controlServer.handleUpgrade(req, socket, head, ws => {
+          const previous = controls.get(key);
           controls.set(key, ws);
+          previous?.terminate();
           let alive = true;
           const heartbeat = setInterval(() => {
             if (!alive) { ws.terminate(); return; }
@@ -101,9 +130,10 @@ export function createBroker({ core, owners, runtime }) {
           });
           ws.on('close', () => {
             clearInterval(heartbeat);
-            if (controls.get(key) === ws) controls.delete(key);
+            const current = controls.get(key) === ws;
+            if (current) controls.delete(key);
             for (const entry of pending.values()) if (entry.control === ws) entry.reject(new PodError('HELPER_LOST'));
-            if (!closing) void core.revokeOwner(owner).catch(() => { core.ready = false; });
+            if (!closing && current) void core.revokeOwner(owner).catch(() => { core.ready = false; });
           });
           ws.send(JSON.stringify({ type: 'ready', generation: owner.generation }));
         });
@@ -113,11 +143,12 @@ export function createBroker({ core, owners, runtime }) {
       const match = url.pathname.match(/^\/cdp\/([A-Za-z0-9_-]{43})$/);
       requireThat(match, 'ROUTE_NOT_FOUND', 404);
       lease = core.acquire(owner, match[1], () => { socket.destroy(); remote?.terminate(); });
-      socket.once('close', () => { lease.release(); remote?.terminate(); });
+      socket.once('close', () => { lease.release(); if (!upgraded) remote?.terminate(); });
       const endpoint = runtime.cdpEndpoint(lease.session);
       remote = await openWebSocket(`${endpoint}${url.search}`, { pauseOnOpen: true });
       requireThat(!socket.destroyed && core.isLive(core.registry.get(lease.session.id)), 'SESSION_REVOKED', 410);
       cdpServer.handleUpgrade(req, socket, head, client => {
+        upgraded = true;
         relayWebSockets(client, remote, budget);
         client.once('close', lease.release);
       });

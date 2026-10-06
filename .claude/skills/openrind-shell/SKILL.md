@@ -62,7 +62,7 @@ with the managed gateway endpoint. The filesystem state must be `writable`.
 ## Browser Diagnostics
 
 Normal Desktop setup does not enable browser pods yet. The Linux browser-only
-fixture passed 13 checks; it did not test Desktop, Claude, or FUSE. Do not make
+fixture passed 17 checks; it did not test Desktop, Claude, or FUSE. Do not make
 a browser service a prerequisite for ordinary Claude launch. The new image ignores the
 retired managed MCP descriptor, but an existing container may still have the old
 wrapper. Do not delete or replace that container without the user's approval.
@@ -76,11 +76,19 @@ start local Chrome, switch providers, or change the network policy as recovery.
 The provider is built-in `kernel`, configured to our helper at `127.0.0.1:19300`.
 Only the Kernel API is emulated. The browser is real Chromium in another sandbox.
 No Kernel account, local browser executable, or browser MCP server is needed.
-The provider path is experimental. Argide and file artifact APIs are not ready.
+The provider path is experimental. A separate configured Hyperbrowser SDK test
+passed upload and ZIP retrieval in the real sandbox. Actual Argide has its own
+private-kit fixture. Its backend runs in host Docker and its widget runs in a
+browser pod. Its Gemini model route is test-only; it does not replace the required
+Haloop route for Desktop Claude. Neither fixture proves Desktop browser activation
+or durable FUSE export. Do not switch a Kernel client to the Hyperbrowser path
+without explicit host configuration.
 Control Chrome and user MCP servers are separate and must remain unchanged.
 Read `openrind-desktop/packages/browser-pods/README.md` for current test limits.
 For a fresh-checkout browser trial, route to `openrind-dev` and BUILD's **Real
 Linux Browser Test**. Do not apply a test broker configuration to a customer owner.
+For the private kit, use BUILD's **Actual Argide Application Test** after the
+public browser test. Do not import Argide's test services into Desktop setup.
 
 ## Persistence and safety
 

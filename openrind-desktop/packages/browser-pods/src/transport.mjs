@@ -40,16 +40,21 @@ export function clientRequest(req) {
   if (url.pathname.startsWith('/cdp/')) {
     requireThat([...url.searchParams].every(([k, v]) => k === 'keepAlive' && ['true', 'false'].includes(v)), 'INVALID_QUERY');
     requireThat(url.searchParams.getAll('keepAlive').length <= 1, 'INVALID_QUERY');
-  } else requireThat(!url.search, 'INVALID_QUERY');
+  } else {
+    const allowed = url.pathname === '/api/sessions' ? ['status', 'page', 'limit'] :
+      /^\/api\/session\/[a-f0-9-]{36}$/.test(url.pathname) ? ['liveViewTtlSeconds'] : [];
+    requireThat([...url.searchParams.keys()].every(key => allowed.includes(key) && url.searchParams.getAll(key).length === 1), 'INVALID_QUERY');
+  }
   return url;
 }
 
-export async function jsonBody(req) {
+export async function jsonBody(req, { allowEmpty = false } = {}) {
   requireThat((req.headers['content-type'] ?? '').split(';')[0] === 'application/json', 'JSON_REQUIRED', 415);
   let bytes = 0; const chunks = [];
   for await (const chunk of req) {
     bytes += chunk.length; requireThat(bytes <= MAX_JSON, 'BODY_TOO_LARGE', 413); chunks.push(chunk);
   }
+  if (allowEmpty && bytes === 0) return {};
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
   catch { throw new PodError('INVALID_JSON', 400); }
 }
@@ -78,10 +83,22 @@ export async function openWebSocket(url, options = {}) {
 }
 
 export function relayWebSockets(a, b, budget) {
-  let closed = false;
-  const close = () => { if (closed) return; closed = true; a.terminate(); b.terminate(); };
+  let closed = false; let timer;
+  const close = () => { closed = true; clearTimeout(timer); a.terminate(); b.terminate(); };
   for (const [source, destination] of [[a, b], [b, a]]) {
-    source.on('error', close); source.on('close', close);
+    source.on('error', close);
+    source.on('close', (code, reason) => {
+      if (!closed) {
+        closed = true;
+        // 1005/1006 are local observations, not codes that can go on the wire.
+        const valid = (code >= 1000 && code <= 1014 && ![1004, 1005, 1006].includes(code)) || (code >= 3000 && code <= 4999);
+        if (valid || code === 1005) {
+          timer = setTimeout(close, 1000); timer.unref();
+          if (code === 1005) destination.close(); else destination.close(code, reason);
+        } else close();
+      }
+      if (a.readyState === WebSocket.CLOSED && b.readyState === WebSocket.CLOSED) clearTimeout(timer);
+    });
     source.on('message', (data, binary) => {
       if (closed) return;
       if (budget.bytes + data.length > budget.max) { close(); return; }

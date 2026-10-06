@@ -1,0 +1,47 @@
+# Isolated test dependencies. No dashboard, Auth0 bypass, worker, or public port.
+services:
+  mongo:
+    image: mongo:7
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+  mongo-init:
+    image: mongo:7
+    depends_on:
+      mongo:
+        condition: service_healthy
+    entrypoint: ["mongosh", "--host", "mongo:27017", "--quiet", "--eval", 'try { rs.status() } catch (e) { rs.initiate({_id:"rs0", members:[{_id:0, host:"mongo:27017"}]}) }']
+  redis:
+    image: redis:7
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  qdrant:
+    image: qdrant/qdrant:v1.15.4
+  backend:
+    image: sha256:1003120eff8e286bf787a9fc82f199266acdf03f25c192587c280c281ee1d0ec
+    pull_policy: never
+    env_file: ${ARGIDE_KIT:?Set the absolute extracted share-external path}/env/backend.env.example
+    environment:
+      GOOGLE_GENERATIVE_AI_API_KEY: ${GEMINI_API_KEY:?A funded model key is required}
+      LLM_PROVIDER: google
+      LLM_MODEL: gemini-2.5-flash
+      FOLLOW_UP_MODEL: google/gemini-2.5-flash
+      ROUTE_GEN_MODEL: google/gemini-2.5-flash
+      WORKFLOW_GEN_MODEL: google/gemini-2.5-flash
+      FOLLOW_UP_DELAY_MS: "86400000"
+      LANGSMITH_TRACING: "false"
+      AWS_EC2_METADATA_DISABLED: "true"
+    depends_on:
+      mongo-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    ports: ["127.0.0.1:14000:4000"]

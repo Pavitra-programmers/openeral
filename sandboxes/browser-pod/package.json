@@ -1,0 +1,8 @@
+{
+  "name": "@openrind/browser-pod-agent",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test artifacts.test.mjs" },
+  "dependencies": { "busboy": "1.6.0", "yazl": "3.3.1" },
+  "devDependencies": { "fflate": "0.8.2" }
+}

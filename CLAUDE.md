@@ -29,6 +29,9 @@ Read README's **Start Here** before running setup. Choose the requested path:
   assets, PostgreSQL, and the required Haloop route. Desktop starts Claude.
 - Browser validation on Linux: `openrind-dev` skill and BUILD's **Real Linux
   Browser Test**. Use its isolated fixture; no database or provider keys needed.
+- Actual Argide validation: complete the public browser setup, then use
+  `openrind-dev` and BUILD's **Actual Argide Application Test**. The private kit
+  is required. Only the optional widget/model test needs a funded Gemini key.
 - Web task in an already enabled owner: `openrind-browser` skill. Do not treat
   that skill as a host installer or a way to enable a normal Desktop sandbox.
 
@@ -74,10 +77,22 @@ flowchart LR
 - The launcher supplies `KERNEL_ENDPOINT=http://127.0.0.1:19300` and a non-secret
   compatibility key. Real broker credentials use native provider injection.
   OpenShell clears Docker ENV for exec/SSH; do not rely on it for client setup.
-- The real Linux fixture passed 13 checks. Normal Desktop browser activation
-  remains disabled pending Desktop/Claude/FUSE and load tests. Unit and fake-CDP
-  results alone do not prove client compatibility. Argide and artifacts are not
-  implemented end to end.
+- The real Linux Kernel fixture passed 17 checks. Its configured Hyperbrowser
+  SDK extension passed all 26 combined checks. Normal Desktop browser
+  activation remains disabled pending Desktop/Claude/FUSE and load tests. Unit and fake-CDP
+  results alone do not prove client compatibility. The configured Hyperbrowser
+  SDK path has explicit pod-side uploads and ZIP archives. Its contract fixture
+  is not extracted Argide code. A separate actual-module test passed 23 checks
+  with the supplied kit and one `baseUrl` change. The real backend/widget test
+  passed 28 combined checks with Gemini on a controlled form. See BUILD's
+  **Actual Argide Application Test**. Do not extend this claim to Auth0,
+  general websites, the full app, or Desktop/FUSE integration.
+- Kernel and Hyperbrowser share one broker, session core, and pod runtime.
+  Argide's optional backend runs in host Docker; its model traffic is outside
+  OpenShell and Haloop. Its widget runs in the browser pod through the normal
+  website policy. Keep this test separate from the customer Claude launch.
+- Stage 0 requires a trusted single-user host. Native CLI forwards expose
+  unauthenticated host-loopback CDP ports. Direct gRPC forwarding remains a release gate.
 - Use existing native exec, provider injection, and ForwardTcp. Browser pods
   need no additional OpenShell patch or custom TLS terminator. Never replace
   this path with local Chromium, public CDP, or vendor-domain interception.

@@ -307,10 +307,26 @@ containerd, changes Docker networking, or rebuilds NVIDIA's base.
 
 ## Experimental Browser Pods
 
-This is the initial Kernel implementation, not the completed v1 release.
+This implements experimental Kernel and configured Hyperbrowser paths, not the
+completed v1 release.
 Read the [status and remaining gates](./openrind-desktop/packages/browser-pods/README.md).
-Do not enable it for normal Desktop launches until Stage 0 passes. It uses the
+Do not enable it for normal Desktop launches until the release gates pass. It uses the
 existing FUSE fork without adding OpenShell patches.
+
+Choose the test before installing anything. Run host commands below from the
+repository root unless a block explicitly changes directories. The live runner
+creates temporary resources; it is not an installer for an existing Desktop owner.
+
+| Goal | Required setup | Live runner flags | Checks and extra evidence |
+|---|---|---|---|
+| First real Chromium test | **Real Linux Browser Test** below | None | 17; `evidence.json`, `page.png` |
+| Hyperbrowser SDK and file APIs | Same Linux setup | `--hyperbrowser` | 26; `hyperbrowser.json` |
+| Actual Argide browser functions | Linux setup plus the private kit and derived owner | `--argide` | 23; `argide.json` |
+| Actual Argide widget and model | Above plus isolated backend, product seed, and a funded Gemini key | `--argide --argide-widget` | 28; `argide-widget.json`, `argide-widget.png` |
+
+Each count includes the Kernel checks. Choose one row; do not combine the SDK
+flag with the Argide flags and expect the same count. None of these tests proves
+a browser-enabled Desktop/Claude/FUSE launch. They do not start a persistent UI.
 
 Run unit and local transport tests on Node.js 22.19 or newer:
 
@@ -453,7 +469,7 @@ absolute `vendor/openshell/target/release` path. If Z3 is not installed system-w
 set `LD_LIBRARY_PATH` to its library directory before running the fixture.
 
 Require exit code 0 and the final `Result: passed` line. Inspect `evidence.json`:
-`result` must be `passed`, `tests` must contain all 13 checks, and `cleanupError`
+`result` must be `passed`, `tests` must contain all 17 checks, and `cleanupError`
 must be absent. Open `page.png` to inspect the screenshot. Record the commit,
 architecture, image ID, versions, and evidence path when reporting a result.
 Do not report only the number of unit tests.
@@ -467,7 +483,8 @@ the runner can leave test resources that need operator cleanup.
 The owner uses the published NVIDIA base plus the real helper and pinned client.
 It contains no Chromium, FUSE, Claude, Haloop, or Desktop UI. The browser pod runs
 under actual OpenShell restrictions. The test covers real navigation, click/fill,
-screenshots, session reuse, a deliberate browser crash, and cleanup. It is not a
+screenshots, session reuse, a delayed control lease, 17 MiB CDP in both directions,
+file-action denial, a deliberate browser crash, and cleanup. It is not a
 substitute for `owner-smoke.sh` in a FUSE owner or the full Desktop release gates.
 
 #### Failure Checks
@@ -481,6 +498,74 @@ substitute for `owner-smoke.sh` in a FUSE owner or the full Desktop release gate
 | Browser create or navigation times out | Read private gateway, pod, and helper logs; confirm the optimized debug SHA build and the image's `ip`, `nft`, and `nsenter` tools |
 | Chromium package pin unavailable | Query the Debian repository as above, record a new exact pin, rebuild the pod, and rerun |
 | Cleanup error | Keep the evidence and identify test resources by their recorded IDs. Do not delete unrelated containers or volumes |
+
+### Hyperbrowser SDK Test
+
+Complete **Real Linux Browser Test**, including both image builds, first. The
+owner fixture includes locked Hyperbrowser SDK `0.91.0` and Playwright `1.59.1`.
+It installs no browser in the owner. The extra test needs no vendor or LLM key.
+
+```bash
+node openrind-desktop/packages/browser-pods/test/live/openshell-e2e.mjs --hyperbrowser
+```
+
+Require exit code 0, 26 checks, no cleanup error, and `result: passed` in both
+`evidence.json` and `hyperbrowser.json`. Allow at least three minutes. The retained
+session test waits 61 seconds; do not shorten it to make the test pass.
+
+This runs the existing Kernel checks, then the configured SDK test through the
+same owner helper and native OpenShell transport. The SDK fixture reconstructs
+the sequence in `BROWSER-PODS.md`; it is **not extracted Argide code**. Use the
+separate actual Argide test below to run its consumer and VNC parser. Neither
+test establishes unchanged Argide compatibility.
+
+The browser file path returned by `uploadFile` belongs to the pod. Send it with
+CDP `DOM.setFileInputFiles`. Playwright's `setInputFiles(path)` checks the
+client filesystem first and is not interchangeable with that operation.
+The fixture checks bytes inside the page; it does not send a file to an external
+website. Download archives are fetched explicitly and checked without automatic
+workspace publication.
+
+Run the independent pod-side file tests with:
+
+```bash
+npm --prefix sandboxes/browser-pod ci --ignore-scripts --no-audit --no-fund
+npm --prefix sandboxes/browser-pod test
+```
+
+These independent tests check multipart limits, unsafe paths/links, ZIP content,
+cancellation, and temporary-file cleanup. They do not replace the live test.
+
+### Actual Argide Application Test
+
+The private widget-eval kit is now tested separately. Follow
+[Actual Argide Tests](openrind-desktop/packages/browser-pods/test/live/argide/README.md)
+after the Linux browser setup. That guide gives the archive and source pins,
+test image build, isolated backend compose file, product seed, commands, and cleanup.
+Do not put the private kit or real credentials in this repository.
+This kit is not a public dependency and is not downloaded by our image build.
+If it is unavailable, stop the Argide test. The SDK test is a separate option,
+not a substitute result. `--argide` requires the derived Argide owner image;
+the ordinary `openrind-browser-owner:e2e` does not contain the private code.
+
+`--argide` calls the actual compiled application functions inside the owner.
+It checks create, initialization, VNC parsing, reconnect after 61 seconds,
+byte-verified upload, and stop. It needs no real API keys and passes 23 checks.
+It changes only the Hyperbrowser constructor's `baseUrl` configuration.
+
+`--argide --argide-widget` also runs the original backend and widget with a real
+model. It passed 28 checks with Gemini `gemini-2.5-flash`. The model filled and
+submitted a controlled form. The receipt records real tool dispatch and
+`chat.finish`; the screenshot shows the changed page and widget answer.
+
+The backend and its fresh Mongo/Redis/Qdrant services run on the host. Chromium
+runs in a real OpenShell browser pod. A test-only website rule exposes only the
+fixture and public Argide API routes. No Auth0 bypass or public tunnel is used.
+The optional dashboard, RAG, real logins, Desktop/Claude/FUSE, and load behavior
+remain outside this result. The supplied kit needs additional real credentials
+for those application features. The model key is read from the host shell by
+Compose, not from Desktop settings or a repository `.env` file. The module-only
+test needs no real key. Keep both claims separate in the test report.
 
 ### Broker Process
 
@@ -533,8 +618,47 @@ The optional service unit is at
 It expects an `openrind-browser` system account with Docker access and the installed
 package. Docker access is host administrative authority. Review that grant before
 installation. The unit supplies a private HOME/config directory for the native CLI.
-Broker shutdown revokes sessions and retains incomplete cleanup in SQLite. Startup
-will not admit new sessions until old resources are removed.
+Broker shutdown revokes sessions and retains incomplete cleanup in SQLite.
+Startup revokes old capabilities and keeps pending resources counted against
+quota. It can admit new sessions within the remaining quota. A single uncertain
+create no longer blocks every restart. Cleanup retries use backoff up to one
+minute. Shutdown makes one final reconciliation attempt after current tasks finish.
+
+**Host trust limit:** native CLI forwards open plain CDP listeners on host
+loopback. Other host processes can use them without the broker's owner checks.
+Use this Stage 0 path only on a trusted single-user host. Loopback is not an
+authentication boundary. Direct in-process `ForwardTcp` and pooled tokens remain
+release work; the high-level SDK forward listener alone does not fix this.
+Windows access through WSL localhost forwarding has not been tested.
+
+### Resolve Uncertain Creates
+
+Use the offline registry tool only during an approved maintenance window.
+Stop the broker first. This ends its browser sessions, so obtain user approval
+before stopping an active service. The tool refuses a locked registry.
+
+```bash
+node openrind-desktop/packages/browser-pods/bin/registry.mjs \
+  /etc/openrind-browser-pods/broker.json pending
+```
+
+An empty inventory is not proof that an old native create cannot finish later.
+Check the failed create and gateway operations. Keep quota reserved if the
+outcome is still uncertain. Only after confirming that no request can still
+create the resource, use its exact registry ID and a non-secret reason code:
+
+```bash
+node openrind-desktop/packages/browser-pods/bin/registry.mjs \
+  /etc/openrind-browser-pods/broker.json resolve-absent '<session-id>' \
+  --confirm-no-pending-create '<reason-code>'
+```
+
+The command accepts only a revoked, unobserved create with
+`CREATE_OUTCOME_UNKNOWN`. It checks native inventory again, removes its capability,
+releases its quota, and records the operator decision. It does not delete a
+sandbox or treat a transient empty result as automatic proof. Restart the broker
+after maintenance. Terminal records and audit entries expire after 24 hours in
+bounded batches; unresolved records do not expire.
 
 ### Owner Activation
 
@@ -544,12 +668,28 @@ network rule. `attachBrowserPodProvider()` in `browser-provider.mjs` can attach 
 through the existing Windows/WSL runtime. Linux setup uses the same native profile
 import and provider attach commands. A common cross-platform installer is pending.
 
-The profile grants the dedicated helper only `POST /browsers`,
-`DELETE /browsers/*`, and WebSocket upgrades at `/control` and `/cdp/*`.
+The profile grants the dedicated helper the Kernel routes, the Hyperbrowser
+session/upload/archive routes, and WebSocket upgrades at `/control` and `/cdp/*`.
 It uses `protocol: rest`, `tls: none`, one bridge `/32`, and no request-body or
 WebSocket-frame credential rewrite. Store the real token only in the host broker
 config and OpenShell provider. The helper receives `OPENRIND_BROWSER_POD_TOKEN`
 as a native provider placeholder. Do not copy the host token into the sandbox.
+An owner's `providers` list is the broker's adapter grant. Keep `["kernel"]` for
+the default path. For a configured Hyperbrowser client, explicitly add
+`"hyperbrowser"`. Set `compatibilityProfile: "argide-0.91-browser-pods-v1"` in
+that trusted owner object only when accepting the documented feature no-ops.
+Clients cannot choose the profile in a request. Configure the SDK before launch:
+
+```javascript
+const client = new Hyperbrowser({
+  apiKey: 'openrind-compat',
+  baseUrl: 'http://127.0.0.1:19300',
+});
+```
+
+This is supported base-URL configuration, not vendor-domain interception.
+The primary image does not install the Hyperbrowser SDK for arbitrary projects;
+the test-only owner contains its pinned fixture dependencies.
 Attachment refresh is asynchronous. Wait for a new exec process to receive the
 placeholder before starting the helper. Attaching a provider does not update the
 environment of an already-running Claude process.
@@ -589,7 +729,8 @@ Run the installed-client smoke from the host against a disposable enabled owner:
 ```
 
 This stores evidence on FUSE. It does not test the full failure matrix, concurrent
-create latency, raw credential injection, or Argide. Those checks still block release.
+create latency, or Argide. Use the separate live fixtures for credential injection
+and the actual Argide tests. Desktop/Claude/FUSE and load checks still block release.
 Existing owner containers are not patched automatically. Do not delete or replace
 one to obtain these assets without a separate user-approved migration.
 

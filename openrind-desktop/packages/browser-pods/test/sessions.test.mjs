@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { PodRegistry } from '../src/registry.mjs';
 import { BrowserSessions } from '../src/sessions.mjs';
-import { ARGIDE_PROFILE, HELPER_ORIGIN, normalizeHyperbrowser, normalizeKernel } from '../src/contracts.mjs';
+import { ARGIDE_PROFILE, HELPER_ORIGIN, PodError, normalizeHyperbrowser, normalizeKernel } from '../src/contracts.mjs';
 
 const owner = { id: 'owner', generation: 'generation', workspaceId: 'workspace',
   providers: ['kernel', 'hyperbrowser'], helperOrigin: HELPER_ORIGIN };
@@ -162,6 +162,70 @@ test('broker recovery revokes old generations before accepting new creates', asy
   await next.recover();
   assert.equal(registry.get(session.id).state, 'Stopped');
   assert.throws(() => next.acquire(owner, session.attachment, () => {}), { code: 'SESSION_NOT_FOUND' });
+});
+
+test('uncertain create survives restart with quota and bounded cleanup backoff', async t => {
+  let now = 1000; let attempts = 0;
+  const { core, registry } = await fixture(t, {}, { clock: () => now, ownerLimit: 1 });
+  const old = await core.create(owner, normalizeKernel({}));
+  registry.update(old.id, s => { s.handle = null; });
+  const runtime = { ...core.runtime, stop: async s => {
+    if (s.id === old.id) { attempts++; throw new PodError('CREATE_OUTCOME_UNKNOWN'); }
+    return { stopped: true };
+  } };
+  const next = new BrowserSessions({ registry, runtime, prepareAttachment: async () => {}, clock: () => now, ownerLimit: 1 });
+  await next.recover();
+  assert.equal(next.ready, true);
+  assert.equal(registry.get(old.id).cleanupError, 'CREATE_OUTCOME_UNKNOWN');
+  assert.equal(registry.get(old.id).resourceDeletedAt, null);
+  assert.equal(attempts, 1);
+  await assert.rejects(next.create(owner, normalizeKernel({})), { code: 'CAPACITY_EXHAUSTED' });
+  assert.equal((await next.create({ ...owner, id: 'different-owner' }, normalizeKernel({}))).state, 'Ready');
+  now = 1999; await next.sweep(); assert.equal(attempts, 1);
+  now = 2000; await next.sweep(); assert.equal(attempts, 2);
+  assert.equal(registry.get(old.id).nextCleanupAt, 4000);
+  now = 3999; await next.sweep(); assert.equal(attempts, 2);
+  const restarted = new BrowserSessions({ registry, runtime, prepareAttachment: async () => {}, clock: () => now });
+  await restarted.recover();
+  assert.equal(restarted.ready, true); assert.equal(registry.get(old.id).resourceDeletedAt, null);
+});
+
+test('create, attachment and sweep do not enumerate retained terminal records', async t => {
+  const { core, registry } = await fixture(t);
+  registry.all = () => assert.fail('hot path must use indexed queries');
+  const session = await core.create(owner, normalizeKernel({}), { requestId: 'request' });
+  assert.equal((await core.create(owner, normalizeKernel({}), { requestId: 'request' })).id, session.id);
+  const stream = core.acquire(owner, session.attachment, () => {});
+  await core.sweep(); stream.release(); await core.stop(owner, session.id);
+});
+
+test('stop waits for a signal from cleanup rather than polling the registry', async t => {
+  const stopped = deferred();
+  const { core, registry } = await fixture(t, { stop: () => stopped.promise }, { stopTimeoutMs: 500 });
+  const session = await core.create(owner, normalizeKernel({}));
+  let reads = 0; const get = registry.get.bind(registry);
+  registry.get = id => { reads++; return get(id); };
+  const stopping = core.stop(owner, session.id);
+  const before = reads; await sleep(50);
+  assert.equal(reads, before);
+  stopped.resolve({ stopped: true });
+  assert.notEqual((await stopping).browserStoppedAt, null);
+  assert.equal(core.stopWaiters.size, 0);
+});
+
+test('shutdown confirms completed deletion even when its retry time is in the future', async t => {
+  let attempts = 0;
+  const { core, registry } = await fixture(t, { remove: async () => {
+    if (++attempts === 1) throw new PodError('CLEANUP_PENDING');
+    return { deleted: true };
+  } }, { clock: () => 100 });
+  const session = await core.create(owner, normalizeKernel({}));
+  await core.stop(owner, session.id); await Promise.all([...core.cleanup.values()]);
+  assert.equal(registry.get(session.id).resourceDeletedAt, null);
+  assert.ok(registry.get(session.id).nextCleanupAt > 100);
+  await core.shutdown();
+  assert.equal(registry.get(session.id).resourceDeletedAt, 100);
+  assert.equal(attempts, 2);
 });
 
 test('owner loss revokes all attachments before waiting for a slow deletion', async t => {

@@ -1,0 +1,11 @@
+# Build context: this directory. Additional argide-kit context: extracted kit.
+ARG ARGIDE_IMAGE=409010723028.dkr.ecr.us-east-1.amazonaws.com/argide-backend:sha-81af0f7a22afee8b42c80d7e1c0ff7b191bbd698
+ARG OWNER_IMAGE=openrind-browser-owner:e2e
+FROM ${ARGIDE_IMAGE} AS argide
+FROM ${OWNER_IMAGE}
+USER root
+COPY --from=argide /app /opt/argide
+COPY --from=argide-kit env/backend.env.example /opt/argide-test/backend.env.example
+COPY *.mjs /opt/argide-test/
+RUN node /opt/argide-test/configure.mjs
+USER sandbox

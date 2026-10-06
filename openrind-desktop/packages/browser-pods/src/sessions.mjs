@@ -1,25 +1,27 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { setTimeout as sleep } from 'node:timers/promises';
-import { PodError, canonical, digest, requireThat, sameOwner, validateOwner } from './contracts.mjs';
+import { PodError, canonical, deadline, digest, requireThat, sameOwner, validateOwner } from './contracts.mjs';
 
 export class BrowserSessions {
   constructor({ registry, runtime, prepareAttachment, clock = Date.now, createTimeoutMs = 60_000,
-    stopTimeoutMs = 1800, ownerLimit = 2, brokerLimit = 8 }) {
+    stopTimeoutMs = 1800, ownerLimit = 2, brokerLimit = 8, cleanupRetryMs = 1000 }) {
     this.registry = registry; this.runtime = runtime; this.prepareAttachment = prepareAttachment;
     this.clock = clock; this.createTimeoutMs = createTimeoutMs; this.stopTimeoutMs = stopTimeoutMs;
     this.ownerLimit = ownerLimit; this.brokerLimit = brokerLimit; this.generation = randomUUID();
     this.allocations = new Map(); this.cleanup = new Map(); this.streams = new Map();
+    this.transfers = new Map();
+    this.stopWaiters = new Map(); this.cleanupRetryMs = cleanupRetryMs; this.lastPrune = 0;
     this.ready = false;
   }
 
   async recover() {
     // A broker restart ends old generations. It never resumes old attachment URLs.
-    for (const old of this.registry.all()) {
-      if (old.resourceDeletedAt !== null) continue;
+    const oldSessions = this.registry.active();
+    for (const old of oldSessions) {
       this.revoke(old.id, 'BROKER_RESTART');
-      await this.reconcile(old.id);
     }
-    requireThat(this.registry.all().every(s => s.resourceDeletedAt !== null), 'RECOVERY_PENDING');
+    await Promise.all(oldSessions.map(old => this.reconcile(old.id, { force: true })));
+    // Pending creates remain revoked and counted. They must not stop unrelated
+    // owners from using the remaining quota after a broker restart.
     this.ready = true;
   }
 
@@ -37,15 +39,14 @@ export class BrowserSessions {
     requireThat(requestId === undefined || /^[A-Za-z0-9_-]{1,128}$/.test(requestId), 'INVALID_REQUEST_ID');
     const hash = digest(canonical(options));
     const record = this.registry.transaction(() => {
-      const sessions = this.registry.all();
-      const previous = requestId && sessions.find(s => sameOwner(s, owner) && s.requestId === requestId);
+      const previous = requestId && this.registry.request(owner, requestId);
       if (previous) {
         requireThat(previous.requestHash === hash, 'REQUEST_ID_CONFLICT', 409);
         requireThat(previous.state === 'Ready' && this.isLive(previous), 'CREATE_OUTCOME_UNKNOWN', 409);
         return { previous };
       }
-      const counted = sessions.filter(s => s.resourceDeletedAt === null);
-      requireThat(counted.length < this.brokerLimit && counted.filter(s => s.ownerId === owner.id).length < this.ownerLimit,
+      const counted = this.registry.counts(owner.id);
+      requireThat(counted.total < this.brokerLimit && counted.owner < this.ownerLimit,
         'CAPACITY_EXHAUSTED', 429);
       const now = this.clock();
       const id = randomUUID();
@@ -92,7 +93,9 @@ export class BrowserSessions {
         throw error instanceof PodError ? error : new PodError('CREATE_FAILED');
       } finally {
         this.allocations.delete(session.id);
-        if (this.registry.get(session.id).accessRevokedAt !== null) void this.reconcile(session.id);
+        if (this.registry.get(session.id).accessRevokedAt !== null) {
+          void this.reconcile(session.id).catch(() => { this.ready = false; });
+        }
       }
     })();
     this.allocations.set(session.id, allocation);
@@ -106,7 +109,7 @@ export class BrowserSessions {
   }
 
   acquire(owner, attachment, close) {
-    const session = this.registry.all().find(s => s.attachment === attachment && sameOwner(s, owner));
+    const session = this.registry.attachment(owner, attachment);
     requireThat(this.isLive(session) && ['Ready', 'Attaching'].includes(session.state), 'SESSION_NOT_FOUND', 404);
     const streams = this.streams.get(session.id) ?? new Map();
     requireThat(streams.size < 2, 'ATTACHMENT_FULL', 429);
@@ -126,31 +129,53 @@ export class BrowserSessions {
   }
 
   revoke(id, reason) {
+    const first = this.registry.get(id)?.accessRevokedAt === null;
+    if (!first) return;
     this.registry.update(id, session => {
       if (session.accessRevokedAt === null) session.accessRevokedAt = this.clock();
       if (session.resourceDeletedAt === null) session.state = 'CleanupPending';
     });
     for (const close of this.streams.get(id)?.values() ?? []) { try { close(); } catch {} }
     this.streams.delete(id);
+    this.transfers.get(id)?.abort();
+    this.transfers.delete(id);
     this.registry.audit('revoked', id, reason);
+  }
+
+  beginTransfer(owner, id) {
+    const session = this.owned(owner, id);
+    requireThat(this.isLive(session) && session.state === 'Ready', 'SESSION_NOT_FOUND', 404);
+    requireThat(!this.transfers.has(id), 'TRANSFER_BUSY', 429);
+    const controller = new AbortController();
+    this.transfers.set(id, controller);
+    return { session, signal: controller.signal, release: () => {
+      if (this.transfers.get(id) === controller) this.transfers.delete(id);
+    } };
   }
 
   async stop(owner, id) {
     this.owned(owner, id);
     this.revoke(id, 'STOP_REQUEST');
-    void this.reconcile(id);
-    const until = performance.now() + this.stopTimeoutMs;
-    while (this.registry.get(id).browserStoppedAt === null) {
-      requireThat(performance.now() < until, 'STOP_UNCONFIRMED', 504);
-      await sleep(10);
+    if (this.registry.get(id).browserStoppedAt !== null) return this.registry.get(id);
+    const waiters = this.stopWaiters.get(id) ?? new Set();
+    let completed;
+    const stopped = new Promise(resolve => { completed = resolve; waiters.add(resolve); });
+    this.stopWaiters.set(id, waiters);
+    try {
+      void this.reconcile(id, { force: true }).catch(() => { this.ready = false; });
+      await deadline(stopped, this.stopTimeoutMs, 'STOP_UNCONFIRMED');
+      return this.registry.get(id);
+    } finally {
+      waiters.delete(completed);
+      if (!waiters.size) this.stopWaiters.delete(id);
     }
-    return this.registry.get(id);
   }
 
-  reconcile(id) {
+  reconcile(id, { force = false } = {}) {
     if (this.allocations.has(id)) return Promise.resolve();
     if (this.cleanup.has(id)) return this.cleanup.get(id);
-    if (this.registry.get(id).resourceDeletedAt !== null) return Promise.resolve();
+    const initial = this.registry.get(id);
+    if (initial.resourceDeletedAt !== null || (!force && (initial.nextCleanupAt ?? 0) > this.clock())) return Promise.resolve();
     const task = (async () => {
       try {
         let session = this.registry.get(id);
@@ -162,14 +187,21 @@ export class BrowserSessions {
             s.browserStoppedAt = this.clock();
             if (stopped.deleted === true) { s.resourceDeletedAt = this.clock(); s.state = 'Stopped'; s.attachment = null; }
           });
+          for (const notify of this.stopWaiters.get(id) ?? []) notify();
         }
         if (session.resourceDeletedAt !== null) return;
         const result = await this.runtime.remove(session);
         requireThat(result?.deleted === true, 'CLEANUP_PENDING');
         this.registry.update(id, s => { s.resourceDeletedAt = this.clock(); s.state = 'Stopped'; s.attachment = null; });
         this.registry.audit('deleted', id);
-      } catch {
-        this.registry.audit('cleanup-pending', id);
+      } catch (error) {
+        const code = error instanceof PodError ? error.code : 'CLEANUP_PENDING';
+        this.registry.update(id, s => {
+          s.cleanupAttempts = Math.min((s.cleanupAttempts ?? 0) + 1, 32);
+          s.nextCleanupAt = this.clock() + Math.min(60_000, this.cleanupRetryMs * 2 ** (s.cleanupAttempts - 1));
+          s.cleanupError = code;
+        });
+        this.registry.audit('cleanup-pending', id, code);
       } finally { this.cleanup.delete(id); }
     })();
     this.cleanup.set(id, task);
@@ -177,32 +209,37 @@ export class BrowserSessions {
   }
 
   async revokeOwner(owner) {
-    const sessions = this.registry.all().filter(s => sameOwner(s, owner) && s.resourceDeletedAt === null);
+    const sessions = this.registry.active().filter(s => sameOwner(s, owner));
     // Revoke every attachment before waiting for any slow native deletion.
     for (const session of sessions) this.revoke(session.id, 'OWNER_LOST');
     await Promise.all(sessions.map(session => this.reconcile(session.id)));
   }
 
-  async sweep({ waitForCleanup = true } = {}) {
+  async sweep({ waitForCleanup = true, forceCleanup = false } = {}) {
     const pending = [];
-    for (const session of this.registry.all()) {
-      if (session.resourceDeletedAt !== null) continue;
+    for (const session of this.registry.active()) {
       if (session.state === 'CleanupPending' || !this.isLive(session)) {
         if (session.accessRevokedAt === null) this.revoke(session.id, 'EXPIRED_OR_REVOKED');
         pending.push(session.id);
       }
     }
-    const cleanup = Promise.all(pending.map(id => this.reconcile(id)));
+    if (this.clock() - this.lastPrune >= 60_000) {
+      this.registry.prune(this.clock()); this.lastPrune = this.clock();
+    }
+    const cleanup = Promise.all(pending.map(id => this.reconcile(id, { force: forceCleanup })));
     if (waitForCleanup) await cleanup;
     else void cleanup.catch(() => { this.ready = false; });
   }
 
   async shutdown() {
     this.ready = false;
-    for (const session of this.registry.all()) {
-      if (session.resourceDeletedAt === null) this.revoke(session.id, 'BROKER_SHUTDOWN');
+    for (const session of this.registry.active()) {
+      this.revoke(session.id, 'BROKER_SHUTDOWN');
     }
     await Promise.allSettled([...this.allocations.values()]);
-    await this.sweep();
+    await Promise.allSettled([...this.cleanup.values()]);
+    // Do not leave a now-confirmable deletion queued behind a retry timer when
+    // the maintenance loop has stopped. Truly uncertain outcomes stay reserved.
+    await this.sweep({ forceCleanup: true });
   }
 }

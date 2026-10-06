@@ -2,6 +2,8 @@
 node_modules/
 dist/
 package-lock.json
+!sandboxes/browser-pod/package-lock.json
+!openrind-desktop/packages/browser-pods/test/live/hyperbrowser/package-lock.json
 !openrind-desktop/packaging/browser-client/package-lock.json
 !openrind-desktop/packages/browser-pods/package-lock.json
 agent-task.txt

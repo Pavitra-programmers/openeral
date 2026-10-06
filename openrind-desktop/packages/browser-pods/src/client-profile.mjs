@@ -9,5 +9,5 @@ export async function validateClientProfile(env = process.env, read = readConfig
   requireThat(env.AGENT_BROWSER_ACTION_POLICY === '/opt/openrind/browser/agent-browser-policy.json', 'CLIENT_POLICY_REQUIRED');
   const policy = await read(env.AGENT_BROWSER_ACTION_POLICY, { uid: 0, privateFile: false });
   requireThat(policy.default === 'allow' && Array.isArray(policy.deny) &&
-    ['upload', 'download'].every(action => policy.deny.includes(action)), 'CLIENT_POLICY_REQUIRED');
+    ['upload', 'download', 'waitfordownload'].every(action => policy.deny.includes(action)), 'CLIENT_POLICY_REQUIRED');
 }

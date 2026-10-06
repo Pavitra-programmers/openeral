@@ -42,6 +42,13 @@ export function browserPodBinding({ endpoint, bridgeAddress, bindingId }) {
       { allow: { method: 'DELETE', path: '/browsers/*' } },
       { allow: { method: 'GET', path: '/control' } },
       { allow: { method: 'GET', path: '/cdp/*' } },
+      { allow: { method: 'POST', path: '/api/session' } },
+      { allow: { method: 'GET', path: '/api/session/*' } },
+      { allow: { method: 'GET', path: '/api/session/*/downloads-url' } },
+      { allow: { method: 'GET', path: '/api/sessions' } },
+      { allow: { method: 'PUT', path: '/api/session/*/stop' } },
+      { allow: { method: 'POST', path: '/api/session/*/uploads' } },
+      { allow: { method: 'GET', path: '/artifacts/*/*' } },
     ] };
   const binary = '/usr/local/bin/openrind-browser-pod-helper';
   return Object.freeze({ name: `${base.name}-pods`,

@@ -1,8 +1,11 @@
 import { createHash } from 'node:crypto';
 
 export const HELPER_ORIGIN = 'http://127.0.0.1:19300';
+export const HELPER_IMPLEMENTATION = 'provider-pods';
 export const MAX_JSON = 1024 * 1024;
 export const MAX_CDP = 64 * 1024 * 1024;
+export const MAX_ARTIFACT = 256 * 1024 * 1024;
+export const MAX_MULTIPART = MAX_ARTIFACT + 64 * 1024;
 export const MAX_LIFETIME_MS = 2 * 60 * 60 * 1000;
 export const ARGIDE_PROFILE = 'argide-0.91-browser-pods-v1';
 
@@ -36,7 +39,7 @@ export function normalizeKernel(body) {
   }, warnings: [] };
 }
 
-// The option contract is shared with the later Hyperbrowser HTTP adapter.
+// Only a trusted owner binding can opt into declared Argide feature no-ops.
 export function normalizeHyperbrowser(body, profile) {
   const noops = ['enableWebRecording', 'enableVideoWebRecording', 'useStealth',
     'adblock', 'trackers', 'annoyances'];
@@ -93,6 +96,8 @@ export function validateOwner(owner) {
   requireThat(owner.helperOrigin === HELPER_ORIGIN, 'INVALID_HELPER_ORIGIN');
   requireThat(Array.isArray(owner.providers) && owner.providers.length > 0 &&
     owner.providers.every(value => ['kernel', 'hyperbrowser'].includes(value)), 'INVALID_OWNER');
+  requireThat(owner.compatibilityProfile === undefined || owner.compatibilityProfile === ARGIDE_PROFILE,
+    'INVALID_COMPATIBILITY_PROFILE');
   return structuredClone(owner);
 }
 

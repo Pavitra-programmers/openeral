@@ -10,12 +10,17 @@ COPY openrind-desktop/packages/browser-pods/src/ ./src/
 COPY openrind-desktop/packages/browser-pods/bin/ ./bin/
 COPY openrind-desktop/packages/browser-pods/native/helper.c ./
 RUN cc -std=c11 -D_POSIX_C_SOURCE=200809L -O2 -Wall -Wextra -Werror -o helper helper.c
+WORKDIR /opt/hyperbrowser-fixture
+COPY openrind-desktop/packages/browser-pods/test/live/hyperbrowser/package*.json ./
+RUN npm ci --ignore-scripts --no-audit --no-fund
+COPY openrind-desktop/packages/browser-pods/test/live/hyperbrowser/consumer.mjs ./
 
 FROM ghcr.io/nvidia/openshell-community/sandboxes/base:latest
 USER root
 COPY --from=helper-builder /usr/local/bin/node /usr/bin/node
 COPY --from=helper-builder /opt/openrind-browser-pods/ /opt/openrind-browser-pods/
 COPY --from=helper-builder /opt/openrind-browser-pods/helper /usr/local/bin/openrind-browser-pod-helper
+COPY --from=helper-builder /opt/hyperbrowser-fixture/ /opt/hyperbrowser-fixture/
 COPY openrind-desktop/packages/browser-pods/packaging/ /opt/openrind/browser/
 RUN node /opt/openrind/browser/install-agent-browser.mjs \
     && chmod 0755 /opt/openrind-browser-pods/bin/helper-ensure.sh \

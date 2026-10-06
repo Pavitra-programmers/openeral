@@ -1,7 +1,9 @@
 import http from 'node:http';
 import { WebSocket, WebSocketServer } from 'ws';
-import { HELPER_ORIGIN, MAX_CDP, PodError, deadline, errorResponse, requireThat } from './contracts.mjs';
-import { OpenShellProxyAgent, boundedServer, cdpCall, clientRequest, jsonBody,
+import { HELPER_ORIGIN, HELPER_IMPLEMENTATION, MAX_CDP, MAX_JSON, MAX_ARTIFACT, MAX_MULTIPART, deadline, errorResponse, requireThat } from './contracts.mjs';
+import { artifactRoute, sessionRoute } from './hyperbrowser.mjs';
+import { relayHttp } from './http-stream.mjs';
+import { OpenShellProxyAgent, boundedServer, cdpCall, clientRequest,
   openWebSocket, rejectUpgrade, relayWebSockets, reply } from './transport.mjs';
 
 export function createHelper({ brokerOrigin, proxyUrl, placeholder, generation, onLost = () => {} }) {
@@ -19,34 +21,32 @@ export function createHelper({ brokerOrigin, proxyUrl, placeholder, generation, 
     return clientRequest(req);
   }
   const server = boundedServer(http.createServer(async (req, res) => {
-    let upstream; let timer;
     try {
       const url = validate(req);
       if (req.method === 'GET' && url.pathname === '/health') {
-        reply(res, 200, { ready: true, generation, implementation: 'kernel-spike' }); return;
+        reply(res, 200, { ready: true, generation, implementation: HELPER_IMPLEMENTATION }); return;
       }
+      const match = url.pathname.match(sessionRoute);
+      const upload = req.method === 'POST' && match?.[2] === 'uploads';
+      const archive = req.method === 'GET' && artifactRoute.test(url.pathname);
+      const stop = req.method === 'DELETE' || (req.method === 'PUT' && match?.[2] === 'stop');
       requireThat((req.method === 'POST' && url.pathname === '/browsers') ||
-        (req.method === 'DELETE' && /^\/browsers\/[a-f0-9-]{36}$/.test(url.pathname)), 'ROUTE_NOT_FOUND', 404);
-      // Only bounded provider JSON is read here. This helper has no file path API.
-      const body = req.method === 'POST' ? JSON.stringify(await jsonBody(req)) : undefined;
+        (req.method === 'DELETE' && /^\/browsers\/[a-f0-9-]{36}$/.test(url.pathname)) ||
+        (req.method === 'POST' && url.pathname === '/api/session') ||
+        (req.method === 'GET' && url.pathname === '/api/sessions') ||
+        (req.method === 'GET' && match && (!match[2] || match[2] === 'downloads-url')) ||
+        (req.method === 'PUT' && match?.[2] === 'stop') || upload || archive, 'ROUTE_NOT_FOUND', 404);
       const outboundHeaders = { ...headers };
-      if (body) { outboundHeaders['content-type'] = 'application/json'; outboundHeaders['content-length'] = Buffer.byteLength(body); }
+      for (const name of ['content-type', 'content-length']) {
+        if (req.headers[name] !== undefined) outboundHeaders[name] = req.headers[name];
+      }
       if (req.headers['idempotency-key']) outboundHeaders['idempotency-key'] = req.headers['idempotency-key'];
-      upstream = http.request(new URL(url.pathname, broker), { method: req.method, agent, headers: outboundHeaders }, response => {
-        res.writeHead(response.statusCode, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-        response.pipe(res);
-        response.on('error', () => res.destroy());
-      });
-      const fail = () => {
-        if (res.headersSent) res.destroy();
-        else reply(res, 504, { error: { code: req.method === 'DELETE' ? 'STOP_UNCONFIRMED' : 'BROKER_UNAVAILABLE' } });
-      };
-      timer = setTimeout(() => { upstream.destroy(); fail(); }, req.method === 'DELETE' ? 2000 : 65_000);
-      upstream.on('error', fail);
-      res.on('close', () => { clearTimeout(timer); upstream.destroy(); });
-      res.on('finish', () => clearTimeout(timer));
-      upstream.end(body);
-    } catch (error) { clearTimeout(timer); upstream?.destroy(); const result = errorResponse(error); reply(res, result.status, result.body); }
+      await relayHttp(req, res, { url: new URL(url.pathname + url.search, broker), agent, headers: outboundHeaders,
+        timeoutMs: stop ? 2000 : 65_000, maxRequest: upload ? MAX_MULTIPART : MAX_JSON,
+        maxResponse: archive ? MAX_ARTIFACT : MAX_JSON });
+    } catch (error) {
+      if (res.headersSent) res.destroy(); else { const result = errorResponse(error); reply(res, result.status, result.body); }
+    }
   }));
   server.on('upgrade', async (req, socket, head) => {
     socket.on('error', () => {});
@@ -58,7 +58,6 @@ export function createHelper({ brokerOrigin, proxyUrl, placeholder, generation, 
         { agent, headers, pauseOnOpen: true });
       requireThat(!socket.destroyed && ready, 'HELPER_LOST');
       wss.handleUpgrade(req, socket, head, client => { relayWebSockets(client, remote, budget); });
-      socket.on('close', () => remote.terminate());
     } catch (error) { remote?.terminate(); rejectUpgrade(socket, errorResponse(error).status); }
   });
   async function start() {

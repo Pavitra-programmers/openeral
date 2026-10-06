@@ -11,6 +11,8 @@ Run these commands **inside the owner sandbox**, not on the host. The host must
 already have enabled browser pods. Normal Desktop setup does not enable them.
 For host setup or a fresh-checkout test, use the repository's `openrind-dev`
 skill and `BUILD.md`; do not try to provision infrastructure from this skill.
+For the supplied Argide application, use that development skill and its private
+fixture guide. These agent-browser commands do not launch Argide's backend.
 
 The installed CLI uses agent-browser's built-in `kernel` provider against our
 Kernel-compatible API. Only the API is emulated; the browser is real headless
@@ -59,8 +61,9 @@ Use the installed CLI. Use a distinct session name
 for each concurrent task. Reuse that name for all commands in the same task. The
 name `web-task` below is an example, not a shared session for all agents.
 Keep the chosen name in every command, including commands in separate Bash calls.
-The default test allowlist includes only `example.com`; use another site only if
-the host operator has approved it.
+The public test allowlist includes only `example.com`. A provisioned owner's
+allowlist is set by its operator. Use another site only if that operator has
+approved it; do not assume the test rule grants general web access.
 
 ```bash
 agent-browser --session web-task open https://example.com
@@ -92,9 +95,12 @@ completed. The broker enforces browser expiry and resource cleanup separately.
 ## Files And Recovery
 
 Screenshots return image bytes to the agent. Website downloads stay in the browser
-pod. The managed action policy denies `upload` and `download`; the agent's local
-paths do not exist in that pod. Artifact import and export are not available in
-this initial implementation. Do not claim that a download reached `/sandbox/work`.
+pod. The managed action policy denies `upload`, `download`, and `wait --download`;
+the last command uses the policy action `waitfordownload`. The agent's local
+paths do not exist in that pod. Do not enable these native client commands.
+A separate configured Hyperbrowser SDK path supports explicit pod-side upload and
+ZIP retrieval. It is not part of this agent-browser command flow. Do not switch
+providers without host setup or claim that an archive reached `/sandbox/work`.
 
 A failed health probe can make agent-browser delete the old browser and create
 a new one. The page state is then lost. Inspect the current page before you act.
@@ -108,5 +114,6 @@ the host operator. Do not end other tasks' sessions as a repair.
 
 Report the session name, last confirmed page, completed actions, artifact path,
 and close result. Distinguish a confirmed action from an uncertain result. The
-Linux fixture proved this client path, not Argide, a browser-enabled Claude run,
-or a complete Desktop release.
+17-check Linux fixture proved this client path. Separate fixtures test the
+configured Hyperbrowser SDK and the supplied Argide code. None proves a
+browser-enabled Claude/FUSE run or a complete Desktop release.

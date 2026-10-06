@@ -8,6 +8,7 @@ for await (const chunk of process.stdin) {
 }
 const config = JSON.parse(input);
 if (!/^[a-f0-9-]{36}$/.test(config.sessionId) || !/^[A-Za-z0-9_-]{43}$/.test(config.secret) ||
+    typeof config.saveDownloads !== 'boolean' ||
     ![config.screen?.width, config.screen?.height].every(n => Number.isInteger(n) && n > 0 && n <= 8192)) {
   throw new Error('INVALID_POD_CONFIG');
 }

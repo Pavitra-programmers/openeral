@@ -13,7 +13,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends iproute2 nftables util-linux \
     && rm -rf /var/lib/apt/lists/* \
     && command -v ip && command -v nft && command -v nsenter
-COPY agent.mjs launch.mjs /opt/openrind-browser-pod/
+WORKDIR /opt/openrind-browser-pod
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+COPY agent.mjs launch.mjs artifacts.mjs network-ready.mjs ./
 RUN node --check /opt/openrind-browser-pod/agent.mjs \
     && node --check /opt/openrind-browser-pod/launch.mjs \
     && /usr/lib/chromium/chromium --version

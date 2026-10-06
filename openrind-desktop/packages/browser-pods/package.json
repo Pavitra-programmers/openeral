@@ -7,7 +7,8 @@
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "test:transport": "node --test test/live/*.test.mjs",
-    "test:openshell": "node test/live/openshell-e2e.mjs"
+    "test:openshell": "node test/live/openshell-e2e.mjs",
+    "test:hyperbrowser": "node test/live/openshell-e2e.mjs --hyperbrowser"
   },
   "dependencies": { "ws": "8.19.0" }
 }

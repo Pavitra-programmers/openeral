@@ -44,7 +44,7 @@ Use the `pg` helper in either runtime and quote the complete SQL string:
 
 ```bash
 pg "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
-pg "SELECT * FROM public.users LIMIT 5"
+pg "SELECT now() AS database_time"
 ```
 
 The helper prints a JSON array and exits nonzero on database or policy failure.
@@ -97,8 +97,15 @@ Use the `openrind-browser` skill only in an already enabled owner. It uses the
 Kernel-compatible service with a separate real Chromium sandbox. Screenshots can
 return to the owner and be written under `/sandbox/work`. Check the file and run
 `openrind-shell-fused flush-all` before claiming durability. Browser downloads,
-profiles, and cookies do not appear on FUSE automatically. File artifact APIs
-are not implemented; native client `upload` and `download` are denied.
+profiles, and cookies do not appear on FUSE automatically. Native agent-browser
+`upload`, `download`, and `wait --download` are denied. A separately configured
+Hyperbrowser SDK supports pod-local uploads and explicit ZIP retrieval. It does not export files
+to FUSE automatically. See BUILD's **Hyperbrowser SDK Test** for that test path.
+
+The Argide fixture's host MongoDB, Redis, and Qdrant are application test data
+stores. They are not the Openrind project database. The derived Argide test owner
+has no FUSE mount. A passing upload, archive, or form task is not a project
+persistence check. Use `openrind-dev` for that fixture's setup and cleanup.
 
 ## `/db` Virtual Filesystem
 

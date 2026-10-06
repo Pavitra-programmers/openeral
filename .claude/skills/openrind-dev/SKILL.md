@@ -1,6 +1,6 @@
 ---
 name: openrind-dev
-description: Build, test, and diagnose Openrind Shell from source, including the real Linux browser-pod test and host provisioning. Use for repository setup, not browser actions inside an enabled sandbox.
+description: Build, test, and diagnose Openrind Shell from source. Use for fresh-checkout setup, Linux browser-pod tests, the private Argide kit and real widget/model test, or host provisioning. Not for browser actions inside an enabled owner.
 allowed-tools: Read, Grep, Glob, Bash
 ---
 
@@ -26,6 +26,23 @@ the custom-agent library, and browser-only fixtures distinct.
 For Windows source setup, BUILD's **Windows Desktop Source Setup** lists the
 required rootfs and external Haloop source. Stop and report missing assets.
 Do not follow historical Tauri setup or change branches to obtain an older flow.
+
+### Choose A Browser Test
+
+These commands run on the Linux host, not inside an existing customer owner.
+Complete the public test setup before adding either SDK or private Argide input.
+
+| Requested result | Guide and runner flags | Required input | Passing evidence |
+|---|---|---|---|
+| Real agent-browser | [Real Linux Browser Test](../../../BUILD.md#real-linux-browser-test); no flags | Local Docker and matched build tools/images; no keys | 17 checks and `page.png` |
+| Configured Hyperbrowser SDK | [Hyperbrowser SDK Test](../../../BUILD.md#hyperbrowser-sdk-test); `--hyperbrowser` | Rebuilt SDK-capable fixture images; no keys | 26 checks and `hyperbrowser.json` |
+| Actual Argide browser module | [Argide guide](../../../openrind-desktop/packages/browser-pods/test/live/argide/README.md); `--argide` | Pinned private kit and derived owner image; no model key | 23 checks and `argide.json` |
+| Actual Argide widget and model | Same Argide guide; `--argide --argide-widget` | Same kit plus isolated host backend and funded Gemini key | 28 checks, `argide-widget.json`, and `argide-widget.png` |
+
+Each count includes the Kernel checks. Do not add the counts or combine flags
+to claim the same receipt. Every mode also requires exit code 0,
+`result: passed`, and no `cleanupError`. If the private kit is missing, report
+that limit. Do not silently substitute the SDK fixture for actual Argide.
 
 ## Runtime Architecture
 
@@ -196,9 +213,16 @@ tests, and actual client/runtime evidence distinct.
 The existing Control Chrome option and user MCP settings are outside this migration.
 Do not add a FUSE contract bump to retire managed browser assets.
 
-Kernel HTTP routes exist. Hyperbrowser HTTP routes and artifact APIs do not.
-An option-normalizer test is not an Argide compatibility test. Keep the README's
-availability table, bundled browser skill, and package status consistent with code.
+Kernel and configured Hyperbrowser HTTP routes share one broker, session core,
+owner checks, helper, and browser pod image. The adapters emulate provider APIs,
+not vendor clouds. The helper is owner-local at `127.0.0.1:19300`; the broker runs
+on the gateway host. SQLite stores session and cleanup records, not browser pages.
+
+The Hyperbrowser path adds explicit uploads and download ZIPs inside the pod.
+It does not translate owner paths or publish to FUSE. The pinned SDK fixture is
+not extracted Argide code. The actual Argide fixture needs the supplied kit. Keep
+the README's availability table, bundled browser skill, and package status
+consistent with code.
 Record blocked tests as blocked. Do not convert a socket or Docker permission
 failure into a passing test or bypass the restriction.
 
@@ -228,11 +252,13 @@ After completing BUILD's setup, run from the repository root:
 node openrind-desktop/packages/browser-pods/test/live/openshell-e2e.mjs
 ```
 
-Require exit code 0, all 13 checks, `result: passed`, no `cleanupError`, and a valid
+Require exit code 0, all 17 checks, `result: passed`, no `cleanupError`, and a valid
 `page.png` in the printed evidence directory. Check navigation, click/fill,
 screenshots, retained sessions, proxy denial, client file-action denial, deliberate
-Chromium crash replacement, and resource cleanup. The test creates and removes
-only its own resources. It does not leave a persistent browser service running.
+Chromium crash replacement, resource cleanup, and 17 MiB CDP payloads in both
+directions through the real proxy. Check the delayed control lease and
+`wait --download` denial too. The test creates and removes only its own resources.
+It does not leave a persistent browser service running.
 
 Report the commit, platform, versions, image ID, exit code, checks, and evidence
 path. Keep the evidence directory private; it contains test credentials. Do not
@@ -244,11 +270,56 @@ on Chromium can time out otherwise. Never bypass identity enforcement. The pod
 requires `ip`, `nft`, and `nsenter`. Do not diagnose missing image tools as a
 Docker permission failure.
 
+For the configured SDK path, follow BUILD's **Hyperbrowser SDK Test** and add
+`--hyperbrowser` to the same runner. Rebuild both fixture images first. Require
+26 checks, the separate `hyperbrowser.json` receipt, and no cleanup error. Keep
+the 61-second disconnect interval. This fixture uses the real SDK and Playwright,
+not the Argide archive. It verifies the provider API subset, not full vendor parity.
+
+For actual Argide, follow BUILD's **Actual Argide Application Test** and
+[the fixture guide](../../../openrind-desktop/packages/browser-pods/test/live/argide/README.md).
+Verify the archive,
+image, and source pins. The derived owner calls the real compiled backend-core
+functions, with one `baseUrl` constructor change. `--argide` requires 23 checks
+and no model key. It is configured compatibility, not an unchanged-app claim.
+
+The optional `--argide --argide-widget` test requires the real host backend and
+a funded Gemini key. Use a new Compose project and keep the guide's variables
+in the same host Bash session. Seed only that new test database. Do not load the
+repository `.env` or change model providers without user direction. Confirm backend
+readiness and the seeded product configuration before the model test. A ready
+HTTP server does not prove that the model key works.
+
+The actual backend, MongoDB, Redis, and Qdrant run in host Docker. Model calls
+go directly to Gemini outside OpenShell and Haloop. The actual widget and form
+run inside the OpenShell browser pod. Only their website/API traffic uses the
+pod's OpenShell policy. Do not claim that the whole application runs in OpenShell.
+
+Require 28 checks, real tool dispatch, `chat.finish`, and a screenshot of the
+submitted form. The driver must not fill the form itself. Keep automatic approval
+limited to that test page. The runner deletes its OpenShell test resources; it
+does not stop the host backend. Run the guide's separate Compose shutdown even
+after a failed test. Keep the private kit unchanged and evidence private.
+Do not copy private code or keys into this repository.
+This result does not prove the Auth0 dashboard, RAG, arbitrary websites,
+Windows Desktop activation, Claude integration, or FUSE export.
+
+The SDK upload returns a browser-local path. Use CDP `DOM.setFileInputFiles` for
+that path. Playwright `setInputFiles(path)` checks the owner filesystem first.
+Do not add local-file translation to hide that difference. Run the pod-side file
+tests under `sandboxes/browser-pod` for limits, cancellation, and unsafe entries.
+
 ### Persistent Host Setup
 
 Read BUILD's **Broker Process** and **Owner Activation** before configuring an
 existing owner. There is no complete production installer yet. The live runner
 is the executable setup example, not an installer for the user's current sandbox.
+
+Stage 0 requires a trusted single-user host. Native CLI forwards expose
+unauthenticated CDP ports on host loopback. Do not claim host-process isolation.
+For an uncertain create, use BUILD's **Resolve Uncertain Creates** procedure.
+Keep its quota reserved unless an operator confirms that no pending create can
+still finish. Do not remove the registry or replace an active owner to recover it.
 
 Match the broker's owner ID and generation to trusted helper configuration.
 Use `browserPodBinding()` and native provider attachment. Keep the real broker
@@ -256,6 +327,9 @@ token host-side. `KERNEL_API_KEY` is a non-secret client compatibility value.
 The helper's parent binary is `/usr/local/bin/openrind-browser-pod-helper`.
 The broker endpoint must use `protocol: rest`, with header injection only and no
 WebSocket-frame or request-body rewrite. Do not grant browser pods this endpoint.
+OpenShell route `*` matches one path segment. Keep the explicit
+`/api/session/*/downloads-url` and `/artifacts/*/*` rules; a shorter wildcard
+does not grant archive access. The broker still enforces the owner's provider grant.
 
 OpenShell exec clears image ENV. Client defaults come from the installed launcher.
 Provider attachment is asynchronous and does not update a running agent's env.

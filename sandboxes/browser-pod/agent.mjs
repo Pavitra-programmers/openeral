@@ -4,17 +4,23 @@ import { readFile } from 'node:fs/promises';
 import { closeSync, openSync, writeSync } from 'node:fs';
 import http from 'node:http';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { ArtifactError, PodArtifacts } from './artifacts.mjs';
+import { waitForNetworkReady } from './network-ready.mjs';
 
 const config = JSON.parse(await readFile('/tmp/openrind-browser/config.json', 'utf8'));
 const secretHash = createHash('sha256').update(`Bearer ${config.secret}`).digest();
 const proxy = new URL(process.env.HTTPS_PROXY || process.env.HTTP_PROXY || 'missing:');
 if (proxy.protocol !== 'http:' || proxy.username || proxy.password) throw new Error('OPENSHELL_PROXY_REQUIRED');
 const instance = randomUUID();
+const artifacts = new PodArtifacts({ enabled: config.saveDownloads === true });
+await artifacts.start();
 let state = 'starting'; let cdpPath; let leaseUntil = Date.now() + 30_000; let stopping;
 // Keep bounded startup diagnostics private to this disposable browser pod.
 const chromeLog = openSync('/tmp/openrind-browser/chromium.log', 'wx', 0o600);
 let logBytes = 0;
+await waitForNetworkReady();
 const child = spawn('/usr/lib/chromium/chromium', [
+  ...(config.diagnostics ? ['--log-net-log=/tmp/openrind-browser/netlog.json'] : []),
   '--headless=new', '--no-sandbox', '--disable-quic', '--disable-background-networking',
   '--no-first-run', '--no-default-browser-check', '--remote-debugging-address=127.0.0.1',
   '--remote-debugging-port=9222', '--user-data-dir=/tmp/openrind-browser/profile',
@@ -45,6 +51,7 @@ function signalGroup(signal) {
 async function stop() {
   if (stopping) return stopping;
   stopping = (async () => {
+    await artifacts.close();
     if (groupAlive()) {
       signalGroup('SIGTERM');
       for (let i = 0; i < 10 && groupAlive(); i++) await sleep(50);
@@ -63,14 +70,36 @@ const server = http.createServer(async (req, res) => {
   const candidate = createHash('sha256').update(req.headers.authorization ?? '').digest();
   if (req.headers.origin || !timingSafeEqual(candidate, secretHash)) { res.writeHead(403); res.end(); return; }
   try {
+    if (req.url === '/uploads' || req.url === '/downloads-url' || req.url.startsWith('/artifacts/')) {
+      if (state !== 'ready' || req.headers['x-browser-instance'] !== instance) throw new ArtifactError('SESSION_NOT_READY', 409);
+      const controller = new AbortController();
+      const abort = () => controller.abort();
+      req.once('aborted', abort); res.once('close', abort);
+      try {
+        if (req.method === 'POST' && req.url === '/uploads') {
+          const result = await artifacts.upload(req, controller.signal);
+          res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(result));
+        } else if (req.method === 'GET' && req.url === '/downloads-url') {
+          const result = await artifacts.prepareArchive();
+          res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(result));
+        } else if (req.method === 'GET' && /^\/artifacts\/[a-f0-9]{32}$/.test(req.url)) {
+          await artifacts.streamArchive(req.url.slice('/artifacts/'.length), res, controller.signal);
+        } else throw new ArtifactError('ROUTE_NOT_FOUND', 404);
+      } finally { req.off('aborted', abort); res.off('close', abort); }
+      return;
+    }
     if (req.method === 'POST' && req.url === '/lease') leaseUntil = Date.now() + 15_000;
     else if (req.method === 'POST' && req.url === '/stop') await stop();
     else if (!(req.method === 'GET' && req.url === '/health')) { res.writeHead(404); res.end(); return; }
     res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
     res.end(JSON.stringify({ sessionId: config.sessionId, instance, state, cdpPath }));
-  } catch { res.writeHead(503); res.end(); }
+  } catch (error) {
+    if (res.headersSent) res.destroy();
+    else { res.writeHead(error instanceof ArtifactError ? error.status : 503, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ code: error instanceof ArtifactError ? error.code : 'POD_OPERATION_FAILED' })); }
+  }
 });
-server.headersTimeout = 3000; server.requestTimeout = 3000; server.maxConnections = 4;
+server.headersTimeout = 3000; server.requestTimeout = 65_000; server.maxConnections = 4;
 server.on('clientError', (_, socket) => socket.destroy());
 await new Promise((resolve, reject) => { server.once('error', reject); server.listen(9230, '127.0.0.1', resolve); });
 

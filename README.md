@@ -5,9 +5,10 @@ a native filesystem at `/sandbox/work`. Keep Claude's settings and conversation
 history in a separate, device-local volume.
 
 An experimental browser service lets agents use real Chromium in a **second
-OpenShell sandbox**. It uses agent-browser's built-in Kernel provider against our
-Kernel-compatible API. You do not need a Kernel account. There is no browser in
-the agent sandbox and no browser sidebar.
+OpenShell sandbox**. One service accepts agent-browser's Kernel API and a
+configured Hyperbrowser SDK, including the supplied Argide browser module.
+These are API-compatible adapters, not connections to those vendors' clouds.
+There is no browser in the agent sandbox and no browser sidebar.
 
 ## Start Here
 
@@ -16,7 +17,9 @@ Choose one path. They have different prerequisites and test coverage.
 | Your task | Start here | Current limit |
 |---|---|---|
 | Use Claude with persistent project files | [Start Claude In Desktop](#start-claude-in-desktop) | The managed OpenShell installer targets Windows 11 and WSL2 |
-| Verify the new browser path from this checkout | [Try The Browser Runtime](#try-the-browser-runtime) | Reproducible Linux test; not a Desktop or Claude test |
+| Try real browser automation without keys | [Try The Browser Runtime](#try-the-browser-runtime) | Linux x64 test; no Desktop, model, database, or vendor account needed |
+| Run the supplied Argide application test | [Run Argide](#run-argide) | Needs the private kit; the widget/model test also needs a funded Gemini key |
+| Run a web task in an owner that an operator already enabled | [Use An Enabled Owner](#use-an-enabled-owner) | Browser activation is separate from ordinary Desktop setup |
 | Build Desktop, images, or the gateway | [BUILD.md](./BUILD.md) | Source builds need build tools and matched runtime assets |
 | Use optional PostgreSQL or embedded PGlite | [Other Runtimes](#other-runtimes) | Compatibility mode does not persist arbitrary project files |
 
@@ -28,6 +31,23 @@ lists what works and what remains.
 
 If you use Codex to set up this repository, start with
 [Instructions For Codex](#instructions-for-codex).
+
+### What Is Included
+
+This checkout contains the runtime source, image recipes, tests, and skills. It
+is not a preconfigured Desktop installation. It does not contain the private
+Argide kit or real credentials. Browser test images must be built from this
+checkout in the same local Docker daemon used by the test gateway.
+
+For a first public-checkout trial, use the key-free Linux browser test. For
+Argide, complete that setup first, then load the supplied kit. Keep all host
+build and test commands in the linked [BUILD.md](./BUILD.md) guide. Do not run
+host setup commands inside an agent sandbox.
+
+An **owner** is the sandbox running the agent or test client. A **browser pod**
+is a separate OpenShell sandbox running Chromium. It does not require Kubernetes.
+The **broker** is our host service that creates pods and controls their lifetime.
+The **helper** is the owner's local connection to that broker.
 
 ## Start Claude In Desktop
 
@@ -152,27 +172,37 @@ failure and durability contracts.
 
 ## Browser Support
 
-The managed browser path uses **agent-browser v0.38.2**, not an MCP browser server.
-Its built-in `kernel` provider sends create/delete requests to our API adapter.
-The adapter creates a real Chromium sandbox. The client controls it over CDP
-(Chrome DevTools Protocol).
+Browser pods use provider APIs, not the retired managed MCP browser service.
+Both adapters use the same broker, session records, owner checks, transport,
+browser image, and cleanup rules. The browser actions are real, not canned
+responses. CDP (Chrome DevTools Protocol) carries browser commands and results.
+
+| Client | Adapter and configuration | Session behavior |
+|---|---|---|
+| agent-browser `0.38.2` | Built-in `kernel` provider; the installed launcher supplies our local endpoint | Reuses its browser across commands; a failed health probe can cause a new browser |
+| Hyperbrowser SDK `0.91.0` | Set the SDK's `baseUrl` to our local helper before launch | Can disconnect and reconnect to the same live browser within its lease |
+| Supplied Argide browser module | The same Hyperbrowser adapter; one constructor configuration change | Tested with its real create, initialize, get, upload, and stop functions |
 
 ```mermaid
 flowchart LR
   subgraph owner["Owner sandbox: no Chromium"]
     agent["Claude + openrind-browser skill"] --> client["agent-browser<br/>Kernel provider"]
+    argide["Configured Hyperbrowser SDK<br/>or actual Argide browser module"]
     client <-->|"HTTP + CDP WebSocket"| helper["Loopback helper<br/>127.0.0.1:19300"]
+    argide <-->|"HTTP + CDP WebSocket"| helper
     helper <--> ownerproxy["OpenShell proxy<br/>provider header injection"]
   end
   subgraph host["Gateway host"]
-    broker["Kernel-compatible broker<br/>private bridge port 19301"]
-    registry[("SQLite<br/>owners, leases, cleanup")]
+    broker["Kernel + Hyperbrowser adapters<br/>one broker and session core"]
+    registry[("Host SQLite<br/>session ownership, leases, cleanup")]
     forward["Native OpenShell<br/>create, exec, ForwardTcp"]
     broker <--> registry
     broker <--> forward
   end
   subgraph browser["Disposable browser sandbox"]
-    podagent["Detached pod agent<br/>control lease"] --> chrome["Headless Chromium"]
+    podagent["Detached pod agent<br/>control lease and file API"] --> chrome["Headless Chromium"]
+    artifacts["Pod-local uploads and download ZIPs<br/>not the owner's filesystem"]
+    podagent <--> artifacts
     chrome --> webproxy["OpenShell website allowlist<br/>TLS tunnel"]
   end
   ownerproxy <--> broker
@@ -181,23 +211,34 @@ flowchart LR
   webproxy --> web["Allowed websites"]
 ```
 
-The installed launcher supplies `AGENT_BROWSER_PROVIDER=kernel` and
+In a provisioned owner, the installed launcher supplies `AGENT_BROWSER_PROVIDER=kernel` and
 `KERNEL_ENDPOINT=http://127.0.0.1:19300`. It supplies a non-secret compatibility
 value for `KERNEL_API_KEY`; this is not the broker credential. The real broker
 credential remains in host configuration and OpenShell's provider store.
+The helper address is inside the owner, not a host browser page. A client must
+not call the broker's private bridge address directly. OpenShell exec does not
+inherit image environment settings; the launcher supplies its defaults on each call.
 Do not supply a local Chrome executable, `--cdp`, or vendor credentials.
 No vendor-domain interception or client fork is used.
 
+The Hyperbrowser path needs its own host-approved provider grant and SDK setup.
+It does not change agent-browser's selected provider. The Argide compatibility
+profile reports unsupported features, such as recording and stealth, as explicit
+no-ops. It does not provide full Hyperbrowser parity, a viewer, or CAPTCHA solving.
+
 Browser pods add **no OpenShell source patch** beyond the existing FUSE fork.
 They use native provider injection, exec, and ForwardTcp. The broker, helper,
-session rules, and Kernel API adapter are Openrind code.
+session rules, and API adapters are Openrind code. A running broker and a
+provisioned owner are required; an installed client alone cannot create this setup.
 
 Chromium runs with `--no-sandbox` in the tested pod; OpenShell supplies the outer
 isolation boundary. The host operator must accept that setting. Website access
 is allowlist-only. OpenShell tunnels website TLS without HTTP content inspection.
 CDP grants control of the assigned browser, including JavaScript and cookies.
 An allowed website can receive data the agent sends; this is not data-loss
-prevention or per-action approval enforcement.
+prevention or per-action approval enforcement. The current test transport also
+opens unauthenticated CDP listeners on host loopback. Use a trusted single-user
+host. Direct in-process forwarding remains a release requirement.
 
 ### Availability
 
@@ -207,8 +248,11 @@ prevention or per-action approval enforcement.
 | Navigation, snapshot, click/fill, screenshot, session reuse | Passed with the unchanged agent-browser binary |
 | Destination denial, client file-action denial, crash replacement, cleanup | Passed the Linux live fixture |
 | Browser-enabled Desktop/Claude session and FUSE screenshot persistence | Not yet verified; normal activation remains disabled |
-| Argide through Hyperbrowser, Browserbase, Browser Use, or Browserless adapters | Not shipped end to end; spec targets are not available providers |
-| Website upload/download artifact APIs | Not implemented; native client `upload` and `download` are denied |
+| Configured Hyperbrowser SDK | Passed the separate Linux SDK test; create/get/list/stop and retained-session support |
+| Browser-side uploads and ZIP download archives | Explicit Hyperbrowser SDK APIs; no local path translation or automatic FUSE export |
+| Actual Argide browser module | Passed with the supplied image and one Hyperbrowser `baseUrl` change |
+| Actual Argide backend and widget | Passed one model-driven form task in OpenShell Chromium; not the Auth0 dashboard or Desktop integration |
+| Browserbase, Browser Use, or Browserless adapters | Not implemented |
 | Control Chrome and user MCP connections | Separate existing options; not changed or validated by the pod test |
 | Sidebar, VNC viewer, personal Chrome profile | Not part of the pod design |
 
@@ -224,13 +268,82 @@ The fixture creates a private gateway, a browser-only owner, and real browser
 pods. It tests the Kernel API and native OpenShell transport, then removes its
 containers and network. It prints a private evidence directory containing
 `evidence.json` and `page.png`. Success requires exit code 0, `result: "passed"`,
-all 13 checks, and no cleanup error. This does not leave a customer sandbox open.
+all 17 checks, and no cleanup error. This does not leave a customer sandbox open.
 
 The test passed on 2026-10-06 with Chromium 154.0.8037.92 and agent-browser
-v0.38.2 on Linux x64. It does not establish Windows Desktop support, Argide
+v0.38.2 on Linux x64. It also passed a delayed-lease test and 17 MiB CDP tests in
+both directions through the real proxy. It does not establish Windows Desktop support, Argide
 compatibility, FUSE persistence, or performance under concurrent load.
 
-### Use An Enabled Owner
+The [Hyperbrowser SDK test](./BUILD.md#hyperbrowser-sdk-test) extends the same
+setup. It uses SDK `0.91.0` and Playwright `1.59.1` in the owner. Its 26 combined
+checks passed on 2026-10-06. They include a 61-second reconnect, multipart upload,
+and download ZIP verification. It needs no account or model key. This is an SDK
+test, not the actual Argide application.
+
+## Run Argide
+
+Argide is optional test input, not part of the shipped Openrind runtime. The
+private kit contains a backend image, a widget bundle, and database seed data.
+Without that kit, run the public Kernel or Hyperbrowser SDK test instead.
+
+Start with [BUILD.md: Actual Argide Application Test](./BUILD.md#actual-argide-application-test).
+Its linked guide has the exact archive hashes, extraction, image build, startup,
+seed, test, and stop commands. Run those commands on the **Linux host**, from
+the repository root. Do not install the kit into a customer's persistent owner.
+
+| Path | Additional requirements | Expected result |
+|---|---|---|
+| Actual browser module | Private kit and a derived test owner image; no real keys | 23 combined checks; `argide.json` records source hashes and the one `baseUrl` change |
+| Real backend + widget + model | The same kit, Docker Compose, and an exported, funded `GEMINI_API_KEY` | 28 combined checks; `argide-widget.json` records tool calls; `argide-widget.png` shows the submitted form |
+
+The model test adds this path to the browser architecture above:
+
+```mermaid
+sequenceDiagram
+  participant Driver as Test client in owner
+  participant Pod as OpenShell Chromium pod
+  participant Proxy as OpenShell website policy
+  participant Relay as Test-only public API relay
+  participant Backend as Actual Argide backend on host
+  participant Model as Gemini API
+  Driver->>Pod: Open controlled page and send chat request
+  Pod->>Proxy: Widget requests and event stream
+  Proxy->>Relay: Allow only fixture and public API routes
+  Relay->>Backend: Forward request
+  Backend->>Model: Choose next browser action
+  Model-->>Backend: Tool call
+  Backend-->>Pod: Tool call through relay and event stream
+  Pod->>Pod: Actual widget fills fields and clicks Submit
+  Pod->>Backend: Tool result through the same route
+  Backend-->>Pod: Confirmation and chat.finish
+  Driver->>Pod: Read result and capture screenshot
+```
+
+The actual backend runs in **host Docker**, with its own MongoDB, Redis, and
+Qdrant services. Its model requests go directly to Gemini, not through OpenShell
+or the Desktop Haloop route. Chromium and the actual widget run inside the
+browser pod. The widget's website/API traffic does pass through OpenShell.
+The backend API binds to host loopback; the fixture exposes only its public API
+routes on the isolated test bridge. No public tunnel is required.
+
+The 28-check run passed on 2026-10-06. The harness entered the chat request and
+approved actions only on the controlled test page. Argide chose and executed the
+form actions. The module's constructor uses our endpoint; the backend image and
+widget remain unchanged. This is not an unchanged whole-application claim.
+
+Expect one controlled browser task, not a persistent web application or dashboard.
+The test closes its browser and removes its OpenShell resources. Follow the guide's
+separate Compose shutdown step to stop the backend and background model work.
+The evidence directory contains private test credentials; do not publish it whole.
+
+The Auth0 dashboard, real website login, knowledge-base retrieval, recordings,
+general site compatibility, and Desktop/Claude/FUSE integration are not verified.
+The kit's optional OpenAI calls use placeholders in this Gemini test and can log
+errors. They are not evidence of a working knowledge base. Normal Desktop browser
+activation remains disabled.
+
+## Use An Enabled Owner
 
 This section applies only after a host operator completes
 [Owner Activation](./BUILD.md#owner-activation). The environment flag alone is
@@ -266,7 +379,7 @@ Do not overwrite an existing local skill directory to repair discovery.
 | Skill | Use it for |
 |---|---|
 | `openrind-shell` | Desktop setup, signed Claude launches, and FUSE diagnostics |
-| `openrind-dev` | Source builds, host browser setup, and the real Linux browser test |
+| `openrind-dev` | Source builds, host browser setup, Linux browser tests, and the private Argide fixture |
 | `openrind-browser` | Browser commands inside an already enabled owner sandbox |
 | `openrind-navigate` | Filesystem boundaries, SQL queries, and persistence checks |
 
@@ -277,6 +390,16 @@ For a first browser test, give Codex this task:
 > my existing sandboxes or reading provider keys. Report its exit code, all test
 > results, the evidence path, cleanup status, and anything you could not test.
 > Do not treat a unit test or a fake browser as a real Chromium result.
+
+For the actual Argide model test, give Codex this task and the private archive path:
+
+> Read AGENTS.md, README.md's Run Argide section, the openrind-dev skill, and
+> BUILD.md's Actual Argide Application Test. Check the Linux/Docker prerequisites
+> and the supplied kit hashes. Run the actual module and widget/model test with
+> the configured Gemini key. Do not print keys or change existing sandboxes.
+> Report the 28-check result, real tool calls, screenshot path, source change,
+> and cleanup. Stop the temporary backend afterward. Do not replace the actual
+> Argide code with an SDK mock or claim Desktop/FUSE support from this test.
 
 For a Desktop launch, use `openrind-shell` instead. Ask the tool to report missing
 Windows runtime assets or credentials before it tries a different launch path.
@@ -298,6 +421,9 @@ Do not let it infer that a repository `.env` file has populated Desktop settings
 | `CLIENT_PROFILE_CONFLICT` | Remove only the conflicting browser override for this task; use the managed Kernel path |
 | Browser navigation is denied | The destination is outside the host's website allowlist. Request operator review; do not broaden it automatically |
 | Browser live test is slow or blocked | Follow the build and diagnosis steps in BUILD.md; preserve the exact error and report the failed stage |
+| Argide archive is missing or its hash changed | Ask for the matching kit or review the new version. Do not silently substitute the SDK fixture |
+| Argide backend is ready but no model result arrives | Confirm a funded Gemini key and the public product seed. Read private backend errors; readiness does not test model access |
+| Argide widget cannot reach its API | Use the fixture's initial website policy and relay. Do not hot-update a live pod or open all host ports |
 
 Delete Desktop-owned sandboxes through Desktop so it can close agents and revoke
 scoped credentials. A WSL reset also deletes device-local home volumes and traces;

@@ -3,7 +3,8 @@ import { randomBytes } from 'node:crypto';
 import { writeFile, mkdir } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { PodError, requireThat } from './contracts.mjs';
+import { MAX_ARTIFACT, MAX_MULTIPART, PodError, requireThat } from './contracts.mjs';
+import { readJsonResponse, relayHttp, requestStream } from './http-stream.mjs';
 
 export const CHROMIUM_BINARY = '/usr/lib/chromium/chromium';
 
@@ -54,7 +55,8 @@ export function parseForwardLine(line, name, targetPort) {
 }
 
 export class OpenShellRuntime {
-  constructor({ binary, gateway, image, stateDir, websiteHosts, acceptNoSandbox, run = runProcess }) {
+  constructor({ binary, gateway, image, stateDir, websiteHosts, acceptNoSandbox, run = runProcess,
+    clock = () => performance.now(), leaseFailureMs = 8000 }) {
     requireThat(isAbsolute(binary) && isAbsolute(stateDir), 'ABSOLUTE_RUNTIME_PATH_REQUIRED');
     requireThat(/(?:@sha256:|^sha256:)[a-f0-9]{64}$/.test(image), 'PINNED_BROWSER_IMAGE_REQUIRED');
     requireThat(acceptNoSandbox === true, 'CHROMIUM_NO_SANDBOX_ACCEPTANCE_REQUIRED');
@@ -63,6 +65,7 @@ export class OpenShellRuntime {
       'INVALID_GATEWAY');
     this.binary = binary; this.prefix = ['--gateway-endpoint', gateway]; this.image = image;
     this.stateDir = stateDir; this.policy = browserPolicy(websiteHosts); this.run = run;
+    this.clock = clock; this.leaseFailureMs = leaseFailureMs;
     this.live = new Map();
   }
   command(args, options) { return this.run(this.binary, [...this.prefix, ...args], options); }
@@ -121,12 +124,17 @@ export class OpenShellRuntime {
     await this.command(['sandbox', 'create', '--name', session.name, '--from', this.image,
       '--policy', this.policyPath, '--cpu', '2', '--memory', '2Gi', '--driver-config-json', JSON.stringify(mounts),
       '--label', `openrind.browser.session=${session.id}`, '--no-auto-providers', '--no-tty', '--', '/bin/true'],
-      { timeoutMs: 60_000, signal });
+      // An HTTP disconnect cancels admission, not the native create. Observe its
+      // bounded result so a late sandbox has a handle and can be removed.
+      { timeoutMs: 60_000 });
     const found = await this.inventory(session);
     requireThat(found?.id && found.phase === 'Ready', 'POD_NOT_READY');
     onAllocated({ id: found.id, instance: null });
+    signal?.throwIfAborted();
     const secret = randomBytes(32).toString('base64url');
-    const config = { sessionId: session.id, screen: session.options.effective.screen, secret };
+    const config = { sessionId: session.id, screen: session.options.effective.screen,
+      saveDownloads: session.options.effective.saveDownloads, secret,
+      diagnostics: process.env.BROWSER_POD_DIAGNOSTICS === '1' };
     await this.command(['sandbox', 'exec', '-n', session.name, '--no-tty', '--',
       '/usr/bin/node', '/opt/openrind-browser-pod/launch.mjs'], { stdin: JSON.stringify(config), signal });
     let cdp; let control;
@@ -141,7 +149,7 @@ export class OpenShellRuntime {
         await sleep(200, undefined, { signal });
       }
       requireThat(health?.state === 'ready' && /^\/devtools\/browser\/[A-Za-z0-9_-]+$/.test(health.cdpPath), 'BROWSER_NOT_READY');
-      live.instance = health.instance; live.cdpPath = health.cdpPath;
+      live.instance = health.instance; live.cdpPath = health.cdpPath; live.lastLeaseAt = this.clock();
       this.live.set(session.id, live);
       return { id: found.id, instance: health.instance };
     } catch (error) { control?.close(); cdp?.close(); throw error; }
@@ -150,6 +158,26 @@ export class OpenShellRuntime {
     const live = this.live.get(session.id);
     requireThat(live && !live.cdp.closed && session.handle.instance === live.instance, 'BROWSER_GENERATION_LOST');
     return `ws://127.0.0.1:${live.cdp.port}${live.cdpPath}`;
+  }
+  artifactTarget(session, path) {
+    const live = this.live.get(session.id);
+    requireThat(live && !live.control.closed && live.instance === session.handle.instance, 'BROWSER_GENERATION_LOST');
+    return { url: `http://127.0.0.1:${live.control.port}${path}`,
+      headers: { authorization: `Bearer ${live.secret}`, 'x-browser-instance': live.instance } };
+  }
+  async upload(session, req, signal) {
+    const target = this.artifactTarget(session, '/uploads');
+    const headers = { ...target.headers, 'content-type': req.headers['content-type'] ?? '' };
+    if (req.headers['content-length']) headers['content-length'] = req.headers['content-length'];
+    return readJsonResponse(await requestStream(target.url, { method: 'POST', headers, body: req, maxBytes: MAX_MULTIPART, signal }));
+  }
+  async downloads(session, signal) {
+    const target = this.artifactTarget(session, '/downloads-url');
+    return readJsonResponse(await requestStream(target.url, { method: 'GET', headers: target.headers, signal }));
+  }
+  async streamArtifact(session, id, req, res, signal) {
+    const target = this.artifactTarget(session, `/artifacts/${id}`);
+    return relayHttp(req, res, { ...target, maxResponse: MAX_ARTIFACT, signal });
   }
   async stop(session) {
     const live = this.live.get(session.id);
@@ -168,6 +196,13 @@ export class OpenShellRuntime {
       // With no observed handle, a timed-out create can still arrive later.
       requireThat(session.handle?.id, 'CREATE_OUTCOME_UNKNOWN');
     } else {
+      if (process.env.BROWSER_POD_DIAGNOSTICS === '1') {
+        try {
+          const log = await this.command(['sandbox', 'exec', '-n', session.name, '--no-tty', '--',
+            '/usr/bin/node', '-e', 'process.stdout.write(require("fs").readFileSync("/tmp/openrind-browser/netlog.json"))']);
+          await writeFile(join(this.stateDir, `${session.id}-netlog.json`), log, { mode: 0o600 });
+        } catch {}
+      }
       await this.command(['sandbox', 'delete', session.name]);
       requireThat(!(await this.inventory({ ...session, handle: { id: found.id } })), 'CLEANUP_PENDING');
     }
@@ -177,8 +212,15 @@ export class OpenShellRuntime {
   async heartbeat(core) {
     await Promise.all([...this.live].map(async ([id, live]) => {
       if (core.registry.get(id)?.accessRevokedAt !== null) return;
-      try { requireThat((await this.control(live, 'POST', '/lease')).state === 'ready', 'BROWSER_LOST'); }
-      catch { core.revoke(id, 'RUNTIME_LOST'); }
+      live.lastLeaseAt ??= this.clock();
+      try {
+        requireThat(!live.cdp?.closed && !live.control?.closed, 'FORWARD_LOST');
+        requireThat((await this.control(live, 'POST', '/lease')).state === 'ready', 'BROWSER_LOST');
+        live.lastLeaseAt = this.clock();
+      } catch (error) {
+        const definite = ['FORWARD_LOST', 'CONTROL_FORWARD_LOST', 'BROWSER_GENERATION_LOST', 'BROWSER_LOST'].includes(error.code);
+        if (definite || this.clock() - live.lastLeaseAt >= this.leaseFailureMs) core.revoke(id, 'RUNTIME_LOST');
+      }
     }));
     // The caller schedules cleanup separately. A slow deletion must not cause
     // healthy pods to miss their control lease.

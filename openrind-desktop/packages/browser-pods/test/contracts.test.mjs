@@ -117,6 +117,8 @@ test('provider binding uses header injection only and a dedicated helper binary'
   assert.equal(route.request_body_credential_rewrite, false);
   assert.deepEqual(route.rules.map(r => [r.allow.method, r.allow.path]), [
     ['POST', '/browsers'], ['DELETE', '/browsers/*'], ['GET', '/control'], ['GET', '/cdp/*'],
+    ['POST', '/api/session'], ['GET', '/api/session/*'], ['GET', '/api/session/*/downloads-url'], ['GET', '/api/sessions'],
+    ['PUT', '/api/session/*/stop'], ['POST', '/api/session/*/uploads'], ['GET', '/artifacts/*/*'],
   ]);
   assert.deepEqual(binding.profile.binaries, ['/usr/local/bin/openrind-browser-pod-helper']);
   assert.throws(() => browserPodBinding({ endpoint: 'http://host.openshell.internal:18770', bridgeAddress: '172.18.0.1', bindingId: 'fixture' }));
@@ -139,10 +141,11 @@ test('client activation rejects local-browser overrides and a missing file polic
   const env = { AGENT_BROWSER_PROVIDER: 'kernel', KERNEL_ENDPOINT: 'http://127.0.0.1:19300',
     KERNEL_API_KEY: 'openrind-compat', KERNEL_HEADLESS: 'true', KERNEL_STEALTH: 'false',
     AGENT_BROWSER_ACTION_POLICY: '/opt/openrind/browser/agent-browser-policy.json' };
-  const policy = async () => ({ default: 'allow', deny: ['upload', 'download'] });
+  const policy = async () => ({ default: 'allow', deny: ['upload', 'download', 'waitfordownload'] });
   await validateClientProfile(env, policy);
   await assert.rejects(validateClientProfile({ ...env, AGENT_BROWSER_EXECUTABLE_PATH: '/bin/chrome' }, policy));
   await assert.rejects(validateClientProfile(env, async () => ({ default: 'allow', deny: [] })));
+  await assert.rejects(validateClientProfile(env, async () => ({ default: 'allow', deny: ['upload', 'download'] })));
   await assert.rejects(validateClientProfile(env, async () => { throw new Error('missing'); }));
 });
 
@@ -199,6 +202,7 @@ class FakeWebSocket extends EventEmitter {
   pause() { this.paused = true; }
   resume() { this.paused = false; }
   terminate() { if (!this.closed) { this.closed = true; this.emit('close'); } }
+  close(code, reason) { this.closeArgs = [code, reason]; this.closed = true; this.readyState = 3; this.emit('close', code, reason); }
   send(bytes, options, callback) { this.sent.push({ bytes, options, callback }); }
 }
 
@@ -220,4 +224,55 @@ test('message relay closes rather than exceed its queued-message budget', () => 
   a.emit('message', Buffer.from('too large'), true);
   assert.equal(a.closed, true); assert.equal(b.closed, true);
   assert.equal(b.sent.length, 0);
+});
+
+test('relay preserves normal close code and reason without sending reserved codes', () => {
+  for (const code of [1000, 1001, 4001, 1005]) {
+    const a = new FakeWebSocket(); const b = new FakeWebSocket();
+    relayWebSockets(a, b, { bytes: 0, max: 1024 });
+    const reason = Buffer.from('session ended');
+    a.readyState = 3; a.emit('close', code, reason);
+    assert.deepEqual(b.closeArgs, code === 1005 ? [undefined, undefined] : [code, reason]);
+  }
+});
+
+test('lease failures need eight seconds without success; definite loss revokes immediately', async () => {
+  let now = 0;
+  const runtime = new OpenShellRuntime({ binary: '/opt/openshell', stateDir: '/tmp/pods',
+    gateway: 'http://127.0.0.1:18770', image: `sandbox@sha256:${'a'.repeat(64)}`,
+    websiteHosts: ['example.com'], acceptNoSandbox: true, clock: () => now });
+  const live = { sessionId: 'one', lastLeaseAt: 0, cdp: { closed: false }, control: { closed: false } };
+  runtime.live.set('one', live);
+  const revoked = [];
+  const core = { registry: { get: () => ({ accessRevokedAt: null }) }, revoke: (id, reason) => revoked.push([id, reason]) };
+  runtime.control = async () => { throw new Error('transient timeout'); };
+  for (now of [1500, 3500, 7999]) { await runtime.heartbeat(core); assert.equal(revoked.length, 0); }
+  runtime.control = async () => ({ state: 'ready' }); now = 8000; await runtime.heartbeat(core);
+  runtime.control = async () => { throw new Error('transient timeout'); };
+  now = 15_999; await runtime.heartbeat(core); assert.equal(revoked.length, 0);
+  now = 16_000; await runtime.heartbeat(core); assert.equal(revoked.length, 1);
+  for (const code of ['BROWSER_GENERATION_LOST', 'CONTROL_FORWARD_LOST']) {
+    runtime.control = async () => { throw new PodError(code); };
+    live.lastLeaseAt = now; await runtime.heartbeat(core);
+  }
+  live.cdp.closed = true;
+  runtime.control = async () => assert.fail('a lost CDP forward needs no health probe');
+  await runtime.heartbeat(core);
+  assert.equal(revoked.length, 4);
+});
+
+test('HTTP cancellation does not abort native create and still records its late handle', async () => {
+  const controller = new AbortController(); const calls = []; let observed;
+  const runtime = new OpenShellRuntime({ binary: '/opt/openshell', stateDir: '/tmp/pods',
+    gateway: 'http://127.0.0.1:18770', image: `sandbox@sha256:${'a'.repeat(64)}`,
+    websiteHosts: ['example.com'], acceptNoSandbox: true, run: async (_binary, args, options) => {
+      calls.push(args);
+      if (args.includes('create')) { assert.equal(options.signal, undefined); controller.abort(); return ''; }
+      if (args.includes('list')) return JSON.stringify([{ id: 'native-id', name: 'br-one', phase: 'Ready', labels: { 'openrind.browser.session': 'one' } }]);
+      assert.fail('a cancelled create must not start Chromium');
+    } });
+  runtime.policyPath = '/tmp/pods/policy';
+  await assert.rejects(runtime.provision({ id: 'one', name: 'br-one' }, controller.signal, handle => { observed = handle; }));
+  assert.deepEqual(observed, { id: 'native-id', instance: null });
+  assert.equal(calls.length, 2);
 });

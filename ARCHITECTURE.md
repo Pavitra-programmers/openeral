@@ -224,27 +224,36 @@ cleanup for Desktop-owned resources.
 
 ## Experimental Browser Pods
 
-This is a separate browser runtime, not a new persistence path. The Kernel API
-adapter and relay run outside the model's MCP tool path. The real Linux fixture
-passed 13 checks with agent-browser v0.38.2 and Chromium 154.0.8037.92 on
-2026-10-06. Normal Desktop activation remains disabled pending the separate
+This is a separate browser runtime, not a new persistence path. Kernel and
+Hyperbrowser are two API adapters to one broker and session core. Both use the
+same helper, native OpenShell transport, browser image, and cleanup rules.
+They run outside the model's MCP tool path. The real Linux fixture
+passed 17 checks with agent-browser v0.38.2 and Chromium 154.0.8037.92 on
+2026-10-06. The Hyperbrowser SDK extension passed all 26 combined checks.
+The supplied Argide module passed 23 checks with one `baseUrl` configuration
+change. Its real host backend and widget also passed one model-driven form task
+inside OpenShell Chromium, for 28 combined checks. See BUILD's **Actual Argide
+Application Test** for that separate fixture and its limits.
+Normal Desktop activation remains disabled pending the separate
 Desktop/Claude/FUSE, installation, and load requirements. See the
 [package status](./openrind-desktop/packages/browser-pods/README.md), not the target
 spec alone, for current availability.
 
 ```mermaid
 flowchart LR
-  subgraph owner["Existing FUSE owner sandbox"]
+  subgraph owner["Owner sandbox: FUSE in primary runtime, not in test fixture"]
     claude["Claude<br/>bundled openrind-browser skill"]
     client["agent-browser v0.38.2<br/>Kernel provider"]
+    sdk["Configured Hyperbrowser SDK<br/>or actual Argide browser module"]
     helper["Native helper parent + Node relay<br/>127.0.0.1:19300"]
     ownerproxy["OpenShell CONNECT proxy<br/>REST header credential injection"]
     files["/sandbox/work<br/>existing PostgreSQL FUSE"]
     claude --> client --> helper --> ownerproxy
+    sdk --> helper
     client -->|"screenshot bytes"| files
   end
   subgraph host["Gateway host"]
-    broker["Experimental Kernel broker<br/>private host endpoint"]
+    broker["Experimental Kernel + Hyperbrowser broker<br/>one session core, private host endpoint"]
     db[("Private SQLite<br/>owner, lease, cleanup state")]
     native["Native sandbox create/exec<br/>and ForwardTcp"]
     broker --> db
@@ -253,8 +262,10 @@ flowchart LR
   subgraph pod["Separate browser sandbox; no FUSE or owner home"]
     control["Detached pod agent<br/>loopback control + lease"]
     chromium["Headless Chromium<br/>loopback CDP"]
+    artifacts["Pod-local uploads and download ZIPs<br/>no owner path translation"]
     webproxy["OpenShell website policy<br/>allowlist + tls: skip"]
     control --> chromium --> webproxy
+    control <--> artifacts
   end
   ownerproxy --> broker
   native --> control
@@ -303,14 +314,75 @@ sequenceDiagram
   Broker->>OS: Delete container and retain quota until confirmed
 ```
 
-Only Kernel create/delete routes ship. Hyperbrowser option validation exists,
-but the HTTP adapter, Argide fixture, and file artifact API do not. No request
-falls back to a vendor endpoint. The service does not impersonate vendor domains.
+Kernel create/delete and configured Hyperbrowser session/file routes share one
+core. Hyperbrowser retains its live browser across client disconnects within a
+15-minute idle lease and the requested absolute lifetime. The trusted owner
+binding selects any partial-feature profile; clients cannot enable no-op feature
+acceptance themselves. Responses include requested options, effective options,
+and warnings. No request falls back to a vendor endpoint. The service does not
+impersonate vendor domains.
 Local browser executable selection and path translation are outside this design.
 
-The helper has no path translation API. Client `upload` and `download` commands
-are denied by a native client policy. This is a client guardrail, not a security
-boundary. Direct CDP controls the assigned browser. Website allowlists constrain
+```mermaid
+sequenceDiagram
+  participant SDK as Configured Hyperbrowser SDK
+  participant Helper as Owner loopback helper
+  participant Broker as Shared broker
+  participant Pod as Pod file service and Chromium
+  SDK->>Helper: Multipart file bytes
+  Helper->>Broker: Native OpenShell proxy and header injection
+  Broker->>Pod: Bounded stream through ForwardTcp
+  Pod-->>SDK: Opaque browser-local filePath
+  SDK->>Pod: CDP DOM.setFileInputFiles through the same relay
+  Note over SDK,Pod: No owner path translation
+  SDK->>Helper: GET downloads-url
+  Helper->>Broker: Authorized archive request
+  Broker->>Pod: Prepare immutable ZIP from completed /tmp/downloads files
+  Pod-->>SDK: Archive status and owner-loopback URL
+  SDK->>Helper: Explicit fetch of archive bytes
+  Helper->>Pod: Stream through broker and ForwardTcp
+  Note over SDK,Pod: No automatic FUSE publication
+```
+
+The file service rejects unsafe names and links, limits bytes and object count,
+and cancels transfers on stop. It verifies a ZIP's hash before the HTTP stream
+completes. Archives are available only while their owned session is live. The
+separate SDK fixture is not the original Argide consumer.
+The actual-module fixture imports the supplied bundle and original dependencies.
+The optional widget fixture runs the supplied backend in host Docker. Its model
+calls are outside OpenShell; its widget and page actions run in the browser pod.
+This does not add an Argide backend service to the shipped Openrind runtime.
+
+```mermaid
+flowchart LR
+  module["Actual Argide module in test owner<br/>one Hyperbrowser baseUrl change"]
+  core["Shared broker and native ForwardTcp"]
+  widget["Actual widget and controlled form<br/>inside OpenShell Chromium"]
+  egress["Pod website policy<br/>fixture host and port only"]
+  relay["Test-only public API relay"]
+  subgraph stack["Separate host Docker stack"]
+    backend["Original Argide backend"]
+    stores[("MongoDB, Redis, Qdrant<br/>not FUSE storage")]
+    backend --> stores
+  end
+  module -->|"create and connect through owner helper"| core --> widget
+  widget <-->|"widget API and event stream"| egress
+  egress <--> relay <--> backend
+  backend <-->|"direct model API; no Haloop"| gemini["Gemini"]
+```
+
+The actual widget receives model-selected actions from the backend event stream.
+The test driver sends the prompt and approves only that controlled page's actions.
+It checks the result but does not perform the form actions itself. The backend
+uses separate test datastores and must be stopped after the fixture. The optional
+embedding and knowledge-base paths are not covered by the passing browser task.
+See the [Argide fixture guide](./openrind-desktop/packages/browser-pods/test/live/argide/README.md)
+for kit pins, setup, source changes, evidence, and cleanup.
+
+The helper has no path translation API. Client `upload`, `download`, and
+`wait --download` commands are denied by a native client policy. This is a
+client guardrail, not a security boundary. Direct CDP controls the assigned
+browser. Website allowlists constrain
 destinations, not the content sent to them.
 
 The pod uses `--no-sandbox` with explicit host operator acceptance. OpenShell is
@@ -323,8 +395,23 @@ uses `tls: skip`: Chromium verifies website TLS through a policy-controlled tunn
 Create persists its intent before allocation. It waits for a real browser probe
 through the owner's helper before it returns a CDP URL. Stop revokes access first.
 It reports success only after confirmed browser stop or container deletion.
-Cleanup-pending rows retain quota. Broker restart ends old sessions; it does not
-replay website actions. A helper disconnect also ends its owner's sessions.
+Cleanup-pending rows retain quota. An HTTP disconnect does not kill the bounded
+native create command. The broker observes its result and removes late resources.
+Broker restart revokes old sessions. Pending cleanup does not block admission
+within the remaining quota. Cleanup retries back off to at most one per minute
+per resource. An offline operator command can resolve an uncertain create only
+with an explicit assertion that no native create can still complete.
+
+Indexed SQLite columns serve quota, request, and attachment lookups. Maintenance
+scans active rows only. It removes terminal records and audit entries older than
+24 hours in bounded batches. Stop waits for the cleanup task's notification, not
+a database polling loop. Registry version 1 upgrades to version 2 in place.
+
+A failed lease request has an eight-second no-success window before revocation.
+Definite browser/forward loss still revokes at once. The pod's own 15-second
+lease remains the final stop mechanism. A same-generation helper registration
+can replace its old control socket without that socket's close event revoking
+the replacement. An unplanned loss of the current helper still ends its sessions.
 
 Before each command the client checks browser liveness. A failed three-second
 probe can cause it to delete the old provider session and create another. This
@@ -333,7 +420,12 @@ expiry also do not restore cookies or tabs. Do not replay a possibly completed
 website action on the assumption that replacement rolled it back.
 
 The broker has native gateway and Docker authority. It must not be reachable
-from browser pods. No public CDP route or Desktop viewer is added. FUSE, the old
+from browser pods. The current native CLI forwards also open unauthenticated
+CDP listeners on host loopback. Local host processes can bypass broker ownership
+through those listeners. This Stage 0 path requires a trusted single-user host;
+it is not host-process isolation. Direct in-process gRPC forwarding with pooled
+tokens is still a release gate. WSL-to-Windows localhost reachability is not tested.
+No public CDP route or Desktop viewer is added. FUSE, the old
 compatibility watcher, and user-owned MCP settings stay separate.
 
 See [implementation limits](./openrind-desktop/packages/browser-pods/README.md)

@@ -1,6 +1,6 @@
 # Browser Pods: Provider-Only Sessions For Openrind
 
-**Status:** Implementation contract with an initial experimental Kernel path.
+**Status:** Implementation contract with experimental Kernel and configured Hyperbrowser paths.
 The full v1 flow is not complete or verified end to end. Examples of the
 proposed deployment are not working customer instructions. See
 [Implementation Status](openrind-desktop/packages/browser-pods/README.md).
@@ -10,17 +10,34 @@ proposed deployment are not working customer instructions. See
 **Date:** 2026-10-06.
 
 **Current code:** `packages/browser-pods` now has the SQLite session core,
-Kernel routes, fixed-port helper, native OpenShell runtime adapter, and pod agent.
+Kernel and Hyperbrowser routes, fixed-port helper, native OpenShell runtime
+adapter, and pod agent. Explicit uploads and browser-local ZIP archives use that
+same transport. The SDK fixture uses the documented Argide option profile but
+is not extracted from the original archive. A separate fixture now calls the
+actual supplied backend-core bundle with one `baseUrl` change. Its 23 checks
+passed. The optional real backend/widget test passed 28 combined checks on one
+Gemini-driven form task. This is not full application or general site coverage.
 The primary image recipes package the pinned CLI, action policy, and Claude skill.
 Desktop no longer starts the old managed MCP controller. The new Claude wrapper
 ignores its stale descriptor and credentials. There is no new OpenShell patch or
 FUSE contract bump. Existing containers do not receive the new wrapper automatically.
 
 **Release gate:** Normal Desktop browser activation stays disabled. Real
-Chromium/OpenShell, provider header injection, unchanged agent-browser, Claude
-discovery, and Windows/WSL tests remain required. Hyperbrowser HTTP routes, artifacts,
-safe in-place retirement, and the full memory/resource bounds are not complete.
+Claude discovery, Windows Desktop activation, safe in-place
+retirement, and the full memory/resource bounds remain required. The Kernel
+Linux live fixture passed. The configured Hyperbrowser SDK extension passed
+26 combined checks, including a delayed control lease and 17 MiB CDP requests
+and responses. It cannot establish unchanged Argide compatibility. Stage 0 still
+uses unauthenticated host-loopback CLI forwards. Direct in-process forwarding
+with pooled tokens remains a release gate; see the package README.
 Unit tests do not replace these gates.
+
+The actual Argide extension is additional test infrastructure, not a new product
+deployment requirement. It runs the supplied host backend and widget to test a
+model-driven action loop. The browser stays inside OpenShell. See
+[the fixture guide](openrind-desktop/packages/browser-pods/test/live/argide/README.md)
+for its pins, one source configuration change, and limits. The Auth0 dashboard
+and general application compatibility remain unverified.
 
 **Purpose:** Run browser agents in Openrind Shell. Run Chromium in separate
 OpenShell sandboxes. Let existing clients reach those browsers through
@@ -1257,12 +1274,14 @@ profile selects `/opt/openrind/browser/agent-browser-policy.json` with:
 ```json
 {
   "default": "allow",
-  "deny": ["upload", "download"]
+  "deny": ["upload", "download", "waitfordownload"]
 }
 ```
 
 The pinned action-policy check runs before the file action handler. It therefore
-blocks both commands without changing the binary or inspecting CDP. Do not block
+blocks `upload`, `download`, and `wait --download` without changing the binary
+or inspecting CDP. `wait --download` uses the `waitfordownload` action and can
+otherwise report an owner path that has no downloaded file. Do not block
 screenshots saved from returned CDP bytes or the separate Hyperbrowser SDK APIs.
 
 The policy loader ignores a missing or invalid file. Managed browser setup must
@@ -1556,7 +1575,8 @@ That is not evidence of transparent browser-download support.
 
 Extract the browser consumer only. Keep archive provenance and record the single
 base-URL setup change. Use Hyperbrowser SDK `0.91.0` and resolved Playwright
-`1.59.1`. Do not deploy Argide's database, queue, web application, or LLM stack.
+`1.59.1`. This module-level compatibility test does not require Argide's database,
+queue, web application, or LLM stack.
 
 Required sequence:
 
@@ -1582,6 +1602,11 @@ viewer for our loopback endpoint.
 
 This is the configured extracted browser consumer, not the full unchanged
 Argide application or full Hyperbrowser feature parity.
+
+An optional application test now runs the supplied backend and widget with a
+real model, at the user's request. Keep it separate from this module test and
+from shipped runtime dependencies. It proves one controlled form task, not
+general website or full application coverage. See the actual fixture guide.
 
 ### 10.3 Native Transport Tests
 
@@ -1986,6 +2011,12 @@ implement this flow. This spec rewrite does not change their runtime promises.
 These are archive paths, not newly added repository files.
 Keep provenance with the extracted fixture. Do not redistribute the whole archive
 merely because it was supplied for source review.
+
+The later supplied kit, `Argide Harness-20261006T123344Z-1-001.zip`, contains
+`share-external/images/argide-backend.tar.gz` and the built widget. The runnable
+fixture guide records that archive's SHA-256, the loaded image ID, and both
+source hashes. The test imports `/app/packages/backend-core/dist/index.js`
+from that image rather than relying on the earlier extraction paths.
 
 ### 12.4 Terms
 

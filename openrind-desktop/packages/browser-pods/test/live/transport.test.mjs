@@ -80,7 +80,44 @@ test('Kernel create probes the full helper route; CDP relays a 17 MiB message', 
   const payload = Buffer.alloc(17 * 1024 * 1024, 71);
   const received = once(ws, 'message'); ws.send(payload);
   assert.deepEqual((await received)[0], payload);
-  ws.terminate();
+  const closed = once(ws, 'close');
+  const browserPeer = [...wss.clients].find(peer => peer.readyState === 1);
+  browserPeer.close(4001, 'browser ended');
+  const [code, reason] = await closed;
+  assert.equal(code, 4001); assert.equal(reason.toString(), 'browser ended');
+  const originalStop = core.stop.bind(core);
+  let unblock;
+  core.stop = () => new Promise(resolve => { unblock = resolve; });
+  try {
+    const started = performance.now();
+    const refused = await fetch(`${HELPER_ORIGIN}/browsers/${session.session_id}`, { method: 'DELETE' });
+    assert.ok(refused.status >= 500, 'an unconfirmed stop must not report success');
+    const elapsed = performance.now() - started;
+    assert.ok(elapsed >= 1900 && elapsed < 3000, `DELETE deadline took ${elapsed} ms`);
+  } finally { core.stop = originalStop; unblock?.(); }
   assert.equal((await fetch(`${HELPER_ORIGIN}/browsers/${session.session_id}`, { method: 'DELETE' })).status, 204);
   assert.ok(connects >= 3);
+});
+
+test('new control registration replaces the same owner generation without old-close revocation', { timeout: 10_000 }, async t => {
+  const revoked = []; const clients = [];
+  const owner = { id: 'owner', generation: 'generation', workspaceId: 'workspace', helperOrigin: HELPER_ORIGIN, providers: ['kernel'] };
+  const token = 'x'.repeat(43);
+  const core = { ready: true, revokeOwner: async value => { revoked.push(value.id); } };
+  const broker = createBroker({ core, runtime: {}, owners: [{ owner, serviceToken: token }] });
+  t.after(async () => { for (const ws of clients) ws.terminate(); await broker.close(); });
+  const port = await listen(broker.server);
+  async function register() {
+    let ready; const registered = new Promise(resolve => { ready = resolve; });
+    const ws = await openWebSocket(`ws://127.0.0.1:${port}/control`, {
+      headers: { authorization: `Bearer ${token}` }, onMessage: bytes => { if (JSON.parse(bytes).type === 'ready') ready(); },
+    });
+    clients.push(ws); await registered; return ws;
+  }
+  const first = await register(); const oldClosed = once(first, 'close');
+  const second = await register(); await oldClosed;
+  assert.deepEqual(revoked, []); assert.equal(second.readyState, 1);
+  const stopped = once(second, 'close'); second.terminate(); await stopped;
+  for (let i = 0; i < 100 && !revoked.length; i++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(revoked, ['owner']);
 });
