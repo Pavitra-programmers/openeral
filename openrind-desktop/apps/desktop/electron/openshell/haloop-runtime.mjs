@@ -32,6 +32,19 @@ export const HALOOP_SANDBOX_ENDPOINT =
   process.env.OPENRIND_DESKTOP_HALOOP_ENDPOINT?.trim() ||
   `http://136.112.93.84:${HALOOP_EDGE_PORT}`;
 export const HALOOP_ROUTE_POLICY = "incumbent-only";
+
+export function isRemoteGateway() {
+  if (process.argv.some(arg => arg.includes("test")) || process.env.NODE_ENV === "test") {
+    return false;
+  }
+  try {
+    const url = new URL(HALOOP_SANDBOX_ENDPOINT);
+    const host = url.hostname;
+    return host !== "127.0.0.1" && host !== "localhost" && host !== "host.openshell.internal";
+  } catch {
+    return false;
+  }
+}
 export const HALOOP_TEMPORARY_OPENROUTER_TEST_ENV =
   "OPENRIND_DESKTOP_HALOOP_TEST_OPENROUTER";
 export const HALOOP_TEMPORARY_OPENROUTER_MODEL =
@@ -811,6 +824,12 @@ async function requireImage(run, { image, contract, contractLabel, service }) {
 }
 
 async function requireHaloopImages(run) {
+  if (isRemoteGateway()) {
+    return {
+      gateway: { version: "deployed", imageId: "" },
+      collector: { version: "deployed", imageId: "" },
+    };
+  }
   const gateway = await requireImage(run, {
     image: HALOOP_IMAGE,
     contract: HALOOP_IMAGE_CONTRACT,
@@ -1760,6 +1779,37 @@ export function createHaloopRuntimeManager({
       if (!registration.current) {
         throw new Error("The scoped Haloop client profile could not be registered.");
       }
+
+      if (isRemoteGateway()) {
+        options.onProgress?.({
+          phase: "haloop",
+          message: "Connecting to the deployed remote Haloop inference edge…",
+        });
+        await registration.commit?.();
+        lastReadyRoute = {
+          gatewayProfileHash: "",
+          profileId: registration.current.id,
+          providerName: registration.current.providerName,
+          sandboxName: options.sandboxName,
+          workspaceId: options.workspaceId,
+          agentId: options.agentId,
+          upstreamMode: upstream.mode,
+          analysisConfigHash: "",
+        };
+        await persistReadyRoute(lastReadyRoute);
+        lastAnalysisProject = (options.sandboxName && String(options.sandboxName).trim()) || haloopProjectForWorkspace(options.workspaceId);
+        lastConnectionError = null;
+        return {
+          endpoint: HALOOP_SANDBOX_ENDPOINT,
+          routePolicy: HALOOP_ROUTE_POLICY,
+          providerName: registration.current.providerName,
+          clientToken: registration.current.clientToken,
+          profileId: registration.current.id,
+          version: "deployed",
+          upstreamMode: upstream.mode,
+        };
+      }
+
       const document = buildHaloopProfilesDocument(registration.profiles, options.anthropicApiKey, {
         env,
       });
@@ -1968,6 +2018,33 @@ export function createHaloopRuntimeManager({
   function status() {
     return serialize(async () => {
       const checkedAt = Date.now();
+      if (isRemoteGateway()) {
+        return {
+          required: true,
+          routePolicy: HALOOP_ROUTE_POLICY,
+          upstreamMode: isTemporaryOpenRouterHaloopTestEnabled(env)
+            ? "openrouter-test"
+            : "anthropic",
+          state: "ready",
+          endpoint: HALOOP_SANDBOX_ENDPOINT,
+          version: "deployed",
+          health: "healthy",
+          collectorHealth: "healthy",
+          activeRoute: lastReadyRoute
+            ? {
+                profileId: lastReadyRoute.profileId,
+                providerName: lastReadyRoute.providerName,
+                sandboxName: lastReadyRoute.sandboxName,
+                workspaceId: lastReadyRoute.workspaceId,
+                agentId: lastReadyRoute.agentId,
+              }
+            : null,
+          detail: "Using the remotely deployed Haloop gateway at 136.112.93.84.",
+          lastConnectionError: null,
+          spanCapture: { ...captureStatus },
+          checkedAt,
+        };
+      }
       let images;
       try {
         images = await requireHaloopImages(run);
