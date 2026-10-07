@@ -18,6 +18,7 @@ Choose one path. They have different prerequisites and test coverage.
 |---|---|---|
 | Use Claude with persistent project files | [Start Claude In Desktop](#start-claude-in-desktop) | The managed OpenShell installer targets Windows 11 and WSL2 |
 | Try real browser automation without keys | [Try The Browser Runtime](#try-the-browser-runtime) | Linux x64 test; no Desktop, model, database, or vendor account needed |
+| Develop or evaluate browser CTF tasks | [Run Browser CTF Tasks](#run-browser-ctf-tasks) | Linux x64 and local Docker; a model run also needs an OpenRouter key |
 | Run the supplied Argide application test | [Run Argide](#run-argide) | Needs the private kit; the widget/model test also needs a funded Gemini key |
 | Run a web task in an owner that an operator already enabled | [Use An Enabled Owner](#use-an-enabled-owner) | Browser activation is separate from ordinary Desktop setup |
 | Build Desktop, images, or the gateway | [BUILD.md](./BUILD.md) | Source builds need build tools and matched runtime assets |
@@ -48,6 +49,38 @@ An **owner** is the sandbox running the agent or test client. A **browser pod**
 is a separate OpenShell sandbox running Chromium. It does not require Kubernetes.
 The **broker** is our host service that creates pods and controls their lifetime.
 The **helper** is the owner's local connection to that broker.
+
+## Run Browser CTF Tasks
+
+The experimental CTF runtime has two self-contained challenge services. They
+run in separate OpenShell challenge sandboxes. A custom Openrind agent uses the
+unchanged `agent-browser` Kernel provider to drive Chromium in a browser pod.
+It records model requests, model actions, tool observations, and a separate flag
+judge result. It does not run Cyber-Zero, EnIGMA, Docker-in-Docker, or a simulated
+terminal.
+
+| Task ID | Challenge basis | Required browser work |
+|---|---|---|
+| `flag-command` | Cybench HTB `Flag Command` | Read same-origin page code and call its hidden command API. |
+| `glacier-exchange` | Cybench GLA `GlacierExchange` | Read supplied wallet code and exploit its signed numeric transfer. |
+
+The task implementations, agent, image recipe, unit tests, and live runner are
+in this checkout. A developer does not need a Cyber-Zero checkout, an EnIGMA
+image, Compose, or a benchmark archive.
+
+Start with the package unit test. It verifies both browser sites, the exploit
+path, and the independent judges without a model key. Then use the live runner
+only on Linux x64 with local Docker and `OPENROUTER_API_KEY`. It creates a
+temporary gateway, browser owner, browser pods, and challenge pods. It does not
+use Desktop, PostgreSQL, or an existing customer sandbox.
+
+Follow [Openrind CTF Runtime](./openrind-desktop/packages/ctf-runtime/README.md)
+for exact commands. Use the `openrind-ctf` skill when Codex runs this path.
+
+A model run is successful only when its trajectory and the separate challenge
+judge both show an accepted flag. The fixture never inserts a known flag or
+claims a model action that the browser tool did not run. Model quality can cause
+a valid runtime test to end with an unaccepted flag.
 
 ## Start Claude In Desktop
 
@@ -380,6 +413,7 @@ Do not overwrite an existing local skill directory to repair discovery.
 |---|---|
 | `openrind-shell` | Desktop setup, signed Claude launches, and FUSE diagnostics |
 | `openrind-dev` | Source builds, host browser setup, Linux browser tests, and the private Argide fixture |
+| `openrind-ctf` | Self-contained browser CTF service tests and model-agent evaluation |
 | `openrind-browser` | Browser commands inside an already enabled owner sandbox |
 | `openrind-navigate` | Filesystem boundaries, SQL queries, and persistence checks |
 

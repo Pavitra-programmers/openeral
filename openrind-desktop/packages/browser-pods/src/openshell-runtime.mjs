@@ -2,25 +2,44 @@ import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { writeFile, mkdir } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
+import { isIP } from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { MAX_ARTIFACT, MAX_MULTIPART, PodError, requireThat } from './contracts.mjs';
 import { readJsonResponse, relayHttp, requestStream } from './http-stream.mjs';
 
 export const CHROMIUM_BINARY = '/usr/lib/chromium/chromium';
 
-export function browserPolicy(hosts) {
+export function browserPolicy(hosts, challengeEndpoints = []) {
   requireThat(Array.isArray(hosts) && hosts.length > 0 && hosts.length <= 64, 'WEBSITE_ALLOWLIST_REQUIRED');
   for (const host of hosts) {
     requireThat(typeof host === 'string' && /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/.test(host) &&
       !/(?:^|\.)(?:localhost|internal|local)$/.test(host), 'INVALID_WEBSITE_HOST');
   }
-  return { version: 1, filesystem_policy: { include_workdir: false,
+  const endpoints = Array.isArray(challengeEndpoints) ? challengeEndpoints : [challengeEndpoints];
+  requireThat(endpoints.length <= 16, 'TOO_MANY_CHALLENGE_ENDPOINTS');
+  for (const challengeEndpoint of endpoints) {
+    requireThat(challengeEndpoint?.host === 'host.openshell.internal' &&
+      Number.isInteger(challengeEndpoint.port) && challengeEndpoint.port >= 1024 && challengeEndpoint.port <= 65535 &&
+      isIP(challengeEndpoint.bridgeAddress) === 4 &&
+      /^(?:10\.|172\.(?:1[6-9]|2\d|3[01])\.|192\.168\.)/.test(challengeEndpoint.bridgeAddress),
+    'INVALID_CHALLENGE_ENDPOINT');
+  }
+  const policy = { version: 1, filesystem_policy: { include_workdir: false,
     read_only: ['/usr', '/lib', '/etc', '/opt', '/proc', '/dev/urandom', '/sandbox'],
     read_write: ['/tmp', '/dev/null', '/dev/shm'] },
     landlock: { compatibility: 'best_effort' }, process: { run_as_user: 'sandbox', run_as_group: 'sandbox' },
     network_policies: { browser_web: { name: 'browser-web',
       endpoints: hosts.flatMap(host => [{ host, port: 80, tls: 'skip' }, { host, port: 443, tls: 'skip' }]),
       binaries: [{ path: CHROMIUM_BINARY }] } } };
+  if (endpoints.length > 0) {
+    policy.network_policies.challenge = { name: 'ctf-challenge-website',
+      endpoints: endpoints.map(challengeEndpoint => ({ host: challengeEndpoint.host, port: challengeEndpoint.port,
+        protocol: 'rest', tls: 'none', allowed_ips: [`${challengeEndpoint.bridgeAddress}/32`],
+        enforcement: 'enforce', rules: ['GET', 'HEAD', 'POST'].map(method =>
+          ({ allow: { method, path: '/site/**' } })) })),
+      binaries: [{ path: CHROMIUM_BINARY }] };
+  }
+  return policy;
 }
 
 export function runProcess(binary, args, { stdin = '', timeoutMs = 15_000, signal } = {}) {
@@ -55,7 +74,7 @@ export function parseForwardLine(line, name, targetPort) {
 }
 
 export class OpenShellRuntime {
-  constructor({ binary, gateway, image, stateDir, websiteHosts, acceptNoSandbox, run = runProcess,
+  constructor({ binary, gateway, image, stateDir, websiteHosts, challengeEndpoints, challengeEndpoint, acceptNoSandbox, run = runProcess,
     clock = () => performance.now(), leaseFailureMs = 8000 }) {
     requireThat(isAbsolute(binary) && isAbsolute(stateDir), 'ABSOLUTE_RUNTIME_PATH_REQUIRED');
     requireThat(/(?:@sha256:|^sha256:)[a-f0-9]{64}$/.test(image), 'PINNED_BROWSER_IMAGE_REQUIRED');
@@ -64,7 +83,7 @@ export class OpenShellRuntime {
     requireThat(['http:', 'https:'].includes(endpoint.protocol) && !endpoint.username && !endpoint.password,
       'INVALID_GATEWAY');
     this.binary = binary; this.prefix = ['--gateway-endpoint', gateway]; this.image = image;
-    this.stateDir = stateDir; this.policy = browserPolicy(websiteHosts); this.run = run;
+    this.stateDir = stateDir; this.policy = browserPolicy(websiteHosts, challengeEndpoints ?? challengeEndpoint); this.run = run;
     this.clock = clock; this.leaseFailureMs = leaseFailureMs;
     this.live = new Map();
   }
