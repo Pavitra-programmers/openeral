@@ -60,7 +60,7 @@ test("authentication probe accepts only the expected rejection statuses", async 
     assert.equal(requests.length, 1);
     assert.equal(requests[0][1].method, "POST");
     assert.equal(JSON.parse(requests[0][1].body).max_tokens, 1);
-    assert.deepEqual(exits, [400, 401, 403].includes(status) ? [] : [1], `status ${status}`);
+    assert.deepEqual(exits, [401, 403].includes(status) ? [] : [1], `status ${status}`);
   }
   const exits = [];
   await vm.runInNewContext(probe, {
