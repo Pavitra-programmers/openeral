@@ -59,7 +59,15 @@ export function resolveFuseRuntimeConfig(env = process.env) {
  */
 export function buildFuseWslEnv(extra = {}, env = process.env) {
   const { bin, gatewayEndpoint } = resolveFuseRuntimeConfig(env);
-  const existing = String(env.WSLENV ?? "")
+  const sanitizedEnv = { ...env };
+  // Never leak or inherit host API keys into the WSL/FUSE execution context
+  // unless explicitly provided in the extra arguments.
+  for (const key of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY", "HALOOP_CLIENT_TOKEN"]) {
+    if (!Object.prototype.hasOwnProperty.call(extra, key)) {
+      delete sanitizedEnv[key];
+    }
+  }
+  const existing = String(sanitizedEnv.WSLENV ?? "")
     .split(":")
     .filter(Boolean);
   const names = new Set([
@@ -69,7 +77,7 @@ export function buildFuseWslEnv(extra = {}, env = process.env) {
     ...Object.keys(extra),
   ]);
   return {
-    ...env,
+    ...sanitizedEnv,
     ...extra,
     OPENSHELL_BIN: bin,
     OPENSHELL_GATEWAY_ENDPOINT: gatewayEndpoint,
