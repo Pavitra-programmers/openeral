@@ -1785,6 +1785,12 @@ export function createHaloopRuntimeManager({
           phase: "haloop",
           message: "Connecting to the deployed remote Haloop inference edge…",
         });
+        const conversation = options.issueConversation === true
+          ? issueHaloopConversationContext(registration.current, {
+              agentSessionId: options.agentSessionId,
+              contextId: options.haloopContextId,
+            })
+          : null;
         await registration.commit?.();
         lastReadyRoute = {
           gatewayProfileHash: "",
@@ -1807,6 +1813,14 @@ export function createHaloopRuntimeManager({
           profileId: registration.current.id,
           version: "deployed",
           upstreamMode: upstream.mode,
+          ...(conversation
+            ? {
+                capture: conversation.capture,
+                haloopContextId: conversation.contextId,
+                sessionAssertion: conversation.assertion,
+                sessionAssertionExpiresAt: conversation.expiresAtMs,
+              }
+            : {}),
         };
       }
 
