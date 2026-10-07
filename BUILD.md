@@ -5,7 +5,11 @@ first to choose a runtime. Run commands from the repository root unless a block
 changes directory. Do not switch branches or replace existing sandboxes as setup.
 
 For a browser-only trial, start at [Real Linux Browser Test](#real-linux-browser-test).
-That section is self-contained. It does not need PostgreSQL, Haloop, or Claude.
+For the experimental browser CTF test, see
+[Openrind CTF Runtime](openrind-desktop/packages/ctf-runtime/README.md).
+It uses separate owner, challenge, and Chromium pods. It does not need
+PostgreSQL, Haloop, Cyber-Zero, EnIGMA, or Claude. It is not a customer
+FUSE-owner test.
 For the customer Desktop path, use [Windows Desktop Source Setup](#windows-desktop-source-setup).
 
 ## Source Layout

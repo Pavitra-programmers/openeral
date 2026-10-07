@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { spawn, execFile } from 'node:child_process';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
-import { mkdir, mkdtemp, open, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +12,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { DatabaseSync } from 'node:sqlite';
 import { browserPodBinding } from '../../../../apps/desktop/electron/openshell/browser-binding.mjs';
 import { startWidgetFixture } from './argide/widget-host.mjs';
+import { createTask, publicTask } from '../../../ctf-runtime/src/tasks.mjs';
 
 const exec = promisify(execFile);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
@@ -22,6 +23,9 @@ const podImage = process.env.BROWSER_POD_IMAGE || 'openrind-browser-pod:e2e';
 const testHyperbrowser = process.argv.includes('--hyperbrowser');
 const testArgide = process.argv.includes('--argide');
 const testWidget = process.argv.includes('--argide-widget');
+const testCtf = process.argv.includes('--ctf');
+const ctfImage = process.env.CTF_CHALLENGE_IMAGE || 'openrind-ctf-challenge:e2e';
+const ctfModel = process.env.OPENRIND_CTF_MODEL || 'openai/gpt-4o-mini';
 const state = await mkdtemp(join(tmpdir(), 'openrind-browser-live-'));
 const tag = randomBytes(4).toString('hex');
 const ownerName = `bowner-${tag}`;
@@ -32,6 +36,7 @@ const env = { ...process.env, XDG_CONFIG_HOME: join(state, 'xdg'), OPENSHELL_TEL
 const evidence = { state, tests: [], fixture: 'native-browser-only', startedAt: new Date().toISOString() };
 let gateway; let broker; let endpoint; let binding; let networkCreated = false; let gatewayReady = false;
 let widgetFixture; let widgetLog;
+const ctfChallenges = [];
 
 async function run(file, args, options = {}) {
   try {
@@ -78,12 +83,88 @@ async function stopChild(child) {
   if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await exit; }
 }
 
+async function startCtfChallenge({ id, index, bridge, image }) {
+  const task = createTask(id);
+  const name = `ctf-${index}-${tag}`;
+  const port = 19410 + index;
+  const token = randomBytes(32).toString('base64url');
+  const policyPath = join(state, `${id}-policy.json`);
+  const policy = { version: 1, filesystem_policy: { include_workdir: true,
+    read_only: ['/usr', '/lib', '/etc', '/opt', '/proc', '/dev/urandom'], read_write: ['/sandbox', '/tmp', '/dev/null'] },
+    landlock: { compatibility: 'best_effort' }, process: { run_as_user: 'sandbox', run_as_group: 'sandbox' } };
+  await writeFile(policyPath, JSON.stringify(policy), { mode: 0o600 });
+  await os(['sandbox', 'create', '--name', name, '--from', image, '--policy', policyPath,
+    '--no-auto-providers', '--no-tty', '--', '/bin/true']);
+  await os(['sandbox', 'exec', '-n', name, '--no-tty', '--', '/bin/sh', '-c',
+    `mkdir -p /sandbox/ctf && setsid /usr/bin/node /opt/openrind-ctf/bin/challenge.mjs --task ${id} --judge-token ${token} --port 19401 --events /sandbox/ctf/events.jsonl </dev/null >/tmp/openrind-ctf.log 2>&1 &`]);
+  const forward = await service(binary, ['--gateway-endpoint', endpoint, 'forward', 'service', name,
+    '--target-host', '127.0.0.1', '--target-port', '19401', '--local', `${bridge}:${port}`], `${id}-forward`);
+  await until(async () => {
+    assert.equal(forward.exitCode, null, `${id} ForwardTcp exited before readiness`);
+    const response = await fetch(`http://${bridge}:${port}/health`, { signal: AbortSignal.timeout(1000) });
+    assert.equal(response.status, 200);
+  });
+  const challenge = { id, task: publicTask(task), name, port, token, forward,
+    endpoint: `http://host.openshell.internal:${port}`, bridgeAddress: bridge };
+  ctfChallenges.push(challenge);
+  return challenge;
+}
+
+async function runCtfAgent(challenge) {
+  const clientDir = `/tmp/openrind-ctf-${tag}-${challenge.id}`;
+  const keyPath = join(state, `${challenge.id}-openrouter.key`);
+  const configPath = join(state, `${challenge.id}-agent.json`);
+  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
+  assert.ok(apiKey, '--ctf requires OPENROUTER_API_KEY');
+  const runId = `${challenge.id}-${tag}`;
+  const config = { endpoint: challenge.endpoint, judgeToken: challenge.token, runId, model: ctfModel,
+    keyPath: `${clientDir}/openrouter.key`, eventsPath: `/sandbox/ctf/${challenge.id}-agent-events.jsonl`,
+    trajectoryPath: `/sandbox/ctf/${challenge.id}-trajectory.json`, task: challenge.task };
+  challenge.config = config;
+  await writeFile(keyPath, `${apiKey}\n`, { mode: 0o600 });
+  await writeFile(configPath, JSON.stringify(config), { mode: 0o600 });
+  try {
+    await inside(['/bin/mkdir', '-p', `${clientDir}/src`, `${clientDir}/bin`, '/sandbox/ctf']);
+    await os(['sandbox', 'upload', ownerName, keyPath, `${clientDir}/openrouter.key`]);
+    await os(['sandbox', 'upload', ownerName, configPath, `${clientDir}/agent.json`]);
+    await os(['sandbox', 'upload', '--no-git-ignore', ownerName,
+      join(root, 'openrind-desktop/packages/ctf-runtime/src/agent.mjs'), `${clientDir}/src/agent.mjs`]);
+    await os(['sandbox', 'upload', '--no-git-ignore', ownerName,
+      join(root, 'openrind-desktop/packages/ctf-runtime/bin/agent.mjs'), `${clientDir}/bin/agent.mjs`]);
+    await inside(['/usr/bin/node', `${clientDir}/bin/agent.mjs`, `${clientDir}/agent.json`], { timeout: 12 * 60_000 });
+    const trajectory = JSON.parse(await inside(['/usr/bin/node', '-e',
+      `process.stdout.write(require("fs").readFileSync(${JSON.stringify(config.trajectoryPath)}, "utf8"))`], { timeout: 10_000 }));
+    assert.equal(trajectory.format, 'openrind-ctf-trajectory/v1');
+    assert.equal(trajectory.task.id, challenge.id);
+    assert.equal(trajectory.judge?.accepted, true);
+    assert.ok(trajectory.steps.length > 0 && trajectory.steps.every(step => typeof step.thought === 'string'));
+    assert.ok(trajectory.steps.every(step => !Object.hasOwn(step, 'reasoning')));
+    await os(['sandbox', 'download', ownerName, config.eventsPath, join(state, `${challenge.id}-agent-events.jsonl`)]);
+    const agentEvents = (await readFile(join(state, `${challenge.id}-agent-events.jsonl`), 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(agentEvents.filter(event => event.kind === 'model_call').length, trajectory.steps.length);
+    assert.ok(agentEvents.some(event => event.kind === 'agent_complete'));
+    const events = await os(['sandbox', 'download', challenge.name, '/sandbox/ctf/events.jsonl', join(state, `${challenge.id}-challenge-events.jsonl`)]);
+    void events;
+    const challengeEvents = (await readFile(join(state, `${challenge.id}-challenge-events.jsonl`), 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.ok(challengeEvents.some(event => event.kind === 'site' && event.actor === runId), 'browser did not reach the task service');
+    assert.ok(challengeEvents.some(event => event.kind === 'judge' && event.actor === runId && event.correct === true), 'judge did not accept the agent flag');
+    await writeFile(join(state, `${challenge.id}-trajectory.json`), JSON.stringify(trajectory, null, 2), { mode: 0o600 });
+    pass(`custom Openrind agent solves ${challenge.task.title} through its browser pod`, { task: challenge.id, steps: trajectory.steps.length });
+  } finally {
+    await rm(keyPath, { force: true });
+  }
+}
+
 console.log(`Evidence directory: ${state}`);
 try {
   if (testWidget) {
     assert.ok(testArgide, '--argide-widget requires --argide and its test image');
     assert.ok(process.env.ARGIDE_WIDGET_BUNDLE, 'ARGIDE_WIDGET_BUNDLE is required');
     assert.ok(process.env.ARGIDE_BACKEND_URL, 'ARGIDE_BACKEND_URL is required');
+  }
+  if (testCtf) {
+    assert.ok(process.env.OPENROUTER_API_KEY?.trim(), '--ctf requires OPENROUTER_API_KEY');
+    await run('docker', ['image', 'inspect', ctfImage]);
   }
   await run('docker', ['image', 'inspect', ownerImage]);
   const podDigest = await run('docker', ['image', 'inspect', '--format', '{{.Id}}', podImage]);
@@ -131,6 +212,12 @@ supervisor_bin = "${binaryDir}/openshell-sandbox"
   });
   gatewayReady = true;
   pass('isolated vendored gateway ready');
+  if (testCtf) {
+    for (const [index, id] of ['flag-command', 'glacier-exchange'].entries()) {
+      await startCtfChallenge({ id, index, bridge, image: ctfImage });
+    }
+    pass('two Openrind-native CTF challenge services are ready in separate sandboxes');
+  }
   binding = browserPodBinding({ endpoint: 'http://host.openshell.internal:19301', bridgeAddress: bridge, bindingId: tag });
   await writeFile(join(state, 'profile.json'), JSON.stringify(binding.profile), { mode: 0o600 });
   await os(['provider', 'profile', 'import', '--file', join(state, 'profile.json')]);
@@ -139,14 +226,21 @@ supervisor_bin = "${binaryDir}/openshell-sandbox"
   const policy = { version: 1, filesystem_policy: { include_workdir: true,
     read_only: ['/usr', '/lib', '/etc', '/opt', '/proc', '/dev/urandom'], read_write: ['/sandbox', '/tmp', '/dev/null'] },
     landlock: { compatibility: 'best_effort' }, process: { run_as_user: 'sandbox', run_as_group: 'sandbox' },
-    network_policies: { browser: binding.networkPolicy } };
+    network_policies: { browser: binding.networkPolicy,
+      ...(testCtf ? { model: { name: 'openrouter-model', endpoints: [{ host: 'openrouter.ai', port: 443, tls: 'skip' }],
+        binaries: [{ path: '/usr/bin/curl' }] },
+      ctf_judge: { name: 'ctf-judge', endpoints: ctfChallenges.map(challenge => ({ host: 'host.openshell.internal',
+        port: challenge.port, protocol: 'rest', tls: 'none', allowed_ips: [`${bridge}/32`], enforcement: 'enforce',
+        rules: [{ allow: { method: 'POST', path: '/v1/submit' } }] })), binaries: [{ path: '/usr/bin/curl' }] } } : {}) } };
   await writeFile(join(state, 'owner-policy.json'), JSON.stringify(policy), { mode: 0o600 });
   await os(['sandbox', 'create', '--name', ownerName, '--from', ownerImage,
     '--policy', join(state, 'owner-policy.json'), '--no-auto-providers', '--no-tty', '--', '/bin/true']);
   await os(['sandbox', 'provider', 'attach', ownerName, binding.name]);
   const owner = JSON.parse(await os(['sandbox', 'get', ownerName, '-o', 'json']));
   const config = { listen: { host: bridge, port: 19301 }, runtime: { binary, gateway: endpoint,
-    image: podDigest, stateDir: join(state, 'broker'), websiteHosts: ['example.com'], acceptNoSandbox: true },
+    image: podDigest, stateDir: join(state, 'broker'), websiteHosts: ['example.com'],
+    ...(testCtf ? { challengeEndpoints: ctfChallenges.map(({ port, bridgeAddress }) =>
+      ({ host: 'host.openshell.internal', port, bridgeAddress })) } : {}), acceptNoSandbox: true },
     owners: [{ serviceToken: token, owner: { id: owner.id, generation: 'openshell-e2e', workspaceId: tag,
       helperOrigin: 'http://127.0.0.1:19300', providers: testHyperbrowser || testArgide ? ['kernel', 'hyperbrowser'] : ['kernel'],
       ...(testHyperbrowser || testArgide ? { compatibilityProfile: 'argide-0.91-browser-pods-v1' } : {}) } }] };
@@ -253,6 +347,16 @@ supervisor_bin = "${binaryDir}/openshell-sandbox"
   await client(['close']);
   await until(async () => { assert.equal((await pods()).length, 0); }, 60_000);
   pass('provider DELETE removes its browser pod');
+  if (testCtf) {
+    for (const challenge of ctfChallenges) {
+      try {
+        await runCtfAgent(challenge);
+      } finally {
+        await inside(['agent-browser', '--session', `${challenge.id}-${tag}`, '--json', 'close'], { timeout: 90_000 }).catch(() => {});
+        await until(async () => { assert.equal((await pods()).length, 0); }, 60_000);
+      }
+    }
+  }
   if (testHyperbrowser) {
     const receipt = JSON.parse(await inside(['node', '/opt/hyperbrowser-fixture/consumer.mjs'], { timeout: 180_000 }));
     assert.equal(receipt.result, 'passed'); assert.equal(receipt.checks.length, 8);
@@ -325,6 +429,13 @@ supervisor_bin = "${binaryDir}/openshell-sandbox"
         } catch {}
       }
     }
+    for (const challenge of ctfChallenges) {
+      if (!challenge.config) continue;
+      for (const [remote, local] of [[challenge.config.trajectoryPath, `${challenge.id}-failed-trajectory.json`],
+        [challenge.config.eventsPath, `${challenge.id}-failed-agent-events.jsonl`]]) {
+        try { await os(['sandbox', 'download', ownerName, remote, join(state, local)]); } catch {}
+      }
+    }
     try {
       const diagnostics = await inside(['sh', '-c', 'test ! -f /tmp/openrind-browser-pods/helper.log || cat /tmp/openrind-browser-pods/helper.log'], { timeout: 5000 });
       await writeFile(join(state, 'helper.log'), diagnostics.replaceAll(token, '[redacted]'), { mode: 0o600 });
@@ -348,6 +459,7 @@ supervisor_bin = "${binaryDir}/openshell-sandbox"
 } finally {
   await stopChild(widgetLog);
   await widgetFixture?.close();
+  for (const challenge of ctfChallenges) await stopChild(challenge.forward);
   await stopChild(broker);
   // The namespace and resources below were created by this invocation only.
   if (gatewayReady && gateway?.exitCode === null) {

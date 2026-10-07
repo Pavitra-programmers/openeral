@@ -38,6 +38,7 @@ Complete the public test setup before adding either SDK or private Argide input.
 | Configured Hyperbrowser SDK | [Hyperbrowser SDK Test](../../../BUILD.md#hyperbrowser-sdk-test); `--hyperbrowser` | Rebuilt SDK-capable fixture images; no keys | 26 checks and `hyperbrowser.json` |
 | Actual Argide browser module | [Argide guide](../../../openrind-desktop/packages/browser-pods/test/live/argide/README.md); `--argide` | Pinned private kit and derived owner image; no model key | 23 checks and `argide.json` |
 | Actual Argide widget and model | Same Argide guide; `--argide --argide-widget` | Same kit plus isolated host backend and funded Gemini key | 28 checks, `argide-widget.json`, and `argide-widget.png` |
+| Openrind browser CTF runtime | [CTF Runtime](../../../openrind-desktop/packages/ctf-runtime/README.md); use `openrind-ctf` | Linux x64 and local Docker; a model evaluation also needs `OPENROUTER_API_KEY` | Service tests pass, then each model run has a judge-backed result |
 
 Each count includes the Kernel checks. Do not add the counts or combine flags
 to claim the same receipt. Every mode also requires exit code 0,

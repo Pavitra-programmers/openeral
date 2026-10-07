@@ -29,6 +29,8 @@ Read README's **Start Here** before running setup. Choose the requested path:
   assets, PostgreSQL, and the required Haloop route. Desktop starts Claude.
 - Browser validation on Linux: `openrind-dev` skill and BUILD's **Real Linux
   Browser Test**. Use its isolated fixture; no database or provider keys needed.
+- Browser CTF development: `openrind-ctf` skill and the CTF runtime package.
+  Use its deterministic service tests before a model-backed OpenShell evaluation.
 - Actual Argide validation: complete the public browser setup, then use
   `openrind-dev` and BUILD's **Actual Argide Application Test**. The private kit
   is required. Only the optional widget/model test needs a funded Gemini key.

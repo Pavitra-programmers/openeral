@@ -156,6 +156,12 @@ test('pod policy and runtime do not add FUSE, provider credentials, or an open-w
   const policy = browserPolicy(['example.com']);
   assert.deepEqual(policy.network_policies.browser_web.binaries, [{ path: '/usr/lib/chromium/chromium' }]);
   assert.equal(policy.network_policies.browser_web.endpoints.length, 2);
+  const challengePolicy = browserPolicy(['example.com'], [
+    { host: 'host.openshell.internal', port: 19410, bridgeAddress: '172.20.0.1' },
+    { host: 'host.openshell.internal', port: 19411, bridgeAddress: '172.20.0.1' },
+  ]);
+  assert.equal(challengePolicy.network_policies.challenge.endpoints.length, 2);
+  assert.throws(() => browserPolicy(['example.com'], [{ host: 'example.com', port: 19410, bridgeAddress: '172.20.0.1' }]));
   assert.equal(policy.fuse, undefined);
   const args = { binary: '/opt/openshell', stateDir: '/tmp/pods', gateway: 'http://127.0.0.1:18770',
     image: `sandbox@sha256:${'a'.repeat(64)}`, websiteHosts: ['example.com'], acceptNoSandbox: true };

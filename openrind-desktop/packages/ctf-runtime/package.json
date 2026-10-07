@@ -1,0 +1,11 @@
+{
+  "name": "@openrind/ctf-runtime",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.19.0" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "test:openshell": "node ../browser-pods/test/live/openshell-e2e.mjs --ctf"
+  }
+}
