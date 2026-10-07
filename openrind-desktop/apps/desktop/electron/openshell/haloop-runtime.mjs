@@ -34,7 +34,10 @@ export const HALOOP_SANDBOX_ENDPOINT =
 export const HALOOP_ROUTE_POLICY = "incumbent-only";
 export const HALOOP_TEMPORARY_OPENROUTER_TEST_ENV =
   "OPENRIND_DESKTOP_HALOOP_TEST_OPENROUTER";
-export const HALOOP_TEMPORARY_OPENROUTER_MODEL = "openrouter/free";
+export const HALOOP_TEMPORARY_OPENROUTER_MODEL =
+  process.env.OPENROUTER_MODEL?.trim() ||
+  process.env.HALO_MODEL?.trim() ||
+  "anthropic/claude-3.5-sonnet";
 
 const HALOOP_TEMPORARY_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
@@ -129,7 +132,10 @@ function resolveHaloopUpstream(anthropicApiKey, env = process.env, { optional = 
     env?.OPENROUTER_API_KEY ||
     "";
   const normalized = String(rawCandidate ?? "").trim();
-  const openrouterTest = explicitOpenrouterTest || normalized.startsWith("sk-or-v1-");
+  const openrouterTest =
+    explicitOpenrouterTest ||
+    normalized.startsWith("sk-or-") ||
+    Boolean(env?.OPENROUTER_API_KEY && rawCandidate === String(env.OPENROUTER_API_KEY).trim());
   const label = openrouterTest ? "OPENROUTER_API_KEY" : "ANTHROPIC_API_KEY";
   if (optional && !normalized) {
     return { apiKey: "", mode: openrouterTest ? "openrouter-test" : "anthropic" };

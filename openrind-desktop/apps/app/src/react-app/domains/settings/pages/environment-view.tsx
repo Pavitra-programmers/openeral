@@ -63,8 +63,8 @@ const PREDEFINED_CREDENTIALS: PredefinedCredentialDef[] = [
     envVarName: "ANTHROPIC_API_KEY",
     label: "ANTHROPIC_API_KEY",
     description:
-      "Upstream Anthropic API key required by the host-managed Haloop edge. Desktop retains it outside the sandbox; Claude and OpenClaw receive neither this key nor a direct-provider route.",
-    placeholder: "sk-ant-...",
+      "Upstream Anthropic API key (or OpenRouter API key) required by the host-managed Haloop edge. Desktop retains it outside the sandbox; Claude and OpenClaw receive neither this key nor a direct-provider route.",
+    placeholder: "sk-ant-... or sk-or-...",
   },
   {
     statusKey: "openrindGatewayApiKey",
