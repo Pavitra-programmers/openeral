@@ -7,15 +7,16 @@ import { FUSE_IMAGE } from './fuse-runtime.mjs';
 
 const id = (prefix, value) => `${prefix}_${createHash('sha256').update(value).digest('hex')}`;
 // One host registry for the local Desktop user. This module is never renderer IPC.
-export function createDesktopBrowserController({ resourcesPath, userDataPath, onDisconnect }) {
+export function createDesktopBrowserController({ resourcesPath, userDataPath, broker, getBroker, onDisconnect }) {
   let starting;
   let sessions;
   let stopped = false;
   async function ensure() {
     if (stopped) throw new Error('Desktop browser controller is stopped');
     if (!starting) {
+      const activeBroker = getBroker?.() ?? broker;
       starting = startInstalledBrowserRuntime({ resourcesPath, databasePath: join(userDataPath, 'browser', 'registry.sqlite'),
-        port: 18789, image: FUSE_IMAGE, onDisconnect: () => {
+        port: 18789, image: FUSE_IMAGE, broker: activeBroker, onDisconnect: () => {
           starting = undefined;
           sessions = undefined;
           onDisconnect?.();
@@ -28,18 +29,22 @@ export function createDesktopBrowserController({ resourcesPath, userDataPath, on
     return starting;
   }
   return Object.freeze({
-    async prepare({ sandboxName, conversationId, onLost }) {
+    async prepare({ sandboxName, conversationId, profile = 'openrind-shell-claude', workspaceId, onLost }) {
       if (typeof conversationId !== 'string' || !/^[a-f0-9]{32}$/.test(conversationId)) throw new Error('A trusted conversation identity is required');
       // Resolve the recorded sandbox workspace; never fall back to a renderer ID.
-      const workspaceId = await resolveOpenrindShellSandboxWorkspaceId({ name: sandboxName, profile: 'openrind-shell-claude' });
+      const resolvedWorkspaceId = await resolveOpenrindShellSandboxWorkspaceId({
+        name: sandboxName,
+        profile,
+        fallbackWorkspaceId: workspaceId,
+      });
       const active = await ensure();
       return active.prepare({ sandboxName, onLost,
-        scope: { tenantId: id('local', userDataPath), workspaceId: id('workspace', workspaceId),
+        scope: { tenantId: id('local', userDataPath), workspaceId: id('workspace', resolvedWorkspaceId),
           sandboxId: id('sandbox', sandboxName), conversationId: id('conversation', conversationId) },
-        // Step 3 enables discovery/transport only. Until trusted destination UI
-        // lands, the empty explicit allowlist denies every navigation destination.
+        // Desktop policy explicitly opts into public origins (allowAnyPublicOrigin: true)
+        // so agents can browse public web resources like Amazon while blocking local/private destinations.
         policy: { revision: 1, providers: ['local-chromium', 'browserbase', 'desktop-webview'],
-          origins: [], profiles: [], approveMutations: true },
+          origins: [], profiles: [], approveMutations: false, allowAnyPublicOrigin: true },
       });
     },
     async removeSandbox(name) { if (starting) await (await starting).removeSandbox(name); },

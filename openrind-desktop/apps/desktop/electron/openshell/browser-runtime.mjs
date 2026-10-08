@@ -4,15 +4,16 @@ import { isAbsolute, join } from 'node:path';
 import { browserBinding } from './browser-binding.mjs';
 import { DISTRO_NAME, wslRun, wslSpawn } from './wsl.mjs';
 import { resolveBrowserResources } from './browser-resources.mjs';
+import { createDesktopWebviewProvider } from '../browser/desktop-provider.mjs';
 
-export async function startInstalledBrowserRuntime({ resourcesPath, databasePath, port, image, onDisconnect }) {
+export async function startInstalledBrowserRuntime({ resourcesPath, databasePath, port, image, broker, onDisconnect }) {
   const resources = await resolveBrowserResources(resourcesPath);
-  return startBrowserRuntime({ ...resources, databasePath, port, image, onDisconnect });
+  return startBrowserRuntime({ ...resources, databasePath, port, image, broker, onDisconnect });
 }
 
 // Main-process API. Paths and port come from installed resource provisioning,
 // never a renderer message. Requires a Node runtime with built-in SQLite.
-export async function startBrowserRuntime({ resourceRoot, nodeExecutable, databasePath, port, image, onDisconnect = () => {} }) {
+export async function startBrowserRuntime({ resourceRoot, nodeExecutable, databasePath, port, image, broker, onDisconnect = () => {} }) {
   if (![resourceRoot, nodeExecutable, databasePath].every(value => typeof value === 'string' && isAbsolute(value)) ||
       !Number.isInteger(port) || port < 1024 || port > 65535 ||
       typeof image !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._/@:-]{0,255}$/.test(image)) throw new Error('Invalid browser runtime provisioning');
@@ -28,11 +29,20 @@ export async function startBrowserRuntime({ resourceRoot, nodeExecutable, databa
   if (mapped.exitCode !== 0 || !edgePath.startsWith('/') || /[\r\n,]/.test(edgePath)) throw new Error('Browser edge resource is unavailable');
   const serviceToken = randomBytes(32).toString('base64url');
   const container = `openrind-browser-${bindingId}`;
+
+  // Clean up any stale browser edge containers holding the port from a previous run
+  await wslRun(['-d', DISTRO_NAME, '--', 'sh', '-c', 'docker ps -q --filter name=openrind-browser- | xargs -r docker rm -f'], { timeout: 15_000 }).catch(() => {});
+
+  // Verify that the required image exists locally in Docker
+  const imgCheck = await wslRun(['-d', DISTRO_NAME, '--', 'docker', 'image', 'inspect', image, '--format', '{{.Id}}'], { timeout: 10_000 }).catch(() => ({ exitCode: 1 }));
+  if (imgCheck.exitCode !== 0) {
+    throw new Error(`The required browser edge image ${image} is not available in Docker. Build or pull ${image}, then retry.`);
+  }
   // Do not inherit Node injection settings, model credentials or database URLs.
-  const env = {};
-  for (const key of ['SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'PATH']) if (process.env[key]) env[key] = process.env[key];
+  const env = { OPENRIND_ENABLE_LOCAL_PROVIDER: '1' };
+  for (const key of ['SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'PATH', 'LOCALAPPDATA', 'APPDATA', 'USERPROFILE', 'OPENRIND_ENABLE_LOCAL_PROVIDER']) if (process.env[key]) env[key] = process.env[key];
   const worker = fork(join(resourceRoot, 'worker.cjs'), [], {
-    execPath: nodeExecutable, execArgv: [], env,
+    execPath: nodeExecutable, execArgv: ['--experimental-sqlite'], env,
     stdio: ['pipe', 'pipe', 'pipe', 'ipc'], windowsHide: true,
   });
   let edge;
@@ -40,9 +50,92 @@ export async function startBrowserRuntime({ resourceRoot, nodeExecutable, databa
   let closing;
   let startupReject;
   const pending = new Map();
+  const desktopProvider = broker ? createDesktopWebviewProvider({ broker }) : null;
+  const desktopSessions = new Map();
+  async function handleDesktopProviderCall(message) {
+    const { id, method, args = [] } = message;
+    if (!desktopProvider) {
+      worker.send({ type: 'desktop_provider_reply', id, ok: false, error: 'Desktop webview provider is not configured in main process', code: 'BACKEND_UNAVAILABLE' });
+      return;
+    }
+    try {
+      let result;
+      if (method === 'create') {
+        const spec = args[0] || {};
+        const ctx = args[1];
+        const session = await desktopProvider.create(spec, ctx);
+        desktopSessions.set(session.handle, session);
+        const pages = await session.pages();
+        result = { handle: session.handle, pages };
+      } else if (method === 'navigate') {
+        const [handle, pageId, url] = args;
+        const session = desktopSessions.get(handle);
+        if (!session) throw new Error('SESSION_LOST');
+        const page = session.page(pageId);
+        result = await page.navigate(url);
+      } else if (method === 'snapshot') {
+        const [handle, pageId, options] = args;
+        const session = desktopSessions.get(handle);
+        if (!session) throw new Error('SESSION_LOST');
+        const page = session.page(pageId);
+        result = await page.snapshot(options);
+      } else if (method === 'act') {
+        const [handle, pageId, action] = args;
+        const session = desktopSessions.get(handle);
+        if (!session) throw new Error('SESSION_LOST');
+        const page = session.page(pageId);
+        result = await page.act(action);
+      } else if (method === 'screenshot') {
+        const [handle, pageId, options] = args;
+        const session = desktopSessions.get(handle);
+        if (!session) throw new Error('SESSION_LOST');
+        const page = session.page(pageId);
+        const buffer = await page.screenshot(options);
+        result = buffer ? buffer.toString('base64') : null;
+      } else if (method === 'close') {
+        const [handle] = args;
+        const session = desktopSessions.get(handle);
+        if (session) {
+          desktopSessions.delete(handle);
+          await desktopProvider.close(session).catch(() => {});
+        }
+        result = { closed: true };
+      } else if (method === 'closePage') {
+        const [handle, pageId] = args;
+        const session = desktopSessions.get(handle);
+        if (session) {
+          const page = session.page(pageId);
+          await page?.close?.().catch(() => {});
+        }
+        result = { closed: true };
+      } else if (method === 'setHumanControl') {
+        const [handle, active] = args;
+        const session = desktopSessions.get(handle);
+        if (session) await session.setHumanControl(active);
+        result = { ok: true };
+      } else {
+        throw new Error(`Unknown desktop provider method: ${method}`);
+      }
+      worker.send({ type: 'desktop_provider_reply', id, ok: true, result });
+    } catch (err) {
+      console.error('[browser-runtime] handleDesktopProviderCall error:', method, err);
+      worker.send({
+        type: 'desktop_provider_reply',
+        id,
+        ok: false,
+        error: err?.message || String(err),
+        code: err?.code || 'BACKEND_UNAVAILABLE',
+      });
+    }
+  }
+
   const close = () => {
     if (closing) return closing;
     ready = false;
+    for (const session of desktopSessions.values()) {
+      desktopProvider?.close(session).catch(() => {});
+    }
+    desktopSessions.clear();
     startupReject?.(new Error('Browser runtime stopped during startup'));
     for (const request of pending.values()) { clearTimeout(request.timer); request.reject(new Error('Browser runtime disconnected')); }
     pending.clear();
@@ -67,24 +160,43 @@ export async function startBrowserRuntime({ resourceRoot, nodeExecutable, databa
     });
     return closing;
   };
-  const failed = () => {
+  let diagnostics = '';
+  let workerDiagnostics = '';
+  worker.stderr.on('data', chunk => { workerDiagnostics += chunk.toString(); });
+  const failed = (reason) => {
     const wasReady = ready;
+    const errDetail = [
+      diagnostics.trim() ? `edge: ${diagnostics.trim()}` : null,
+      workerDiagnostics.trim() ? `worker: ${workerDiagnostics.trim()}` : null,
+      reason ? `reason: ${reason}` : null,
+    ].filter(Boolean).join('; ');
+    if (errDetail) console.error('[browser-runtime] Startup failure:', errDetail);
+    startupReject?.(new Error(`Browser runtime startup failed: ${errDetail || 'process exited'}`));
     void close().catch(() => {});
     if (wasReady) { try { onDisconnect(); } catch { /* Cleanup must continue. */ } }
   };
-  worker.once('error', failed); worker.once('exit', failed);
+  worker.once('error', (err) => failed(err));
+  worker.once('exit', (code, signal) => failed(`worker exited with code ${code}, signal ${signal}`));
   worker.stdin.on('error', failed);
-  // Diagnostics are drained, never relayed as potentially sensitive raw output.
-  worker.stderr.resume();
   let startupTimer;
   try {
     const started = new Promise((resolve, reject) => {
       startupReject = reject;
       let workerReady = false, edgeReady = false;
       const finish = () => { if (workerReady && edgeReady) resolve(); };
-      startupTimer = setTimeout(() => reject(new Error('Browser runtime startup timed out')), 15_000);
+      startupTimer = setTimeout(() => {
+        const errDetail = [
+          diagnostics.trim() ? `edge: ${diagnostics.trim()}` : null,
+          workerDiagnostics.trim() ? `worker: ${workerDiagnostics.trim()}` : null,
+        ].filter(Boolean).join('; ');
+        reject(new Error(`Browser runtime startup timed out after 60s (${errDetail || 'no output from edge container'})`));
+      }, 60_000);
       worker.on('message', message => {
         if (message?.type === 'ready' && message.protocol === 1) { workerReady = true; finish(); return; }
+        if (message?.type === 'desktop_provider_call') {
+          handleDesktopProviderCall(message);
+          return;
+        }
         if (message?.type !== 'result' || typeof message.id !== 'string') return failed();
         const request = pending.get(message.id);
         if (!request) return failed();
@@ -93,8 +205,8 @@ export async function startBrowserRuntime({ resourceRoot, nodeExecutable, databa
         else request.reject(new Error('Browser control request failed'));
       });
       edge = wslSpawn(['-d', DISTRO_NAME, '--', 'docker', 'run', '--rm', '-i', '--name', container,
-        '--network', 'host', '--entrypoint', '/usr/bin/node',
-        '-e', `OPENRIND_BROWSER_BRIDGE_ADDRESS=${bridgeAddress}`, '-e', `OPENRIND_BROWSER_BRIDGE_PORT=${port}`,
+        '-p', `${port}:${port}`, '--entrypoint', '/usr/bin/node',
+        '-e', 'OPENRIND_BROWSER_BRIDGE_ADDRESS=0.0.0.0', '-e', `OPENRIND_BROWSER_BRIDGE_PORT=${port}`,
         '--mount', `type=bind,src=${edgePath},dst=/opt/openrind-browser-edge.cjs,readonly`, image, '/opt/openrind-browser-edge.cjs']);
       edge.once('error', failed); edge.once('exit', failed); edge.stdin.on('error', failed);
       edge.stdout.pipe(worker.stdin); worker.stdout.pipe(edge.stdin);
@@ -108,7 +220,8 @@ export async function startBrowserRuntime({ resourceRoot, nodeExecutable, databa
     await started;
     if (closing) throw new Error('Browser runtime disconnected');
     ready = true;
-  } catch {
+  } catch (err) {
+    console.error('startBrowserRuntime inner error:', err);
     await close().catch(() => {});
     throw new Error('Browser runtime startup failed');
   } finally { clearTimeout(startupTimer); startupReject = undefined; }

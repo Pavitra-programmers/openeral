@@ -27,6 +27,7 @@ export {
   revokeOpenrindShellHaloopIntegration,
   revokeOpenrindShellHaloopForSandbox,
   rotateOpenrindShellHaloop,
+  requiredHaloopUpstreamApiKey,
   uploadWorkspaceFile,
 } from "./fuse-sandbox.mjs";
 export {
@@ -150,7 +151,7 @@ function markerError(action, result) {
 }
 
 /** Write the one-shot marker immediately before a new desktop connect. */
-export async function writeCurrentSessionMarker(name, value, browserGrant) {
+export async function writeCurrentSessionMarker(name, value, browserGrant, browserServiceToken) {
   const marker = String(value ?? "").trim();
   if (
     marker &&
@@ -160,7 +161,7 @@ export async function writeCurrentSessionMarker(name, value, browserGrant) {
   ) {
     throw new Error("Invalid desktop Claude session marker.");
   }
-  if (browserGrant !== undefined && (!marker.startsWith('openrind-shell-claude:') ||
+  if (browserGrant !== undefined && (!/^(?:openrind-shell-claude|openrind-shell-openclaw|openrind-shell-openhands|openrind-shell-openhands-script):/.test(marker) ||
       typeof browserGrant !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(browserGrant))) {
     throw new Error('Invalid browser launch grant.');
   }
@@ -179,8 +180,17 @@ export async function writeCurrentSessionMarker(name, value, browserGrant) {
     `  printf '\\n%s\\n' ${shellQuote(interactiveHook)} >> /sandbox/.bashrc`,
     `fi`,
   ].join("\n");
+  const writeBrowserGrant = browserGrant
+    ? `printf %s ${shellQuote(browserGrant)} > /var/lib/openrind-shell/runtime/browser-grant; chmod 600 /var/lib/openrind-shell/runtime/browser-grant;`
+    : "";
+  const writeBrowserToken = browserServiceToken
+    ? `printf %s ${shellQuote(browserServiceToken)} > /var/lib/openrind-shell/runtime/browser-token; chmod 600 /var/lib/openrind-shell/runtime/browser-token;`
+    : "";
+  const writeBrowserEnv = (browserGrant && browserServiceToken)
+    ? `printf 'export OPENRIND_BROWSER_GRANT=%s\\nexport OPENRIND_BROWSER_SERVICE_TOKEN=%s\\n' ${shellQuote(browserGrant)} ${shellQuote(browserServiceToken)} > /var/lib/openrind-shell/runtime/browser.env; chmod 600 /var/lib/openrind-shell/runtime/browser.env;`
+    : "";
   const script = marker
-    ? `set -eu; umask 077; ${repairHook}; mkdir -p /var/lib/openrind-shell/runtime; cat > ${SESSION_MARKER_PATH}; chmod 600 ${SESSION_MARKER_PATH}`
+    ? `set -eu; umask 077; ${repairHook}; mkdir -p /var/lib/openrind-shell/runtime; ${writeBrowserGrant} ${writeBrowserToken} ${writeBrowserEnv} printf %s ${shellQuote(name)} > /var/lib/openrind-shell/runtime/sandbox-name; cat > ${SESSION_MARKER_PATH}; chmod 600 ${SESSION_MARKER_PATH}`
     : `rm -f ${SESSION_MARKER_PATH}`;
   // Credentials travel through stdin rather than appearing in process arguments.
   const payload = browserGrant === undefined ? marker : `${marker}:${browserGrant}`;
@@ -209,6 +219,50 @@ export async function waitCurrentSessionMarkerConsumed(name, timeoutMs = 6_000) 
     }
     if (Date.now() >= deadline) return false;
     await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+}
+
+export async function verifySandboxBrowserCredentials(name) {
+  assertSandboxName(name);
+  const verifyScript = `
+    if [ ! -s /var/lib/openrind-shell/runtime/browser-grant ]; then
+      echo "MISSING_GRANT"; exit 1;
+    fi
+    if [ ! -s /var/lib/openrind-shell/runtime/browser-token ] && [ ! -s /etc/openrind-browser/service-token ]; then
+      echo "MISSING_SERVICE_TOKEN"; exit 1;
+    fi
+    node -e '
+      const fs = require("fs");
+      const grant = (fs.existsSync("/var/lib/openrind-shell/runtime/browser-grant") ? fs.readFileSync("/var/lib/openrind-shell/runtime/browser-grant", "utf8") : "").trim();
+      let token = (fs.existsSync("/var/lib/openrind-shell/runtime/browser-token") ? fs.readFileSync("/var/lib/openrind-shell/runtime/browser-token", "utf8") : "").trim();
+      if (!token && fs.existsSync("/etc/openrind-browser/service-token")) token = fs.readFileSync("/etc/openrind-browser/service-token", "utf8").trim();
+      if (!/^[A-Za-z0-9_-]{43}$/.test(grant)) { console.error("INVALID_GRANT"); process.exit(1); }
+      if (!/^[\\x21-\\x7e]{16,8192}$/.test(token)) { console.error("INVALID_TOKEN"); process.exit(1); }
+      console.log("CREDENTIALS_VERIFIED");
+    '
+  `;
+  try {
+    const containers = await wslRun([
+      "-d", DISTRO_NAME, "--", "docker", "ps", "--no-trunc",
+      "--filter", "label=openshell.ai/managed-by=openshell",
+      "--filter", `label=openshell.ai/sandbox-name=${name}`,
+      "--format", "{{.ID}}"
+    ], { timeout: 10_000 }).catch(() => null);
+
+    const ids = containers?.stdout?.trim().split(/\r?\n/).filter(Boolean) || [];
+    if (ids.length === 1 && /^[a-f0-9]{64}$/.test(ids[0])) {
+      const res = await wslRun([
+        "-d", DISTRO_NAME, "--", "docker", "exec", "-i", "--user", "sandbox", ids[0],
+        "sh", "-c", verifyScript
+      ], { timeout: 10_000 }).catch(err => ({ exitCode: -1, stderr: String(err) }));
+      if (res.exitCode === 0 && res.stdout?.includes("CREDENTIALS_VERIFIED")) {
+        return { ok: true };
+      }
+      return { ok: false, error: (res.stderr || res.stdout || "Credentials verification failed").trim() };
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
   }
 }
 

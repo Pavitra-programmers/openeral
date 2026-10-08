@@ -30,6 +30,8 @@ import {
 import { registerMigrationIpc } from "./migration.mjs";
 import { createRuntimeManager } from "./runtime.mjs";
 import { registerUpdaterIpc } from "./updater.mjs";
+import { createOwnedContentsBroker } from "./browser/broker.mjs";
+import { registerBrowserIpc } from "./browser/browser-ipc.mjs";
 import {
   exportWorkspaceConfig,
   importWorkspaceConfig,
@@ -681,13 +683,14 @@ async function writeOpenrindShellSessionMarker(
   agentSessionId,
   haloopSessionAssertion,
   browserGrant,
+  browserServiceToken,
 ) {
   const value = openrindShell.resolveAgentSessionValue(
     profile,
     agentSessionId,
     haloopSessionAssertion,
   );
-  await openrindShell.writeCurrentSessionMarker(sandboxName, value, browserGrant);
+  await openrindShell.writeCurrentSessionMarker(sandboxName, value, browserGrant, browserServiceToken);
 }
 
 // Agent sessions are CONCURRENT: a sandbox hosts one live PTY per Openrind Desktop
@@ -704,6 +707,7 @@ function browserController() {
   return desktopBrowserController ??= createDesktopBrowserController({
     resourcesPath: app.isPackaged ? process.resourcesPath : path.resolve(__dirname, '../../../packaging/browser-client'),
     userDataPath: app.getPath('userData'),
+    getBroker: () => browserBroker,
     onDisconnect: () => {
       // Browser grants are fenced by the worker. Existing terminals retain their
       // inference/FUSE lifecycle; browser requests fail until explicit recovery.
@@ -762,6 +766,7 @@ function openOpenrindShellPtySession(opts) {
     extraEnv,
     agentSessionId,
     profile,
+    workspaceId,
     haloopCapture,
     haloopContextId,
     haloopSessionAssertion,
@@ -818,16 +823,27 @@ function openOpenrindShellPtySession(opts) {
         return openrindPty.openSession({ sandboxName, cols, rows, extraEnv, agentSessionId, haloopContextId });
       }
       let browserLease;
+      let lastBrowserError = null;
       if (prepareBrowserLease) {
         browserLease = await prepareBrowserLease();
-      } else if (profile === 'openrind-shell-claude') {
-        try {
-          browserLease = await browserController().prepare({ sandboxName, conversationId: haloopContextId });
-        } catch (error) {
-          console.warn('Browser runtime setup failed; proceeding without browser lease:', error);
-          browserLease = undefined;
+      } else if (profile === 'openrind-shell-claude' || profile === 'openrind-shell-openhands' || profile === 'openrind-shell-openhands-script' || profile === 'openrind-shell-openclaw') {
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            browserLease = await browserController().prepare({ sandboxName, conversationId: haloopContextId, profile, workspaceId });
+            if (browserLease?.token && browserLease?.serviceToken) break;
+          } catch (error) {
+            lastBrowserError = error;
+            console.warn(`Browser runtime setup attempt ${attempt} for ${sandboxName} failed:`, error?.message || error);
+            if (attempt < 3) await new Promise(r => setTimeout(r, 1500));
+          }
+        }
+        if (!browserLease?.token || !browserLease?.serviceToken) {
+          const detail = lastBrowserError?.message || 'browser credentials could not be secured';
+          console.error(`[browser-launch] Fatal error for ${sandboxName}:`, lastBrowserError);
+          throw new Error(`Failed to initialize browser runtime for sandbox ${sandboxName}: ${detail}`);
         }
       }
+
       let ptyExited = false;
       let opened;
       try {
@@ -837,7 +853,15 @@ function openOpenrindShellPtySession(opts) {
         agentSessionId,
         haloopSessionAssertion,
         browserLease?.token,
+        browserLease?.serviceToken,
       );
+      // Explicit verification check: confirm credentials exist and are valid inside container
+      const credCheck = await openrindShell.verifySandboxBrowserCredentials(sandboxName);
+      if (!credCheck.ok) {
+        console.warn(`[sandbox-launch] Preflight browser credential check failed for ${sandboxName}:`, credCheck.error);
+        throw new Error(`Sandbox launch aborted: browser credentials verification failed inside ${sandboxName} (${credCheck.error}).`);
+      }
+      console.log(`[sandbox-launch] ${sandboxName}: Browser credentials and MCP endpoints successfully verified before launch.`);
       // Even a desktop launch without a session id writes the `auto` marker, so
       // every fresh connect must wait for this marker to be consumed.
       openrindMarkerPending.add(sandboxName);
@@ -1653,11 +1677,28 @@ function engineDoctor(options = {}) {
   return runtimeManager.engineDoctor(options);
 }
 
+function isTrustedSender(event) {
+  if (!mainWindow || !event?.sender) return false;
+  // Sender must strictly be the main window's webContents, not an embedded WebContentsView
+  if (event.sender !== mainWindow.webContents) return false;
+  // If senderFrame exists, verify it is the top-level main frame
+  if (event.senderFrame && event.senderFrame !== mainWindow.webContents.mainFrame) return false;
+  return true;
+}
+
+function assertTrustedSender(event, action = 'IPC') {
+  if (!isTrustedSender(event)) {
+    throw new Error(`Unauthorized ${action} attempt from untrusted WebContents`);
+  }
+}
+
 function activeWindowFromEvent(event) {
-  return BrowserWindow.fromWebContents(event.sender) ?? mainWindow ?? undefined;
+  if (!isTrustedSender(event)) return undefined;
+  return mainWindow ?? undefined;
 }
 
 async function handleDesktopInvoke(event, command, ...args) {
+  assertTrustedSender(event, `command '${command}'`);
   switch (command) {
     case "workspaceBootstrap":
       return readWorkspaceState();
@@ -2913,6 +2954,7 @@ async function handleDesktopInvoke(event, command, ...args) {
         extraEnv,
         agentSessionId,
         profile,
+        workspaceId,
         haloopCapture: haloop.capture,
         haloopContextId: haloop.haloopContextId,
         haloopSessionAssertion: haloop.sessionAssertion,
@@ -3036,6 +3078,7 @@ async function handleDesktopInvoke(event, command, ...args) {
         extraEnv,
         agentSessionId,
         profile,
+        workspaceId,
         haloopCapture: haloop.capture,
         haloopContextId: haloop.haloopContextId,
         haloopSessionAssertion: haloop.sessionAssertion,
@@ -3617,6 +3660,12 @@ async function createMainWindow() {
   mainWindow.webContents.on("will-navigate", blockOffAppNavigation);
   mainWindow.webContents.on("will-redirect", blockOffAppNavigation);
 
+  mainWindow.webContents.on("zoom-changed", () => {
+    try {
+      mainWindow.webContents.send("openrind-desktop:browser:event", { type: "zoom-changed" });
+    } catch {}
+  });
+
   const startUrl =
     process.env.OPENRIND_DESKTOP_ELECTRON_START_URL?.trim() ||
     process.env.ELECTRON_START_URL?.trim();
@@ -3639,7 +3688,8 @@ async function createMainWindow() {
 
 ipcMain.handle("openrind-desktop:desktop", handleDesktopInvoke);
 
-ipcMain.handle("openrind-desktop:workspace-config:read", async (_event, input) => {
+ipcMain.handle("openrind-desktop:workspace-config:read", async (event, input) => {
+  assertTrustedSender(event, "workspace-config:read");
   const workspacePath = String(input?.workspacePath ?? "").trim();
   const state = await readWorkspaceState();
   const workspaceRoot = await requireRegisteredLocalWorkspaceRoot({
@@ -3654,7 +3704,8 @@ ipcMain.handle("openrind-desktop:workspace-config:read", async (_event, input) =
   return JSON.parse(raw);
 });
 
-ipcMain.handle("openrind-desktop:workspace-config:write", async (_event, input) => {
+ipcMain.handle("openrind-desktop:workspace-config:write", async (event, input) => {
+  assertTrustedSender(event, "workspace-config:write");
   const workspacePath = String(input?.workspacePath ?? "").trim();
   const config = input?.config ?? defaultWorkspaceOpenrindDesktopConfig("");
   const state = await readWorkspaceState();
@@ -3668,7 +3719,8 @@ ipcMain.handle("openrind-desktop:workspace-config:write", async (_event, input) 
   return execResult(true, `Wrote ${configPath}`);
 });
 
-ipcMain.handle("openrind-desktop:workspace-config:add-authorized-root", async (_event, input) => {
+ipcMain.handle("openrind-desktop:workspace-config:add-authorized-root", async (event, input) => {
+  assertTrustedSender(event, "workspace-config:add-authorized-root");
   const workspacePath = String(input?.workspacePath ?? "").trim();
   const authorizedRoot = String(input?.folderPath ?? input?.authorizedRoot ?? "").trim();
   if (!workspacePath || !authorizedRoot) {
@@ -3697,10 +3749,12 @@ ipcMain.handle("openrind-desktop:workspace-config:add-authorized-root", async (_
   await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
   return execResult(true, `Wrote ${configPath}`);
 });
-ipcMain.handle("openrind-desktop:shell:openExternal", async (_event, url) => {
+ipcMain.handle("openrind-desktop:shell:openExternal", async (event, url) => {
+  assertTrustedSender(event, "shell:openExternal");
   await openExternalSafe(url);
 });
-ipcMain.handle("openrind-desktop:shell:relaunch", async () => {
+ipcMain.handle("openrind-desktop:shell:relaunch", async (event) => {
+  assertTrustedSender(event, "shell:relaunch");
   app.relaunch();
   app.exit(0);
 });
@@ -3711,6 +3765,9 @@ const { ensureAutoUpdater } = registerUpdaterIpc({
   ipcMain,
   getMainWindow: () => mainWindow,
 });
+
+const browserBroker = createOwnedContentsBroker({ getMainWindow: () => mainWindow });
+registerBrowserIpc({ broker: browserBroker, assertTrustedSender });
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();

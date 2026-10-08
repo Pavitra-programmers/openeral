@@ -68,7 +68,14 @@ export function validatePolicy(input) {
   });
   const profiles = (input.profiles || []).map(value => id.parse(value));
   if (profiles.length > 32) throw new Error('Profile policy limit');
-  return { revision: input.revision, providers, origins, profiles, approveMutations: input.approveMutations !== false };
+  return {
+    revision: input.revision,
+    providers,
+    origins,
+    profiles,
+    approveMutations: input.approveMutations !== false,
+    allowAnyPublicOrigin: Boolean(input.allowAnyPublicOrigin),
+  };
 }
 function publicAddress(address) {
   if (isIP(address) === 4) {
@@ -82,13 +89,31 @@ function publicAddress(address) {
     !/^(2001:|2002:|3fff:)/i.test(address);
 }
 export async function validateDestination(value, policy, resolver = lookup) {
-  let url; try { url = new URL(Url.parse(value)); } catch { throw new BrowserFault('POLICY_DENIED'); }
-  if (!policy.origins.includes(url.origin) || url.hostname.endsWith('.localhost') || url.hostname === 'localhost') throw new BrowserFault('POLICY_DENIED');
+  let target = typeof value === 'string' ? value.trim() : String(value || '');
+  if (!target.startsWith('https://') && !target.startsWith('http://') && target !== 'about:blank') {
+    target = `https://${target}`;
+  }
+  let url;
+  try {
+    url = new URL(Url.parse(target));
+  } catch {
+    throw new BrowserFault('POLICY_DENIED');
+  }
+  if (url.protocol !== 'https:' && target !== 'about:blank') {
+    throw new BrowserFault('POLICY_DENIED');
+  }
+  const originAllowed = Boolean(policy.allowAnyPublicOrigin) || (policy.origins.length > 0 && policy.origins.includes(url.origin));
+  if (!originAllowed || url.hostname.endsWith('.localhost') || url.hostname === 'localhost') throw new BrowserFault('POLICY_DENIED');
   const hostname = url.hostname.replace(/^\[|\]$/g, '');
   let addresses;
-  try { addresses = isIP(hostname) ? [{ address: hostname }] : await resolver(hostname, { all: true, verbatim: true }); }
-  catch { throw new BrowserFault('POLICY_DENIED'); }
-  if (!addresses.length || !addresses.every(item => publicAddress(item.address))) throw new BrowserFault('POLICY_DENIED');
+  try {
+    addresses = isIP(hostname) ? [{ address: hostname }] : await resolver(hostname, { all: true, verbatim: true });
+  } catch {
+    throw new BrowserFault('POLICY_DENIED');
+  }
+  if (!addresses.length || !addresses.every(item => publicAddress(item.address))) {
+    throw new BrowserFault('POLICY_DENIED');
+  }
   return Object.freeze({ href: url.href, origin: url.origin });
 }
 export class Approvals {

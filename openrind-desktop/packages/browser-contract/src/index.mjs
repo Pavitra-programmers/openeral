@@ -1,19 +1,27 @@
 import { z } from 'zod';
+import { randomBytes } from 'node:crypto';
 
 export const PROTOCOL_VERSION = 1;
-export const LIMITS = Object.freeze({ sessionsPerConversation: 2, sessionsPerWorker: 4, pages: 8,
+export const LIMITS = Object.freeze({ sessionsPerConversation: 2, sessionsPerWorker: 8, pages: 8,
   queue: 32, creationMs: 60_000, actionMs: 30_000, maxActionMs: 120_000,
   snapshotNodes: 2000, snapshotTextBytes: 65_536, bodyBytes: 1_048_576,
-  artifactBytes: 104_857_600, screenshotBytes: 16_777_216, grantMs: 900_000,
-  sessionMs: 7_200_000, idleMs: 900_000, operationRetentionMs: 86_400_000 });
+  artifactBytes: 104_857_600, screenshotBytes: 16_777_216, grantMs: 86_400_000,
+  sessionMs: 86_400_000, idleMs: 86_400_000, operationRetentionMs: 604_800_000 });
 export const ProviderKind = z.enum(['local-chromium', 'browserbase', 'desktop-webview']);
 export const id = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{2,127}$/);
+export const refId = z.string().regex(/^@?[A-Za-z0-9_-]{1,127}$/);
 const epoch = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER);
 const session = { sessionId: id, sessionEpoch: epoch };
 const page = { ...session, pageId: id };
-const operation = { operationId: id };
+const operation = { operationId: id.default(() => `op_${randomBytes(8).toString('hex')}`) };
 const strict = shape => z.object(shape).strict();
-export const Url = z.string().min(1).max(4096).refine(value => {
+export const Url = z.string().min(1).max(4096).transform(val => {
+  let v = val.trim();
+  if (!v.startsWith('https://') && !v.startsWith('http://') && v !== 'about:blank') {
+    v = `https://${v}`;
+  }
+  return v;
+}).refine(value => {
   try { const u = new URL(value); return u.protocol === 'https:' && !u.username && !u.password && !u.hash; }
   catch { return false; }
 }, 'An HTTPS URL without credentials or a fragment is required');
@@ -25,9 +33,9 @@ const Region = strict({ x: z.number().int().min(0).max(16384), y: z.number().int
   width: z.number().int().min(1).max(4096), height: z.number().int().min(1).max(4096) });
 export const ToolSchemas = Object.freeze({
   browser_capabilities: strict({ sessionId: id.optional() }),
-  browser_start: strict({ ...operation, provider: ProviderKind, profileMode: ProfileMode.default('ephemeral'),
+  browser_start: strict({ ...operation, provider: ProviderKind.default('desktop-webview'), profileMode: ProfileMode.default('ephemeral'),
     profileId: id.optional(), url: Url.optional(), networkEnforcement: z.enum(['application-guardrails', 'enforced-backend-policy']).default('application-guardrails') })
-    .refine(v => (v.profileMode === 'ephemeral') === !v.profileId, 'Retained profiles require an approved profile ID'),
+    .refine(v => (v.profileMode === 'host-retained' ? Boolean(v.profileId) : !v.profileId), 'Retained profiles require an approved profile ID'),
   browser_status: strict({ sessionId: id, sessionEpoch: epoch.optional() }),
   browser_tabs: strict({ ...session, action: z.enum(['list', 'open', 'close']),
     operationId: id.optional(), pageId: id.optional(), url: Url.optional() }).refine(v =>
@@ -39,14 +47,14 @@ export const ToolSchemas = Object.freeze({
   browser_snapshot: strict({ ...page, depth: z.number().int().min(1).max(32).default(8),
     maxNodes: z.number().int().min(1).max(LIMITS.snapshotNodes).default(LIMITS.snapshotNodes),
     maxTextBytes: z.number().int().min(1).max(LIMITS.snapshotTextBytes).default(LIMITS.snapshotTextBytes) }),
-  browser_click: strict({ ...page, ...operation, ref: id }),
-  browser_fill: strict({ ...page, ...operation, ref: id, text: z.string().max(65_536).optional(), secretId: id.optional() })
+  browser_click: strict({ ...page, ...operation, ref: refId }),
+  browser_fill: strict({ ...page, ...operation, ref: refId, text: z.string().max(65_536).optional(), secretId: id.optional() })
     .refine(v => (v.text !== undefined) !== (v.secretId !== undefined), 'Exactly one input value source is required'),
-  browser_select: strict({ ...page, ...operation, ref: id, values: z.array(z.string().max(4096)).min(1).max(32) }),
+  browser_select: strict({ ...page, ...operation, ref: refId, values: z.array(z.string().max(4096)).min(1).max(32) }),
   browser_press: strict({ ...page, ...operation, key: z.enum(['Enter', 'Tab', 'Shift+Tab', 'Escape', 'Space', 'Backspace', 'Delete', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'Control+A', 'Meta+A']) }),
   browser_scroll: strict({ ...page, ...operation, direction: z.enum(['up', 'down', 'left', 'right']), distance: z.number().int().min(1).max(4096) }),
   browser_screenshot: strict({ ...page, ...operation, region: Region.optional() }),
-  browser_upload_file: strict({ ...page, ...operation, ref: id, artifactId: id }),
+  browser_upload_file: strict({ ...page, ...operation, ref: refId, artifactId: id }),
   browser_downloads: strict({ ...session }),
   browser_take_control: strict({ ...session, ...operation }),
   browser_resume: strict({ ...session, ...operation, handoffId: id }),
@@ -84,9 +92,30 @@ export function parseTool(name, input, { local = false } = {}) {
   if (!result.success) throw new BrowserFault('INVALID_ARGUMENT');
   return result.data;
 }
+const TOOL_DESCRIPTIONS = Object.freeze({
+  browser_start: 'Start a browser session. Returns sessionId, sessionEpoch, and initial pageId.',
+  browser_status: 'Get current status, state, active pages, and capabilities of the browser session.',
+  browser_tabs: 'Manage browser tabs (list, open new tab with url, or close tab).',
+  browser_navigate: 'Navigate the active page to an HTTPS URL.',
+  browser_snapshot: 'Capture a structured semantic snapshot and interactive controls list of the current page. Returns element coordinates (x, y, width, height), center points, visibility/hit-test status, and stable [ref=...] IDs for clicking and filling interactive inputs.',
+  browser_click: 'Click an interactive element identified by its ref (e.g. from browser_snapshot).',
+  browser_fill: 'Type text into an editable input or textarea identified by its ref (e.g. from browser_snapshot).',
+  browser_select: 'Select an option in a dropdown combobox identified by its ref.',
+  browser_press: 'Press a keyboard key (e.g. Enter, Tab, Escape, Space, ArrowDown). Use Enter to submit forms after filling input.',
+  browser_scroll: 'Scroll the page in a direction (up, down, left, right) by a pixel distance (e.g. 800) to bring off-screen elements into view.',
+  browser_screenshot: 'Capture a PNG screenshot of the current page viewport or a specific region.',
+  browser_upload_file: 'Attach a staged file artifact to a file input element identified by its ref.',
+  browser_downloads: 'List files downloaded in the browser session.',
+  browser_take_control: 'Pause agent automation for interactive human user control.',
+  browser_resume: 'Resume agent automation after human control handoff is released.',
+  browser_close: 'Close the browser session and clean up all resources.',
+  browser_import_file: 'Import a local workspace file as an artifact for upload in the browser.',
+  browser_save_artifact: 'Save a downloaded browser artifact to the local workspace.',
+});
+
 export function toolDefinitions({ local = false } = {}) {
   return (local ? Object.keys(ToolSchemas) : REMOTE_TOOLS).map(name => ({ name,
-    description: `Openrind ${name.slice(8).replaceAll('_', ' ')}. Explicit session ownership and capability checks apply.`,
+    description: TOOL_DESCRIPTIONS[name] || `Openrind ${name.slice(8).replaceAll('_', ' ')}. Explicit session ownership and capability checks apply.`,
     inputSchema: z.toJSONSchema(ToolSchemas[name], { unrepresentable: 'any' }) }));
 }
 export const Principal = strict({ tenantId: id, workspaceId: id, sandboxId: id, conversationId: id,
