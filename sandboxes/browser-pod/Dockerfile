@@ -16,10 +16,11 @@ RUN apt-get update \
 WORKDIR /opt/openrind-browser-pod
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
-COPY agent.mjs launch.mjs artifacts.mjs network-ready.mjs ./
+COPY agent.mjs launch.mjs artifacts.mjs network-ready.mjs server.mjs ./
 RUN node --check /opt/openrind-browser-pod/agent.mjs \
     && node --check /opt/openrind-browser-pod/launch.mjs \
+    && node --check /opt/openrind-browser-pod/server.mjs \
     && /usr/lib/chromium/chromium --version
 USER sandbox
 WORKDIR /sandbox
-CMD ["sleep", "infinity"]
+CMD ["node", "/opt/openrind-browser-pod/server.mjs"]

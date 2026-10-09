@@ -680,13 +680,15 @@ async function writeOpenrindShellSessionMarker(
   agentSessionId,
   haloopSessionAssertion,
   browserGrant,
+  browserServiceToken,
+  apiKey,
 ) {
   const value = openrindShell.resolveAgentSessionValue(
     profile,
     agentSessionId,
     haloopSessionAssertion,
   );
-  await openrindShell.writeCurrentSessionMarker(sandboxName, value, browserGrant);
+  await openrindShell.writeCurrentSessionMarker(sandboxName, value, browserGrant, browserServiceToken, apiKey);
 }
 
 // Agent sessions are CONCURRENT: a sandbox hosts one live PTY per Openrind Desktop
@@ -799,11 +801,18 @@ function openOpenrindShellPtySession(opts) {
       if (queuedLive && !queuedLive.exitInfo) {
         return openrindPty.openSession({ sandboxName, cols, rows, extraEnv, agentSessionId, haloopContextId });
       }
+      let upstreamKey = "";
+      try { upstreamKey = await openrindShell.requiredHaloopUpstreamApiKey(); } catch {}
+      upstreamKey = (upstreamKey || process.env.ANTHROPIC_API_KEY || "").trim();
+      await openrindShell.ensureBrowserPod(sandboxName).catch(() => {});
       await writeOpenrindShellSessionMarker(
         sandboxName,
         profile,
         agentSessionId,
         haloopSessionAssertion,
+        undefined,
+        undefined,
+        upstreamKey,
       );
       // Even a desktop launch without a session id writes the `auto` marker, so
       // every fresh connect must wait for this marker to be consumed.
@@ -3196,11 +3205,17 @@ async function handleDesktopInvoke(event, command, ...args) {
           }),
         );
         assertHaloopCredentialNotChanging(sandboxName);
+        let upstreamKey = "";
+        try { upstreamKey = await openrindShell.requiredHaloopUpstreamApiKey(); } catch {}
+        upstreamKey = (upstreamKey || process.env.ANTHROPIC_API_KEY || "").trim();
         await writeOpenrindShellSessionMarker(
           sandboxName,
           profile,
           null,
           haloop.sessionAssertion,
+          undefined,
+          undefined,
+          upstreamKey,
         );
         const terminal = await launchExternalTerminalToSandbox(sandboxName);
         return terminal;
@@ -3249,18 +3264,30 @@ async function handleDesktopInvoke(event, command, ...args) {
           return affectedSessions;
         };
         const terminateDistro = async () => {
-          const terminated = await wslRun(["-t", OPENSHELL_DISTRO_NAME], {
-            timeout: 15_000,
-          });
-          if (
-            terminated.exitCode !== 0 &&
-            !/not running|not found|does not exist|wsl_e_distro_not_found/i.test(
-              `${terminated.stderr}\n${terminated.stdout}`,
-            )
-          ) {
-            throw new Error(
-              `Could not terminate distro: ${(terminated.stderr || terminated.stdout).trim() || `exit ${terminated.exitCode}`}`,
-            );
+          try {
+            const terminated = await wslRun(["-t", OPENSHELL_DISTRO_NAME], {
+              timeout: 15_000,
+            });
+            if (
+              terminated.exitCode !== 0 &&
+              !/not running|not found|does not exist|wsl_e_distro_not_found|no distribution|supplied name/i.test(
+                `${terminated.stderr}\n${terminated.stdout}`,
+              )
+            ) {
+              throw new Error(
+                `Could not terminate distro: ${(terminated.stderr || terminated.stdout).trim() || `exit ${terminated.exitCode}`}`,
+              );
+            }
+          } catch (err) {
+            if (
+              !/not running|not found|does not exist|wsl_e_distro_not_found|no distribution|supplied name/i.test(
+                err instanceof Error ? err.message : String(err),
+              )
+            ) {
+              throw new Error(
+                `Could not terminate distro: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
           }
         };
 
@@ -3305,16 +3332,27 @@ async function handleDesktopInvoke(event, command, ...args) {
           const unregistered = await wslRun(["--unregister", OPENSHELL_DISTRO_NAME], {
             timeout: 30_000,
           });
-          if (unregistered.exitCode !== 0) {
+          if (
+            unregistered.exitCode !== 0 &&
+            !/not running|not found|does not exist|wsl_e_distro_not_found|no distribution|supplied name/i.test(
+              `${unregistered.stderr}\n${unregistered.stdout}`,
+            )
+          ) {
             throw new Error(
               (unregistered.stderr || unregistered.stdout).trim() ||
                 `exit ${unregistered.exitCode}`,
             );
           }
         } catch (err) {
-          throw new Error(
-            `Could not unregister distro: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          if (
+            !/not running|not found|does not exist|wsl_e_distro_not_found|no distribution|supplied name/i.test(
+              err instanceof Error ? err.message : String(err),
+            )
+          ) {
+            throw new Error(
+              `Could not unregister distro: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
         }
         // Wipe installer state so the next run re-executes every phase.
         const stateFile = path.join(

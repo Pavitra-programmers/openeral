@@ -95,6 +95,7 @@ network_policies:
       - { path: /usr/local/bin/claude-real }
       - { path: /usr/local/bin/openrind-openclaw-agent }
       - { path: /usr/local/bin/openrind-openhands-agent }
+      - { path: /usr/bin/node }
 
   # --- Claude telemetry and static resources (no inference credential) ---
   claude_support:
@@ -258,3 +259,66 @@ network_policies:
     - { host: default.exp-tas.com, port: 443 }
     binaries:
     - { path: /usr/lib/node_modules/@github/copilot/node_modules/@github/**/copilot }
+
+  # --- Chromium Browser Pod (CDP port 9222) ---
+  browser_pod:
+    name: browser-pod
+    endpoints:
+      - { host: openrind-browser-pod, port: 9222 }
+      - { host: host.openshell.internal, port: 9222 }
+      - { host: 127.0.0.1, port: 9222 }
+      - { host: 172.19.0.1, port: 9222 }
+    binaries:
+      - { path: /usr/bin/node }
+      - { path: /usr/local/bin/agent-browser }
+      - { path: /opt/openrind/browser/agent-browser }
+      - { path: /usr/local/bin/browser }
+      - { path: /usr/bin/curl }
+
+  # --- Openrind Browser service ---
+  openrind_browser:
+    name: openrind-browser
+    endpoints:
+      - host: host.openshell.internal
+        port: 18789
+        ports: [18789]
+        protocol: rest
+        tls: none
+        enforcement: enforce
+        rules:
+          - allow: { method: POST, path: "/mcp" }
+          - allow: { method: GET, path: "/mcp" }
+          - allow: { method: DELETE, path: "/mcp" }
+    binaries:
+      - { path: /usr/local/bin/openrind-browser-client }
+      - { path: /usr/bin/node }
+      - { path: /usr/local/bin/browser }
+      - { path: /usr/bin/curl }
+
+  # --- Web browsing and search for agent research ---
+  web_search:
+    name: web-search
+    endpoints:
+      - { host: "*.amazon.com", port: 443 }
+      - { host: "*.amazon.com", port: 80 }
+      - { host: "*.amazon.in", port: 443 }
+      - { host: "*.amazon.in", port: 80 }
+      - { host: "*.media-amazon.com", port: 443 }
+      - { host: "*.ssl-images-amazon.com", port: 443 }
+      - { host: "amazon.com", port: 443 }
+      - { host: "amazon.in", port: 443 }
+      - { host: "*.google.com", port: 443 }
+      - { host: "google.com", port: 443 }
+      - { host: "*.duckduckgo.com", port: 443 }
+      - { host: "duckduckgo.com", port: 443 }
+      - { host: "html.duckduckgo.com", port: 443 }
+      - { host: "lite.duckduckgo.com", port: 443 }
+      - { host: "*.wikipedia.org", port: 443 }
+      - { host: "example.com", port: 443 }
+    binaries:
+      - { path: /usr/bin/curl }
+      - { path: /usr/bin/wget }
+      - { path: /usr/bin/node }
+      - { path: /usr/local/bin/agent-browser }
+      - { path: /opt/openrind/browser/agent-browser }
+      - { path: /usr/local/bin/browser }

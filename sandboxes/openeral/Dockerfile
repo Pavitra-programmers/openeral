@@ -73,7 +73,8 @@ RUN /usr/bin/python3.12 -m venv --copies /opt/openrind-openhands \
 COPY openrind-desktop/packages/browser-pods/packaging/ /opt/openrind/browser/
 RUN node /opt/openrind/browser/install-agent-browser.mjs \
     && chown -R root:root /opt/openrind/browser /usr/local/bin/agent-browser \
-    && chmod -R a+rX /opt/openrind/browser
+    && chmod -R a+rX /opt/openrind/browser \
+    && chmod 0644 /opt/openrind/browser/*.json
 
 COPY openeral-js/ /opt/openrind-shell/
 RUN cd /opt/openrind-shell && npm install && npm run build && npm prune --omit=dev \
@@ -97,8 +98,10 @@ COPY --from=fused-builder /source/openrind-browser-client /usr/local/bin/openrin
 COPY --from=fused-builder /source/openrind-browser-pod-helper /usr/local/bin/openrind-browser-pod-helper
 COPY --from=browser-pod-helper-builder /opt/openrind-browser-pods/ /opt/openrind-browser-pods/
 RUN install -d -o root -g root -m 0755 /etc/openrind-browser-pods \
+    && printf '{"brokerOrigin":"http://127.0.0.1:19300","generation":"openrind-desktop"}\n' > /etc/openrind-browser-pods/helper.json \
+    && chmod 0644 /etc/openrind-browser-pods/helper.json \
     && chmod -R a+rX /opt/openrind-browser-pods \
-    && chmod 0755 /opt/openrind-browser-pods/bin/helper-ensure.sh \
+    && chmod 0755 /opt/openrind-browser-pods/bin/*.sh /opt/openrind-browser-pods/bin/*.mjs \
     && ln -s /opt/openrind-browser-pods/bin/helper-ensure.sh /usr/local/bin/openrind-browser-pod-ensure
 COPY --from=browser-client-builder /source/openrind-desktop/packaging/browser-client/dist/ /opt/openrind-browser/
 # The endpoint descriptor is installed by trusted provisioning, not baked with
@@ -110,6 +113,8 @@ RUN mkdir -p /etc/openrind-browser \
 COPY sandboxes/openeral/openhands-agent.py /opt/openrind-openhands/openhands-agent.py
 COPY sandboxes/openeral/openrind-openhands-fuse.sh /usr/local/bin/openrind-openhands
 COPY sandboxes/openeral/openeral-claude-fuse.sh /usr/local/bin/claude
+COPY sandboxes/openeral/haloop-agent-proxy.mjs /opt/openrind-shell/haloop-agent-proxy.mjs
+COPY sandboxes/openeral/browser-socket-relay.mjs /opt/openrind-shell/browser-socket-relay.mjs
 COPY sandboxes/openeral/pg-client-fuse.mjs /usr/local/bin/pg
 COPY sandboxes/openeral/setup-fuse.sh /opt/openrind-shell/setup.sh
 COPY sandboxes/openeral/openrind-pty-bridge.py /opt/openrind-shell/openrind-pty-bridge.py
@@ -121,6 +126,8 @@ COPY sandboxes/openeral/supabase-root-2021-ca.pem /opt/openrind-shell/certs/supa
 RUN chmod 755 /usr/local/bin/openrind-shell-fused /usr/local/bin/claude /usr/local/bin/pg /usr/local/bin/openrind-desktop-claude-launch \
         /usr/local/bin/openrind-openhands /usr/local/bin/openrind-openhands-agent \
         /usr/local/bin/openrind-openclaw /usr/local/bin/openrind-openclaw-agent \
+        /opt/openrind-shell/haloop-agent-proxy.mjs \
+        /opt/openrind-shell/browser-socket-relay.mjs \
         /opt/openrind-shell/setup.sh /opt/openrind-shell/openrind-pty-bridge.py \
         /opt/openrind-shell/configure-haloop.mjs \
         /opt/openrind-shell/configure-openclaw-fuse.mjs \

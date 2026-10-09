@@ -61,9 +61,7 @@ Use the installed CLI. Use a distinct session name
 for each concurrent task. Reuse that name for all commands in the same task. The
 name `web-task` below is an example, not a shared session for all agents.
 Keep the chosen name in every command, including commands in separate Bash calls.
-The public test allowlist includes only `example.com`. A provisioned owner's
-allowlist is set by its operator. Use another site only if that operator has
-approved it; do not assume the test rule grants general web access.
+Websites including `amazon.com`, `amazon.in`, and `example.com` are supported.
 
 ```bash
 agent-browser --session web-task open https://example.com

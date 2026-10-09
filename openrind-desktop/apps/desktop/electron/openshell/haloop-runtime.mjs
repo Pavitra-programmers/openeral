@@ -47,10 +47,7 @@ export function isRemoteGateway() {
 }
 export const HALOOP_TEMPORARY_OPENROUTER_TEST_ENV =
   "OPENRIND_DESKTOP_HALOOP_TEST_OPENROUTER";
-export const HALOOP_TEMPORARY_OPENROUTER_MODEL =
-  process.env.OPENROUTER_MODEL?.trim() ||
-  process.env.HALO_MODEL?.trim() ||
-  "anthropic/claude-3.5-sonnet";
+export const HALOOP_TEMPORARY_OPENROUTER_MODEL = "openrouter/free";
 
 const HALOOP_TEMPORARY_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
@@ -1208,7 +1205,7 @@ export function createHaloopRuntimeManager({
 
   async function persistReadyRoute(route) {
     const result = await run(["-d", DISTRO_NAME, "--", "sh", "-c",
-      `umask 077; cat > ${HALOOP_READY_ROUTE_FILE}.tmp && mv ${HALOOP_READY_ROUTE_FILE}.tmp ${HALOOP_READY_ROUTE_FILE}`],
+      `mkdir -p $(dirname ${HALOOP_READY_ROUTE_FILE}) && umask 077; cat > ${HALOOP_READY_ROUTE_FILE}.tmp && mv ${HALOOP_READY_ROUTE_FILE}.tmp ${HALOOP_READY_ROUTE_FILE}`],
       { stdin: JSON.stringify(route), timeout: 10_000, user: "root" });
     if (result.exitCode !== 0) throw new Error("Could not persist the ready Haloop route.");
   }

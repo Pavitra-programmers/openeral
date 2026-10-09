@@ -111,7 +111,10 @@ A configured image tag does not prove that an image exists in your Docker daemon
 1. Open Desktop. In **Settings -> Sandbox**, install the bundled OpenShell stack
    and complete its environment checks.
 2. In **Settings -> Environment**, save `DATABASE_URL` and `ANTHROPIC_API_KEY` in
-   the sandbox credential fields. A repository `.env` file is not automatically
+   the sandbox credential fields. If using OpenRouter, paste your OpenRouter key
+   (`sk-or-...`) directly into the `ANTHROPIC_API_KEY` field (or configure `OPENROUTER_API_KEY`).
+   The in-sandbox Haloop agent proxy automatically adapts Claude's requests to
+   OpenRouter chat completions. A repository `.env` file is not automatically
    imported by Desktop. Do not paste keys into a chat, command argument, or log.
 3. Open **Sandboxes -> New sandbox**. Choose **Openrind Shell - Claude Code** and
    give the sandbox a name.
@@ -125,6 +128,29 @@ A configured image tag does not prove that an image exists in your Docker daemon
 OpenShell `Ready` means that the sandbox started. It does **not** prove that
 PostgreSQL initialization succeeded. Stop and diagnose a failed health check.
 Do not switch to local storage or a direct Anthropic route to hide the failure.
+
+### Web Browsing With Browser Pods
+
+Openrind Shell integrates an isolated headless Chromium browser pod
+(`openrind-browser-pod`) running in the dedicated container network for live web tasks.
+
+- Desktop verifies and ensures the browser pod container is ready during sandbox creation and connect.
+- Inside the Claude terminal, web browsing uses the pre-configured browser CLI:
+  ```bash
+  browser_start "https://www.amazon.com/s?k=nothing+phone+2a"
+  browser_snapshot
+  browser_click @ref
+  browser_fill @ref "query"
+  browser_close
+  ```
+- Or using `agent-browser` directly:
+  ```bash
+  agent-browser --session web open "https://www.amazon.com/s?k=nothing+phone+2a"
+  agent-browser --session web snapshot -i
+  agent-browser --session web close
+  ```
+- Always close the browser session when finished.
+- Do not use `curl` or `wget` for shopping websites; they block raw scripts with 403 Forbidden.
 
 ### Stop And Return
 
@@ -452,7 +478,10 @@ Do not let it infer that a repository `.env` file has populated Desktop settings
 | Direct `claude` fails from a diagnostic shell | Start or reconnect through Desktop for the signed Haloop context |
 | `agent-browser` is missing | The existing owner image lacks the new assets; rebuilding an image does not update a running container |
 | Browser helper is not ready | Host activation is missing or stopped. Use the host guide; do not install Chrome in the owner |
-| `CLIENT_PROFILE_CONFLICT` | Remove only the conflicting browser override for this task; use the managed Kernel path |
+| `UNSAFE_CONFIG_FILE` | Policy permissions must be mode 0644. Startup scripts auto-heal this (`chmod 644 /opt/openrind/browser/*.json`) |
+| `CLIENT_PROFILE_CONFLICT` | Sourced automatically by `client-env.sh`; ensure `AGENT_BROWSER_PROVIDER=kernel` is present in session environment |
+| `Failed to create socket directory` | Ensure `HOME=/sandbox/claude-home` is active so user `sandbox` does not write to root |
+| Claude prompts `Detected a custom API key` | The OpenShell placeholder is auto-approved on launch. If prompted on a resumed session, press `↑` (Yes) and Enter |
 | Browser navigation is denied | The destination is outside the host's website allowlist. Request operator review; do not broaden it automatically |
 | Browser live test is slow or blocked | Follow the build and diagnosis steps in BUILD.md; preserve the exact error and report the failed stage |
 | Argide archive is missing or its hash changed | Ask for the matching kit or review the new version. Do not silently substitute the SDK fixture |

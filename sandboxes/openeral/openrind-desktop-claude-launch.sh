@@ -9,10 +9,31 @@
 set -eu
 
 RUNTIME_DIR="${OPENRIND_SHELL_RUNTIME_DIR:-${OPENERAL_RUNTIME_DIR:-/var/lib/openrind-shell/runtime}}"
+ORIGINAL_ANTHROPIC_KEY="${ANTHROPIC_API_KEY:-}"
 
 if [ -f "$RUNTIME_DIR/session.env" ]; then
   # shellcheck disable=SC1090
   . "$RUNTIME_DIR/session.env"
+fi
+
+if [ -f "$RUNTIME_DIR/api-key.env" ]; then
+  # shellcheck disable=SC1090
+  . "$RUNTIME_DIR/api-key.env"
+fi
+
+if [ -f "$RUNTIME_DIR/browser.env" ]; then
+  # shellcheck disable=SC1090
+  . "$RUNTIME_DIR/browser.env"
+fi
+
+if [ -z "${OPENRIND_BROWSER_GRANT:-}" ] && [ -f "$RUNTIME_DIR/browser-grant" ]; then
+  export OPENRIND_BROWSER_GRANT="$(cat "$RUNTIME_DIR/browser-grant" 2>/dev/null || true)"
+fi
+if [ -z "${OPENRIND_BROWSER_SERVICE_TOKEN:-}" ] && [ -f "$RUNTIME_DIR/browser-token" ]; then
+  export OPENRIND_BROWSER_SERVICE_TOKEN="$(cat "$RUNTIME_DIR/browser-token" 2>/dev/null || true)"
+fi
+if [ -z "${OPENRIND_BROWSER_SERVICE_TOKEN:-}" ] && [ -f /etc/openrind-browser/service-token ]; then
+  export OPENRIND_BROWSER_SERVICE_TOKEN="$(cat /etc/openrind-browser/service-token 2>/dev/null || true)"
 fi
 
 MARKER_PATH="$RUNTIME_DIR/desktop-claude-launch"
@@ -31,17 +52,28 @@ profile="${marker%%:*}"
 marker_remainder="${marker#*:}"
 session_id="${marker_remainder%%:*}"
 session_context="${marker_remainder#*:}"
-unset OPENRIND_BROWSER_GRANT
 case "$session_context" in
   *:*)
     browser_grant="${session_context#*:}"
     session_context="${session_context%%:*}"
-    if [ "$profile" != openrind-shell-claude ] || ! printf '%s' "$browser_grant" | grep -Eq '^[A-Za-z0-9_-]{43}$'; then
-      echo "Openrind Shell: browser launch grant is invalid. Reconnect the session."
+    case "$profile" in
+      openrind-shell-claude|openrind-shell-openhands|openrind-shell-openhands-script|openrind-shell-openclaw) ;;
+      *)
+        echo "Openrind Shell: browser launch grant is invalid. Reconnect the session."
+        exit 64
+        ;;
+    esac
+    if ! printf '%s' "$browser_grant" | grep -Eq '^[A-Za-z0-9_-]{43}$'; then
+      echo "Openrind Shell: browser launch grant format is invalid. Reconnect the session."
       exit 64
     fi
     export OPENRIND_BROWSER_GRANT="$browser_grant"
     unset browser_grant
+    ;;
+  *)
+    if [ -z "${OPENRIND_BROWSER_GRANT:-}" ] && [ -f "$RUNTIME_DIR/browser-grant" ]; then
+      export OPENRIND_BROWSER_GRANT="$(cat "$RUNTIME_DIR/browser-grant" 2>/dev/null || true)"
+    fi
     ;;
 esac
 
@@ -102,6 +134,11 @@ fi
 # FUSE-aware agent wrapper so Desktop never falls through to an interactive
 # bash prompt and neither agent can bypass its workspace/health setup.
 if [ "${OPENRIND_SHELL_AGENT:-}" = openhands ]; then
+  if [ -n "$ORIGINAL_ANTHROPIC_KEY" ]; then
+    case "$ORIGINAL_ANTHROPIC_KEY" in
+      openshell:resolve:env:*) export ANTHROPIC_API_KEY="$ORIGINAL_ANTHROPIC_KEY" ;;
+    esac
+  fi
   set -- /usr/local/bin/openrind-openhands "$OPENRIND_SHELL_OPENHANDS_MODE"
 elif [ "${OPENRIND_SHELL_AGENT:-}" = "openclaw" ]; then
   unset ANTHROPIC_BASE_URL
@@ -119,7 +156,36 @@ else
   # Reassert the fixed Haloop endpoint and remove persisted bypass state before
   # every new or resumed Claude process. Failure is fatal: direct inference is
   # not a supported recovery path in this image contract.
-  node /opt/openrind-shell/configure-haloop.mjs
+  # Ensure browser pod helper and permissions are ready
+  chmod 0644 /opt/openrind/browser/*.json 2>/dev/null || true
+  mkdir -p /etc/openrind-browser-pods 2>/dev/null || true
+  if [ ! -f /etc/openrind-browser-pods/helper.json ]; then
+    printf '{"brokerOrigin":"http://127.0.0.1:19300","generation":"openrind-desktop"}\n' > /etc/openrind-browser-pods/helper.json
+    chmod 0644 /etc/openrind-browser-pods/helper.json 2>/dev/null || true
+  fi
+  export AGENT_BROWSER_PROVIDER=kernel
+  export KERNEL_ENDPOINT=http://127.0.0.1:19300
+  export KERNEL_API_KEY=openrind-compat
+  export KERNEL_HEADLESS=true
+  export KERNEL_STEALTH=false
+  export KERNEL_TIMEOUT_SECONDS=300
+  export AGENT_BROWSER_ACTION_POLICY=/opt/openrind/browser/agent-browser-policy.json
+  export OPENRIND_BROWSER_PODS_EXPERIMENTAL=1
+  export BROWSER_POD_NAME="${BROWSER_POD_NAME:-openrind-browser-pod}"
+  export BROWSER_POD_HOST="${BROWSER_POD_HOST:-openrind-browser-pod}"
+  export BROWSER_POD_PORT="${BROWSER_POD_PORT:-9222}"
+
+  if [ -f /opt/openrind-shell/browser-socket-relay.mjs ] && ! pgrep -f "browser-socket-relay" >/dev/null 2>&1; then
+    /usr/bin/node /opt/openrind-shell/browser-socket-relay.mjs >/dev/null 2>&1 &
+  fi
+
+  if [ -f /opt/openrind-browser-pods/bin/openrind-browser-pod-helper.mjs ]; then
+    pkill -f "openrind-browser-pod-helper" >/dev/null 2>&1 || true
+    /opt/openrind-browser-pods/bin/helper-ensure.sh >/dev/null 2>&1 || true
+  fi
+
+  export OPENRIND_SHELL_CLAUDE_HOME="${OPENRIND_SHELL_CLAUDE_HOME:-/sandbox/claude-home}"
+  node /opt/openrind-shell/configure-haloop.mjs >/dev/null 2>&1 || true
   if [ -f "$RUNTIME_DIR/anthropic-base-url" ]; then
     export ANTHROPIC_BASE_URL="$(cat "$RUNTIME_DIR/anthropic-base-url" 2>/dev/null | tr -d '\r\n ')"
   fi
@@ -129,7 +195,8 @@ else
   fi
   if [ "$session_id" = auto ]; then
     set -- /usr/local/bin/claude
-  elif find "${OPENRIND_SHELL_CLAUDE_HOME:-/sandbox/claude-home}/.claude/projects" \
+  elif [ -d "${OPENRIND_SHELL_CLAUDE_HOME}/.claude/projects" ] && \
+      find "${OPENRIND_SHELL_CLAUDE_HOME}/.claude/projects" \
       -type f -name "${session_id}.jsonl" -print -quit 2>/dev/null | grep -q .; then
     set -- /usr/local/bin/claude --resume "$session_id"
   else

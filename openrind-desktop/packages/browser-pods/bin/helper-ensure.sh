@@ -20,8 +20,13 @@ probe() {
 }
 if probe >/dev/null 2>&1; then exit 0; fi
 # Do not inherit the lock FD or the SSH terminal in the detached native parent.
-setsid nohup /usr/local/bin/openrind-browser-pod-helper \
-  </dev/null >>"$state/helper.log" 2>&1 9>&- &
+if [ -f /opt/openrind-browser-pods/bin/openrind-browser-pod-helper.mjs ]; then
+  setsid nohup /usr/bin/node /opt/openrind-browser-pods/bin/openrind-browser-pod-helper.mjs \
+    </dev/null >>"$state/helper.log" 2>&1 9>&- &
+elif [ -x /usr/local/bin/openrind-browser-pod-helper ]; then
+  setsid nohup /usr/local/bin/openrind-browser-pod-helper \
+    </dev/null >>"$state/helper.log" 2>&1 9>&- &
+fi
 for attempt in 1 2 3 4 5 6 7 8 9 10; do
   if probe >/dev/null 2>&1; then exit 0; fi
   sleep 1
