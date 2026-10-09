@@ -135,6 +135,7 @@ Openrind Shell integrates an isolated headless Chromium browser pod
 (`openrind-browser-pod`) running in the dedicated container network for live web tasks.
 
 - Desktop verifies and ensures the browser pod container is ready during sandbox creation and connect.
+- The owner helper on `127.0.0.1:19300` emulates the Kernel provider, tunnels connections through OpenShell's proxy to `openrind-browser-pod:9222`, and establishes bidirectional CDP WebSocket streams.
 - Inside the Claude terminal, web browsing uses the pre-configured browser CLI:
   ```bash
   browser_start "https://www.amazon.com/s?k=nothing+phone+2a"

@@ -53,8 +53,9 @@ Claude runs through the installed Openrind Shell wrapper (source file
 The home path is a per-workspace Docker named volume; project files remain on FUSE.
 When configured with an OpenRouter key, `haloop-agent-proxy.mjs` runs locally on
 `127.0.0.1:8785` to seamlessly translate Claude Code's Anthropic messages to
-OpenRouter chat completions. The in-sandbox helper on `127.0.0.1:19300` proxies
-CDP commands from `agent-browser` / `browser_start` to the isolated Chromium browser pod.
+OpenRouter chat completions. The in-sandbox helper on `127.0.0.1:19300` emulates
+the Kernel provider API, tunnels CDP commands over OpenShell proxy via HTTP CONNECT,
+and bridges WebSocket frames to the dedicated Chromium browser pod on port 9222.
 Openrind Desktop launches new and resumed Claude/OpenClaw processes with a
 consume-once, profile-bound signed Haloop context. A manual diagnostic shell
 does not have that assertion, so direct agent inference from it fails closed.
