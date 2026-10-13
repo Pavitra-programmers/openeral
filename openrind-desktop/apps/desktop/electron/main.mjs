@@ -813,6 +813,9 @@ function openOpenrindShellPtySession(opts) {
       if (queuedLive && !queuedLive.exitInfo) {
         return openTrackedSession({ sandboxName, cols, rows, extraEnv, agentSessionId, haloopContextId });
       }
+      let upstreamKey = "";
+      try { upstreamKey = await openrindShell.requiredHaloopUpstreamApiKey(); } catch {}
+      upstreamKey = (upstreamKey || process.env.ANTHROPIC_API_KEY || "").trim();
       let browserGrant = undefined;
       let browserServiceToken = undefined;
       const browserReady = await openrindShell.ensureBrowserPod(sandboxName).catch(() => false);
@@ -827,6 +830,7 @@ function openOpenrindShellPtySession(opts) {
         haloopSessionAssertion,
         browserGrant,
         browserServiceToken,
+        upstreamKey,
       );
       // Even a desktop launch without a session id writes the `auto` marker, so
       // every fresh connect must wait for this marker to be consumed.
@@ -3219,6 +3223,9 @@ async function handleDesktopInvoke(event, command, ...args) {
           }),
         );
         assertHaloopCredentialNotChanging(sandboxName);
+        let upstreamKey = "";
+        try { upstreamKey = await openrindShell.requiredHaloopUpstreamApiKey(); } catch {}
+        upstreamKey = (upstreamKey || process.env.ANTHROPIC_API_KEY || "").trim();
         let browserGrant = undefined;
         let browserServiceToken = undefined;
         const browserReady = await openrindShell.ensureBrowserPod(sandboxName).catch(() => false);
@@ -3233,6 +3240,7 @@ async function handleDesktopInvoke(event, command, ...args) {
           haloop.sessionAssertion,
           browserGrant,
           browserServiceToken,
+          upstreamKey,
         );
         const terminal = await launchExternalTerminalToSandbox(sandboxName);
         return terminal;

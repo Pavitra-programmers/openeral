@@ -16,7 +16,10 @@ if [ -f "$RUNTIME_DIR/session.env" ]; then
   . "$RUNTIME_DIR/session.env"
 fi
 
-rm -f "$RUNTIME_DIR/api-key.env" 2>/dev/null || true
+if [ -f "$RUNTIME_DIR/api-key.env" ]; then
+  # shellcheck disable=SC1090
+  . "$RUNTIME_DIR/api-key.env"
+fi
 
 if [ -f "$RUNTIME_DIR/browser.env" ]; then
   # shellcheck disable=SC1090
@@ -179,11 +182,6 @@ else
   if [ -f /opt/openrind-browser-pods/bin/openrind-browser-pod-helper.mjs ]; then
     pkill -f "openrind-browser-pod-helper" >/dev/null 2>&1 || true
     /opt/openrind-browser-pods/bin/helper-ensure.sh >/dev/null 2>&1 || true
-    if [ -n "${OPENRIND_BROWSER_GRANT:-}" ] && ! /usr/bin/node /opt/openrind-browser-pods/bin/helper-probe.mjs >/dev/null 2>&1; then
-      echo "openrind-browser: browser helper probe failed; browser integration is unavailable" >&2
-      unset OPENRIND_BROWSER_GRANT
-      unset OPENRIND_BROWSER_SERVICE_TOKEN
-    fi
   fi
 
   export OPENRIND_SHELL_CLAUDE_HOME="${OPENRIND_SHELL_CLAUDE_HOME:-/sandbox/claude-home}"

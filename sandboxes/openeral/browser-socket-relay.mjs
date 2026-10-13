@@ -8,6 +8,10 @@ const POD_PORT = Number(process.env.BROWSER_POD_PORT || 9222);
 
 const CANDIDATES = [
   { host: POD_HOST, port: POD_PORT },
+  { host: 'openrind-browser-pod', port: 9222 },
+  { host: '172.19.0.1', port: 9222 },
+  { host: 'host.openshell.internal', port: 9222 },
+  { host: '127.0.0.1', port: 9222 },
 ];
 
 try { fs.unlinkSync(SOCKET_PATH); } catch {}

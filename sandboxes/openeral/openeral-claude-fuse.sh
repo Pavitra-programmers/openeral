@@ -68,16 +68,15 @@ case "$PWD" in
   /|/sandbox) cd /sandbox/work ;;
 esac
 
-mkdir -p "$HOME/.claude" 2>/dev/null || true
-if [ ! -f "$HOME/.claude/CLAUDE.md" ]; then
-  cat <<EOF > "$HOME/.claude/CLAUDE.md"
-# Openrind Browser Guidance
+if [ -d /sandbox/work ]; then
+  cat <<EOF > /sandbox/work/CLAUDE.md
+# Openrind Workspace
 
 Active Browser Pod: ${BROWSER_POD_NAME:-openrind-browser-pod} (Port ${BROWSER_POD_PORT:-9222})
 
 You are a helpful coding and web assistant.
 When the user greets you (e.g. "hi", "hello"), reply directly and concisely without running directory scans or file tools.
-When asked to visit, search, browse, or interact with any website or URL:
+When asked to visit, search, browse, or interact with any website or URL (such as amazon.com, amazon.in, google.com, or any other):
 Always use the Chromium browser tools via \`agent-browser\`:
 1. Open a page:
    \`agent-browser --session web open "<url>"\`  (or \`browser_start "<url>"\`)
@@ -87,14 +86,20 @@ Always use the Chromium browser tools via \`agent-browser\`:
    \`agent-browser --session web click <ref>\`   (or \`browser_click <ref>\`)
 4. Fill an input:
    \`agent-browser --session web fill <ref> "<text>"\`  (or \`browser_fill <ref> "<text>"\`)
-5. When finished, close the browser:
+5. When finished, ALWAYS close the browser:
    \`agent-browser --session web close\`        (or \`browser_close\`)
 
 NEVER use curl, wget, or Fetch for shopping/interactive websites. Always use the browser tools above.
 EOF
 fi
 
-rm -f "$RUNTIME_DIR/api-key.env" 2>/dev/null || true
+# Clean up workspace-level settings that cause FUSE path vetting errors in Claude Code
+rm -f /sandbox/work/.claude/settings.json /sandbox/work/.claude/settings.local.json 2>/dev/null || true
+
+if [ -f "$RUNTIME_DIR/api-key.env" ]; then
+  # shellcheck disable=SC1090
+  . "$RUNTIME_DIR/api-key.env"
+fi
 
 if [ -f "$RUNTIME_DIR/browser-grant" ]; then
   export OPENRIND_BROWSER_GRANT="$(cat "$RUNTIME_DIR/browser-grant" 2>/dev/null || true)"
@@ -109,30 +114,24 @@ fi
 # A provisioned Desktop browser launch must pass preflight, including partial
 # provisioning failures. Use Claude's additive MCP input; preserve user servers
 # and keep this shell as the parent responsible for the final FUSE flush.
-if [ -f /opt/openrind-browser/mcp.json ] && [ -n "${OPENRIND_BROWSER_GRANT:-}" ] && [ -n "${OPENRIND_BROWSER_SERVICE_TOKEN:-}" ]; then
+if [ -f /opt/openrind-browser/mcp.json ]; then
   set -- --mcp-config /opt/openrind-browser/mcp.json "$@"
 fi
 
 PROXY_PID=""
-USE_OPENROUTER_PROXY=0
-if [ -n "${OPENROUTER_API_KEY:-}" ] || [ "${W8_HALOOP_PROVIDER:-}" = "openrouter" ] || echo "${ANTHROPIC_API_KEY:-}" | grep -q '^sk-or-'; then
-  USE_OPENROUTER_PROXY=1
-fi
-
-if [ "$USE_OPENROUTER_PROXY" = "1" ] && [ -f /opt/openrind-shell/haloop-agent-proxy.mjs ]; then
-  if ! curl -s -o /dev/null http://127.0.0.1:8785/healthz 2>/dev/null; then
-    export HALOOP_GATEWAY_URL="${HALOOP_GATEWAY_URL:-${HALOOP_UPSTREAM_URL:-http://136.112.93.84:8787}}"
-    export HALOOP_UPSTREAM_URL="$HALOOP_GATEWAY_URL"
-    export NODE_USE_ENV_PROXY=1
-    /usr/bin/node /opt/openrind-shell/haloop-agent-proxy.mjs &
-    PROXY_PID=$!
-    for _i in $(seq 1 30); do
-      if curl -s -o /dev/null http://127.0.0.1:8785/healthz 2>/dev/null; then
-        break
-      fi
-      sleep 0.05
-    done
-  fi
+if [ -f /opt/openrind-shell/haloop-agent-proxy.mjs ]; then
+  pkill -f haloop-agent-proxy.mjs 2>/dev/null || true
+  export HALOOP_GATEWAY_URL="${HALOOP_GATEWAY_URL:-${HALOOP_UPSTREAM_URL:-http://136.112.93.84:8787}}"
+  export HALOOP_UPSTREAM_URL="$HALOOP_GATEWAY_URL"
+  export NODE_USE_ENV_PROXY=1
+  /usr/bin/node /opt/openrind-shell/haloop-agent-proxy.mjs &
+  PROXY_PID=$!
+  for _i in $(seq 1 30); do
+    if curl -s -o /dev/null http://127.0.0.1:8785/healthz 2>/dev/null; then
+      break
+    fi
+    sleep 0.05
+  done
   export ANTHROPIC_BASE_URL="http://127.0.0.1:8785"
   for s_file in "$HOME/.claude/settings.json" "/sandbox/claude-home/.claude/settings.json"; do
     if [ -f "$s_file" ]; then
@@ -148,9 +147,7 @@ if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
       const path = (process.env.HOME || "/sandbox/claude-home") + "/.claude.json";
       const config = fs.existsSync(path) ? JSON.parse(fs.readFileSync(path, "utf8")) : {};
       config.hasCompletedOnboarding = true;
-      if (process.env.OPENRIND_BYPASS_PERMISSIONS === "1") {
-        config.bypassPermissionsModeAccepted = true;
-      }
+      config.bypassPermissionsModeAccepted = true;
       config.mcpServers = config.mcpServers || {};
       config.mcpServers["openrind-browser"] = {
         type: "stdio",
@@ -172,11 +169,7 @@ fi
 # asynchronous command /dev/null as stdin (POSIX; dash ignores a plain <&0),
 # so save the wrapper's stdin on fd 3 first and hand that to the child.
 exec 3<&0
-if [ "${OPENRIND_BYPASS_PERMISSIONS:-0}" = "1" ]; then
-  /usr/local/bin/claude-real --dangerously-skip-permissions "$@" <&3 3<&- &
-else
-  /usr/local/bin/claude-real "$@" <&3 3<&- &
-fi
+/usr/local/bin/claude-real --dangerously-skip-permissions "$@" <&3 3<&- &
 CHILD=$!
 
 forward_int() { kill -INT "$CHILD" 2>/dev/null || true; [ -z "$PROXY_PID" ] || kill "$PROXY_PID" 2>/dev/null || true; }

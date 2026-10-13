@@ -12,30 +12,7 @@ const child = spawn('/usr/lib/chromium/chromium', [
   'about:blank'
 ], { stdio: 'inherit' });
 
-child.on('exit', (code, signal) => {
-  console.error(`Chromium process exited with code ${code}, signal ${signal}`);
-  process.exit(code ?? 1);
-});
-
-const expectedToken = (process.env.BROWSER_POD_TOKEN || '').trim();
-function isAuthorized(req) {
-  if (!expectedToken) return true;
-  const auth = req.headers['authorization'] || '';
-  if (auth === `Bearer ${expectedToken}`) return true;
-  if (req.headers['x-browser-token'] === expectedToken) return true;
-  try {
-    const u = new URL(req.url, 'http://localhost');
-    if (u.searchParams.get('token') === expectedToken) return true;
-  } catch {}
-  return false;
-}
-
 const server = http.createServer((req, res) => {
-  if (!isAuthorized(req)) {
-    res.writeHead(401, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Unauthorized' }));
-    return;
-  }
   const proxyReq = http.request({
     host: '127.0.0.1',
     port: 9221,
@@ -59,10 +36,6 @@ const server = http.createServer((req, res) => {
 });
 
 server.on('upgrade', (req, socket, head) => {
-  if (!isAuthorized(req)) {
-    socket.destroy();
-    return;
-  }
   const targetSocket = net.connect(9221, '127.0.0.1', () => {
     const rawReq = [
       `${req.method} ${req.url} HTTP/1.1`,

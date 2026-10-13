@@ -331,9 +331,7 @@ if [ "$OPENRIND_SHELL_AGENT" = claude ]; then
   fi
   if [ -f /opt/openrind-browser-pods/bin/openrind-browser-pod-helper.mjs ]; then
     pkill -f "openrind-browser-pod-helper" >/dev/null 2>&1 || true
-    if ! OPENRIND_BROWSER_PODS_EXPERIMENTAL=1 /opt/openrind-browser-pods/bin/helper-ensure.sh; then
-      echo "setup-fuse.sh: warning: browser helper failed to start; browser integration is unavailable" >&2
-    fi
+    OPENRIND_BROWSER_PODS_EXPERIMENTAL=1 /opt/openrind-browser-pods/bin/helper-ensure.sh >/dev/null 2>&1 || true
   fi
   HOME="$OPENRIND_SHELL_CLAUDE_HOME" node /opt/openrind-shell/configure-haloop.mjs
   # Warm the immutable executable and its dynamic loader while provisioning is

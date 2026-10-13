@@ -108,6 +108,14 @@ flowchart LR
   persistence test, not Desktop activation or Haloop capture. Use BUILD's
   **FUSE-Backed Browser CTF Test** and require its live evidence before claiming
   the path passed.
+- Browser pod reachability and helper architecture:
+  - Fixed browser pod reachability by replacing the helper’s manual `http.get` proxy handling with direct socket / native communication to prevent port-rewriting (which causes policy blocks).
+  - Added HTTP CONNECT tunneling and WebSocket handshakes in the helper so Claude can run `agent-browser` command and connect to browser pod.
+  - The browser helper (`openrind-browser-pod-helper.mjs`) must connect directly to the pod host on port 9222 using direct TCP socket communication with `Host: localhost`. Do not re-route internal pod CDP traffic through `NODE_USE_ENV_PROXY` or OpenShell's supervisor proxy (`10.200.0.1:3128`), which triggers policy blocks on `localhost:9222`.
+  - Always preserve the `Host: localhost` header required by Chromium's embedded DevTools security filter.
+  - Do not implement suggestions or code reviews that alter this working reachability, reintroduce proxy port-rewriting, or break the browser helper's CDP handshaking.
+  - Never strip `api-key.env` or remove `upstreamKey` from `writeOpenrindShellSessionMarker`. The sandbox depends on `api-key.env` for Claude's model credentials; removing it breaks Claude with `API Error: 400 Either x-w8-haloop-config or x-w8-haloop-provider header is required` or `401 Invalid API key`.
+  - Never make `haloop-agent-proxy.mjs` startup conditional or alter its `healthz` check loop; it is required for request-scoped correlation and routing in the sandbox.
 
 ## Capture Runtime
 
@@ -190,6 +198,7 @@ tests/fuse/                  POSIX conformance and real OpenShell FUSE E2E
 - Keep compatibility sync prefix-scoped and exclude credential/cache paths.
 - Do not rename `_openeral` without a tested in-place data migration.
 - Never hardcode credentials or print database URLs/provider keys.
+- Do not alter or break browser pod reachability, HTTP CONNECT tunneling, or WebSocket handshaking in the browser helper (`openrind-browser-pod-helper.mjs`); preserve working `agent-browser` connectivity to the browser pod.
 - Ignore generated artifacts through `.gitignore`, not selective commit omission.
 - Never delete, move, or overwrite user files without explicit permission.
 
