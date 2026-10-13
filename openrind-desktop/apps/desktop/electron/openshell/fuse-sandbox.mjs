@@ -806,8 +806,22 @@ async function provisionOpenrindShellSandbox(options) {
  */
 export async function ensureBrowserPod(sandboxName, onProgress) {
   const podName = sandboxName ? `openrind-browser-pod-${sandboxName}` : "openrind-browser-pod";
-  const shortPodName = sandboxName && sandboxName.length > 8 ? `openrind-browser-pod-${sandboxName.slice(0, 8)}` : null;
   onProgress?.({ phase: "browser-pod", message: `Confirming Chromium browser pod (${podName}) is ready…` });
+
+  async function probeChromiumReady(container) {
+    const probe = await wslRun([
+      "-d",
+      DISTRO_NAME,
+      "--",
+      "docker",
+      "exec",
+      container,
+      "node",
+      "-e",
+      "const http=require('http'); http.get('http://127.0.0.1:9221/json/version', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1));",
+    ], { timeout: 5000 }).catch(() => null);
+    return probe?.exitCode === 0;
+  }
 
   const check = await wslRun([
     "-d",
@@ -822,7 +836,9 @@ export async function ensureBrowserPod(sandboxName, onProgress) {
   ], { timeout: 10_000 }).catch(() => null);
 
   const running = check?.exitCode === 0 && check.stdout.includes(podName);
-  if (!running) {
+  let isReady = running && await probeChromiumReady(podName);
+
+  if (!isReady) {
     onProgress?.({ phase: "browser-pod", message: `Starting Chromium browser pod container (${podName})…` });
     await wslRun([
       "-d",
@@ -834,8 +850,7 @@ export async function ensureBrowserPod(sandboxName, onProgress) {
       podName,
     ], { timeout: 10_000 }).catch(() => null);
 
-    const aliasArgs = ["--network-alias", "openrind-browser-pod", "--network-alias", podName];
-    if (shortPodName) aliasArgs.push("--network-alias", shortPodName);
+    const aliasArgs = ["--network-alias", podName];
 
     let start = await wslRun([
       "-d",
@@ -875,6 +890,19 @@ export async function ensureBrowserPod(sandboxName, onProgress) {
 
     if (start.exitCode !== 0) {
       console.warn(`[browser-pod] Could not start browser pod container: ${(start.stderr || start.stdout).trim()}`);
+      return false;
+    }
+
+    for (let i = 0; i < 20; i++) {
+      if (await probeChromiumReady(podName)) {
+        isReady = true;
+        break;
+      }
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    if (!isReady) {
+      console.warn(`[browser-pod] Chromium inside ${podName} did not become ready`);
       return false;
     }
   }

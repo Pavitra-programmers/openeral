@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { existsSync } from "node:fs";
 import https from "node:https";
@@ -801,18 +801,20 @@ function openOpenrindShellPtySession(opts) {
       if (queuedLive && !queuedLive.exitInfo) {
         return openrindPty.openSession({ sandboxName, cols, rows, extraEnv, agentSessionId, haloopContextId });
       }
-      let upstreamKey = "";
-      try { upstreamKey = await openrindShell.requiredHaloopUpstreamApiKey(); } catch {}
-      upstreamKey = (upstreamKey || process.env.ANTHROPIC_API_KEY || "").trim();
-      await openrindShell.ensureBrowserPod(sandboxName).catch(() => {});
+      let browserGrant = undefined;
+      let browserServiceToken = undefined;
+      const browserReady = await openrindShell.ensureBrowserPod(sandboxName).catch(() => false);
+      if (browserReady) {
+        browserGrant = randomBytes(32).toString('base64url');
+        browserServiceToken = randomBytes(32).toString('base64url');
+      }
       await writeOpenrindShellSessionMarker(
         sandboxName,
         profile,
         agentSessionId,
         haloopSessionAssertion,
-        undefined,
-        undefined,
-        upstreamKey,
+        browserGrant,
+        browserServiceToken,
       );
       // Even a desktop launch without a session id writes the `auto` marker, so
       // every fresh connect must wait for this marker to be consumed.
@@ -3205,17 +3207,20 @@ async function handleDesktopInvoke(event, command, ...args) {
           }),
         );
         assertHaloopCredentialNotChanging(sandboxName);
-        let upstreamKey = "";
-        try { upstreamKey = await openrindShell.requiredHaloopUpstreamApiKey(); } catch {}
-        upstreamKey = (upstreamKey || process.env.ANTHROPIC_API_KEY || "").trim();
+        let browserGrant = undefined;
+        let browserServiceToken = undefined;
+        const browserReady = await openrindShell.ensureBrowserPod(sandboxName).catch(() => false);
+        if (browserReady) {
+          browserGrant = randomBytes(32).toString('base64url');
+          browserServiceToken = randomBytes(32).toString('base64url');
+        }
         await writeOpenrindShellSessionMarker(
           sandboxName,
           profile,
           null,
           haloop.sessionAssertion,
-          undefined,
-          undefined,
-          upstreamKey,
+          browserGrant,
+          browserServiceToken,
         );
         const terminal = await launchExternalTerminalToSandbox(sandboxName);
         return terminal;

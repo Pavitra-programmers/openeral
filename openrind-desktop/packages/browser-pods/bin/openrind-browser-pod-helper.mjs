@@ -10,13 +10,10 @@ const BIND_HOST = '127.0.0.1';
 const proxyEnv = process.env.HTTP_PROXY || process.env.http_proxy;
 const proxyUrl = proxyEnv ? new URL(proxyEnv) : null;
 
-const CANDIDATES = [
-  { host: 'openrind-browser-pod', port: 9222 },
-  process.env.BROWSER_POD_HOST ? { host: process.env.BROWSER_POD_HOST, port: Number(process.env.BROWSER_POD_PORT || 9222) } : null,
-  process.env.BROWSER_POD_NAME ? { host: process.env.BROWSER_POD_NAME, port: Number(process.env.BROWSER_POD_PORT || 9222) } : null,
-  { host: '172.19.0.1', port: 9222 },
-  { host: 'host.openshell.internal', port: 9222 },
-].filter(Boolean);
+const podHost = process.env.BROWSER_POD_HOST || process.env.BROWSER_POD_NAME;
+const CANDIDATES = podHost
+  ? [{ host: podHost, port: Number(process.env.BROWSER_POD_PORT || 9222) }]
+  : [{ host: 'openrind-browser-pod', port: 9222 }];
 
 let activeEndpoint = null;
 
@@ -215,7 +212,12 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'DELETE' && req.url?.startsWith('/browsers/')) {
     const id = req.url.split('/')[2];
-    sessions.delete(id);
+    const session = sessions.get(id);
+    if (session) {
+      try { session.clientWs?.close(1000, 'Session closed'); } catch {}
+      try { session.remoteWs?.close(1000, 'Session closed'); } catch {}
+      sessions.delete(id);
+    }
     res.writeHead(204);
     res.end();
     return;
@@ -228,12 +230,19 @@ const server = http.createServer(async (req, res) => {
 server.on('upgrade', async (req, socket, head) => {
   socket.on('error', () => {});
   log(`Upgrade request: ${req.url}`);
+
+  const match = req.url?.match(/^\/cdp\/([a-zA-Z0-9_-]+)$/);
+  const sessionId = match?.[1];
+  const session = sessionId ? sessions.get(sessionId) : null;
+  if (!session) {
+    logError(`Rejecting upgrade: unknown or expired browser session ${sessionId || req.url}`);
+    socket.destroy();
+    return;
+  }
+
   let remote;
   try {
-    let endpoint = await resolveChromiumEndpoint();
-    if (!endpoint) {
-      endpoint = { host: 'openrind-browser-pod', port: 9222 };
-    }
+    const endpoint = session.endpoint;
 
     let version;
     for (let attempt = 0; attempt < 5; attempt++) {
@@ -270,6 +279,8 @@ server.on('upgrade', async (req, socket, head) => {
 
     log('Handling client WebSocket upgrade...');
     wss.handleUpgrade(req, socket, head, (client) => {
+      session.clientWs = client;
+      session.remoteWs = remote;
       log('Client upgrade finished! Relaying CDP messages.');
       relayWebSockets(client, remote);
     });

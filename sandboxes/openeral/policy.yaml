@@ -264,6 +264,7 @@ network_policies:
   browser_pod:
     name: browser-pod
     endpoints:
+      - { host: "openrind-browser-pod-*", port: 9222 }
       - { host: openrind-browser-pod, port: 9222 }
       - { host: host.openshell.internal, port: 9222 }
       - { host: 127.0.0.1, port: 9222 }

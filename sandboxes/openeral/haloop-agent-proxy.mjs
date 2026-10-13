@@ -22,6 +22,7 @@ if (targetBase.includes(':8785') || targetBase.includes('127.0.0.1:8785')) {
 const targetUrl = new URL(targetBase);
 const isHttps = targetUrl.protocol === 'https:';
 const client = isHttps ? https : http;
+const isLocalTarget = targetUrl.hostname === 'localhost' || targetUrl.hostname === '127.0.0.1';
 
 const proxyEnv = process.env.HTTP_PROXY || process.env.http_proxy || process.env.ALL_PROXY || process.env.all_proxy;
 const proxyUrl = proxyEnv ? new URL(proxyEnv) : null;
@@ -149,25 +150,46 @@ function anthropicToOpenAiMessages(body) {
           }
           messages.push(msgObj);
         } else {
-          const textPieces = [];
+          const userParts = [];
           const toolResults = [];
           for (const c of m.content) {
             if (c.type === 'text') {
-              textPieces.push(c.text || '');
+              userParts.push({ type: 'text', text: c.text || '' });
+            } else if (c.type === 'image') {
+              if (c.source?.type === 'base64' && c.source?.data && c.source?.media_type) {
+                userParts.push({
+                  type: 'image_url',
+                  image_url: { url: `data:${c.source.media_type};base64,${c.source.data}` },
+                });
+              } else if (c.source?.type === 'url' && c.source?.url) {
+                userParts.push({
+                  type: 'image_url',
+                  image_url: { url: c.source.url },
+                });
+              } else {
+                throw new Error('Unsupported or malformed image source in content block');
+              }
             } else if (c.type === 'tool_result') {
               toolResults.push({
                 role: 'tool',
                 tool_call_id: c.tool_use_id,
                 content: typeof c.content === 'string' ? c.content : JSON.stringify(c.content ?? ''),
               });
+            } else {
+              throw new Error(`Unsupported content block type: ${c.type}`);
             }
           }
 
           for (const tr of toolResults) {
             messages.push(tr);
           }
-          if (textPieces.length > 0) {
-            messages.push({ role: 'user', content: textPieces.join('\n') });
+          if (userParts.length > 0) {
+            const hasImages = userParts.some(p => p.type === 'image_url');
+            if (hasImages) {
+              messages.push({ role: 'user', content: userParts });
+            } else {
+              messages.push({ role: 'user', content: userParts.map(p => p.text).join('\n') });
+            }
           } else if (toolResults.length === 0) {
             messages.push({ role: m.role || 'user', content: ' ' });
           }
@@ -189,6 +211,26 @@ function anthropicToOpenAiTools(tools) {
       parameters: t.input_schema || { type: 'object', properties: {} },
     },
   }));
+}
+
+function mapToolChoice(toolChoice) {
+  if (!toolChoice) return undefined;
+  if (typeof toolChoice === 'string') {
+    if (['auto', 'none', 'required'].includes(toolChoice)) return toolChoice;
+    throw new Error(`Unsupported tool_choice string: ${toolChoice}`);
+  }
+  if (typeof toolChoice === 'object') {
+    if (toolChoice.type === 'auto') return 'auto';
+    if (toolChoice.type === 'any') return 'required';
+    if (toolChoice.type === 'tool' && typeof toolChoice.name === 'string') {
+      return {
+        type: 'function',
+        function: { name: toolChoice.name },
+      };
+    }
+    throw new Error(`Unsupported tool_choice type: ${toolChoice.type}`);
+  }
+  throw new Error('Invalid tool_choice format');
 }
 
 function mapToolNameToClient(name, clientToolNames = []) {
@@ -254,7 +296,16 @@ const server = http.createServer((req, res) => {
         'qwen/qwen3.8-27b:free'
       ];
       const fallbackModels = [...new Set(candidates)].slice(0, 3);
-      const openAiMessages = anthropicToOpenAiMessages(body);
+      let openAiMessages;
+      let toolChoiceSetting;
+      try {
+        openAiMessages = anthropicToOpenAiMessages(body);
+        toolChoiceSetting = mapToolChoice(body.tool_choice);
+      } catch (err) {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: err.message } }));
+        return;
+      }
       const openAiTools = anthropicToOpenAiTools(body.tools);
       const payloadObj = {
         model: chosenModel,
@@ -266,17 +317,27 @@ const server = http.createServer((req, res) => {
       if (openAiTools) {
         payloadObj.tools = openAiTools;
       }
+      if (toolChoiceSetting) {
+        payloadObj.tool_choice = toolChoiceSetting;
+      }
       const openAiPayload = JSON.stringify(payloadObj);
 
       const projectName = resolveProjectName();
       const collectorUrl = process.env.HALOOP_COLLECTOR_URL || 'http://136.112.93.84:8788';
       const sessionContext = process.env.OPENRIND_HALOOP_SESSION_CONTEXT || req.headers['x-openrind-haloop-session'] || '';
+      const reqSessionId = (
+        req.headers['x-openrind-session-id'] ||
+        req.headers['x-session-id'] ||
+        (sessionContext ? (sessionContext.split('.')[1] || '') : '') ||
+        proxySessionId
+      ).trim();
+
       const forwardHeaders = {
         'content-type': 'application/json',
         'content-length': Buffer.byteLength(openAiPayload),
         'x-w8-haloop-provider': 'openrouter',
         ...(adminToken ? { 'x-w8-haloop-admin-token': adminToken } : {}),
-        'x-w8-haloop-metadata': JSON.stringify({ project: projectName, session_id: proxySessionId, trace_id: proxySessionId }),
+        'x-w8-haloop-metadata': JSON.stringify({ project: projectName, session_id: reqSessionId, trace_id: reqSessionId }),
         'x-w8-haloop-config': JSON.stringify({
           input_guardrails: [{ 'halo.mark': { collectorURL: collectorUrl }, async: false, deny: false }],
           output_guardrails: [{ 'halo.export': { collectorURL: collectorUrl, defaultProject: projectName }, async: false, deny: false }],
@@ -289,11 +350,15 @@ const server = http.createServer((req, res) => {
 
       const authKey = openRouterKey || defaultKey;
       if (authKey) {
-        forwardHeaders['authorization'] = authKey.startsWith('Bearer ')
-          ? authKey
-          : `Bearer ${authKey}`;
-        forwardHeaders['x-api-key'] = authKey;
-        forwardHeaders['x-w8-haloop-api-key'] = authKey;
+        if (!isHttps && !isLocalTarget) {
+          console.warn('[proxy] Keeping upstream credential at host-managed edge; omitting auth header on cleartext remote target');
+        } else {
+          forwardHeaders['authorization'] = authKey.startsWith('Bearer ')
+            ? authKey
+            : `Bearer ${authKey}`;
+          forwardHeaders['x-api-key'] = authKey;
+          forwardHeaders['x-w8-haloop-api-key'] = authKey;
+        }
       }
 
       const upstream = sendUpstream('/v1/chat/completions', 'POST', forwardHeaders, upstreamRes => {
