@@ -40,7 +40,6 @@ export {
   activateExistingHaloopRoute,
   buildHaloopAgentLifecycleEvent,
   getHaloopCaptureStatus,
-  getHaloopDiagnosticRoute,
   exportHaloopTraces,
   exportHaloopEvalCases,
   exportHaloopHarborDataset,

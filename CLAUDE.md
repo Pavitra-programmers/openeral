@@ -29,8 +29,6 @@ Read README's **Start Here** before running setup. Choose the requested path:
   assets, PostgreSQL, and the required Haloop route. Desktop starts Claude.
 - Browser validation on Linux: `openrind-dev` skill and BUILD's **Real Linux
   Browser Test**. Use its isolated fixture; no database or provider keys needed.
-- OTLP capture validation: `openrind-capture` skill and BUILD's **OTLP Capture
-  Library Tests**. This is a standalone host test, not customer activation.
 - Browser CTF development: `openrind-ctf` skill and the CTF runtime package.
   Use its deterministic service tests before a model-backed OpenShell evaluation.
 - Actual Argide validation: complete the public browser setup, then use
@@ -102,44 +100,6 @@ flowchart LR
   this path with local Chromium, public CDP, or vendor-domain interception.
 - Preserve Control Chrome and user MCP configuration. Do not bump the FUSE contract
   or replace an active owner to retire the old managed MCP dependency.
-- The regular CTF `--ctf` run uses a non-FUSE owner. `--ctf-fuse` runs both real
-  browser tasks in a disposable primary FUSE owner, then checks the trajectory
-  and both event files after flush and owner recreation. This is a developer
-  persistence test, not Desktop activation or Haloop capture. Use BUILD's
-  **FUSE-Backed Browser CTF Test** and require its live evidence before claiming
-  the path passed.
-- Browser pod reachability and helper architecture:
-  - Fixed browser pod reachability by replacing the helper’s manual `http.get` proxy handling with direct socket / native communication to prevent port-rewriting (which causes policy blocks).
-  - Added HTTP CONNECT tunneling and WebSocket handshakes in the helper so Claude can run `agent-browser` command and connect to browser pod.
-  - The browser helper (`openrind-browser-pod-helper.mjs`) must connect directly to the pod host on port 9222 using direct TCP socket communication with `Host: localhost`. Do not re-route internal pod CDP traffic through `NODE_USE_ENV_PROXY` or OpenShell's supervisor proxy (`10.200.0.1:3128`), which triggers policy blocks on `localhost:9222`.
-  - Always preserve the `Host: localhost` header required by Chromium's embedded DevTools security filter.
-  - Do not implement suggestions or code reviews that alter this working reachability, reintroduce proxy port-rewriting, or break the browser helper's CDP handshaking.
-  - Never strip `api-key.env` or remove `upstreamKey` from `writeOpenrindShellSessionMarker`. The sandbox depends on `api-key.env` for Claude's model credentials; removing it breaks Claude with `API Error: 400 Either x-w8-haloop-config or x-w8-haloop-provider header is required` or `401 Invalid API key`.
-  - Never make `haloop-agent-proxy.mjs` startup conditional or alter its `healthz` check loop; it is required for request-scoped correlation and routing in the sandbox.
-
-## Capture Runtime
-
-- `openrind-desktop/packages/capture` exports OTLP/HTTP protobuf. Desktop requests
-  managed routes for content-free lifecycle spans and sampled FUSE health. Full content,
-  browser, and model evidence capture is not wired.
-- The supplied Haloop release has no `/diagnostics/route` or OTLP receiver.
-  Its HTTP 404/501 maps to `receiver_unsupported`; control-path failures map
-  to `route_unavailable`. Do not claim a working customer pipeline.
-  No valid route means no SDK load or polling. No new WSL service is needed.
-- `OPENRIND_DIAGNOSTICS_OTLP_ENDPOINT` is a standalone developer-library setting,
-  not Desktop activation. Managed credentials stay in host memory, per sandbox.
-- Desktop builds a lazy exporter bundle. Test the isolated ASAR and Electron's
-  Node 22.16 runtime. Neither test proves full packaged Windows startup.
-- Existing required Haloop inference routing is unchanged. Its private JSON
-  ingestion endpoint is not proof of an OTLP receiver.
-- Queues are bounded and memory-only. Receiver acceptance does not prove durable
-  storage. `persistentAcceptance` remains `unverified` after flush and shutdown.
-- Keep project durability, model success, and capture health separate. FUSE
-  `flush-all` does not flush telemetry. Do not add a watcher on `/sandbox/work`.
-- FUSE counters are approximate and process-local. The health socket is same-UID
-  writable. Its output is a diagnostic sample, not trusted execution evidence.
-- Use the package README for implemented APIs and the capture specification for
-  target behavior. Do not report either capture profile as complete.
 
 ## Build And Test
 
@@ -198,7 +158,6 @@ tests/fuse/                  POSIX conformance and real OpenShell FUSE E2E
 - Keep compatibility sync prefix-scoped and exclude credential/cache paths.
 - Do not rename `_openeral` without a tested in-place data migration.
 - Never hardcode credentials or print database URLs/provider keys.
-- Do not alter or break browser pod reachability, HTTP CONNECT tunneling, or WebSocket handshaking in the browser helper (`openrind-browser-pod-helper.mjs`); preserve working `agent-browser` connectivity to the browser pod.
 - Ignore generated artifacts through `.gitignore`, not selective commit omission.
 - Never delete, move, or overwrite user files without explicit permission.
 

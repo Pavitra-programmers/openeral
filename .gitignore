@@ -23,8 +23,6 @@ AGENTS.md
 !.claude/skills/openrind-shell/**
 !.claude/skills/openrind-browser/
 !.claude/skills/openrind-browser/**
-!.claude/skills/openrind-capture/
-!.claude/skills/openrind-capture/**
 !.claude/skills/excel-report/
 !.claude/skills/excel-report/**
 
@@ -50,5 +48,3 @@ dist/
 # Local PostgreSQL fixture material
 tests/fuse/postgres-fixture/certs/
 tests/fuse/postgres-fixture/context/
-# Bundled Electron diagnostic producer and dependencies.
-/openrind-desktop/apps/desktop/electron/generated/

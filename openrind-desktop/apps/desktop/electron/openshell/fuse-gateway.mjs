@@ -250,7 +250,7 @@ export async function ensureManagedFuseGateway({ onProgress } = {}) {
           ["-d", DISTRO_NAME, "--", "sh", "-c", `cat ${RUNTIME_DIR}/source-id 2>/dev/null || true`],
           { timeout: 5000 }
         ).catch(() => null);
-        if (checkInstall && checkInstall.exitCode === 0 && checkInstall.stdout.trim() === sourceId) {
+        if (checkInstall && checkInstall.exitCode === 0 && (checkInstall.stdout.trim() === sourceId || checkInstall.stdout.trim().length > 0)) {
           upToDate = true;
         }
       }

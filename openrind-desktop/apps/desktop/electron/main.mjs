@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { existsSync } from "node:fs";
 import https from "node:https";
@@ -43,7 +43,6 @@ import * as openshellCli from "./openshell/cli.mjs";
 import * as openrindShell from "./openshell/openrind-shell.mjs";
 import * as openrindCredentials from "./openshell/openrind-shell-credentials.mjs";
 import * as openrindPty from "./openshell/openrind-shell-pty.mjs";
-import { openDiagnosticSession, recordLifecycleWithDurabilityFallback, runtimeDiagnostics } from "./openshell/runtime-diagnostics.mjs";
 import {
   deriveOpenrindShellSandboxName,
   launchExternalTerminalToSandbox,
@@ -764,17 +763,6 @@ function openOpenrindShellPtySession(opts) {
     throw new Error("A validated OPENRIND_SHELL_AGENT value is required for agent launch.");
   }
   assertHaloopCredentialNotChanging(sandboxName);
-  const openTrackedSession = (sessionOptions) => openDiagnosticSession({
-    diagnostics: runtimeDiagnostics,
-    openSession: openrindPty.openSession,
-    resolveConfiguration: () => openrindShell.getHaloopDiagnosticRoute(sandboxName),
-    options: sessionOptions,
-    onLifecycleExit: async (event) => {
-      const lifecycle = openrindShell.buildHaloopAgentLifecycleEvent(agent, event);
-      await recordLifecycleWithDurabilityFallback({ diagnostics: runtimeDiagnostics, identity: haloopCapture,
-        event: lifecycle, legacyRecord: () => openrindShell.recordHaloopApplicationSpans(haloopCapture, [lifecycle]) });
-    },
-  });
   // Follow the README contract: Desktop writes one consume-on-read marker and
   // then opens `openshell sandbox connect`. The login hook installed by
   // setup-fuse.sh consumes that marker and replaces the manual shell with the
@@ -787,7 +775,7 @@ function openOpenrindShellPtySession(opts) {
   if (live && !live.exitInfo) {
     // openSession adopts the live PTY — nothing launches, so the shared
     // marker must not be touched (it may belong to another in-flight open).
-    return openTrackedSession({
+    return openrindPty.openSession({
       sandboxName,
       cols,
       rows,
@@ -811,37 +799,36 @@ function openOpenrindShellPtySession(opts) {
       // opened this PTY while this request was waiting.
       const queuedLive = openrindPty.findSessionBySandboxAndAgent(sandboxName, agentSessionId);
       if (queuedLive && !queuedLive.exitInfo) {
-        return openTrackedSession({ sandboxName, cols, rows, extraEnv, agentSessionId, haloopContextId });
+        return openrindPty.openSession({ sandboxName, cols, rows, extraEnv, agentSessionId, haloopContextId });
       }
       let upstreamKey = "";
       try { upstreamKey = await openrindShell.requiredHaloopUpstreamApiKey(); } catch {}
       upstreamKey = (upstreamKey || process.env.ANTHROPIC_API_KEY || "").trim();
-      let browserGrant = undefined;
-      let browserServiceToken = undefined;
-      const browserReady = await openrindShell.ensureBrowserPod(sandboxName).catch(() => false);
-      if (browserReady) {
-        browserGrant = randomBytes(32).toString('base64url');
-        browserServiceToken = randomBytes(32).toString('base64url');
-      }
+      await openrindShell.ensureBrowserPod(sandboxName).catch(() => {});
       await writeOpenrindShellSessionMarker(
         sandboxName,
         profile,
         agentSessionId,
         haloopSessionAssertion,
-        browserGrant,
-        browserServiceToken,
+        undefined,
+        undefined,
         upstreamKey,
       );
       // Even a desktop launch without a session id writes the `auto` marker, so
       // every fresh connect must wait for this marker to be consumed.
       openrindMarkerPending.add(sandboxName);
-      return openTrackedSession({
+      return openrindPty.openSession({
         sandboxName,
         cols,
         rows,
         extraEnv,
         agentSessionId,
         haloopContextId,
+        onLifecycleExit: async (event) => {
+          await openrindShell.recordHaloopApplicationSpans(haloopCapture, [
+            openrindShell.buildHaloopAgentLifecycleEvent(agent, event),
+          ]);
+        },
       });
     });
   openrindFreshOpenChains.set(sandboxName, next);
@@ -1203,9 +1190,8 @@ let runtimeBootstrapPromise = null;
 async function disposeRuntimeBeforeQuit() {
   if (runtimeDisposedForQuit) return;
   runtimeDisposedForQuit = true;
-  await runtimeManager.dispose().catch(() => undefined);
-  await runtimeDiagnostics.shutdown().catch(() => undefined);
   await openrindShell.stopHaloopRuntime().catch(() => undefined);
+  await runtimeManager.dispose().catch(() => undefined);
 }
 
 function assertOpenrindDesktopServerReady(info) {
@@ -2932,10 +2918,6 @@ async function handleDesktopInvoke(event, command, ...args) {
       // Docker/profile work: switching views must not restart Haloop, the
       // sandbox, or the agent.
       if (existing && !existing.exitInfo) {
-        runtimeDiagnostics.ensureManaged(
-          sandboxName,
-          () => openrindShell.getHaloopDiagnosticRoute(sandboxName),
-        );
         const routeWorkspaceId = await openrindShell.resolveOpenrindShellSandboxWorkspaceId({
           name: sandboxName,
           profile,
@@ -3226,20 +3208,13 @@ async function handleDesktopInvoke(event, command, ...args) {
         let upstreamKey = "";
         try { upstreamKey = await openrindShell.requiredHaloopUpstreamApiKey(); } catch {}
         upstreamKey = (upstreamKey || process.env.ANTHROPIC_API_KEY || "").trim();
-        let browserGrant = undefined;
-        let browserServiceToken = undefined;
-        const browserReady = await openrindShell.ensureBrowserPod(sandboxName).catch(() => false);
-        if (browserReady) {
-          browserGrant = randomBytes(32).toString('base64url');
-          browserServiceToken = randomBytes(32).toString('base64url');
-        }
         await writeOpenrindShellSessionMarker(
           sandboxName,
           profile,
           null,
           haloop.sessionAssertion,
-          browserGrant,
-          browserServiceToken,
+          undefined,
+          undefined,
           upstreamKey,
         );
         const terminal = await launchExternalTerminalToSandbox(sandboxName);

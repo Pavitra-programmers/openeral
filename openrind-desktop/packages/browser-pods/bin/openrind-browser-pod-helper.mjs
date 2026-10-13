@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-delete process.env.NODE_USE_ENV_PROXY;
 import http from 'node:http';
 import net from 'node:net';
 import crypto from 'node:crypto';
@@ -13,8 +12,8 @@ const proxyUrl = proxyEnv ? new URL(proxyEnv) : null;
 
 const podHost = process.env.BROWSER_POD_HOST || process.env.BROWSER_POD_NAME;
 const CANDIDATES = [
-  podHost ? { host: podHost, port: Number(process.env.BROWSER_POD_PORT || 9222) } : null,
   { host: 'openrind-browser-pod', port: 9222 },
+  podHost && podHost !== 'openrind-browser-pod' ? { host: podHost, port: Number(process.env.BROWSER_POD_PORT || 9222) } : null,
   { host: '172.19.0.1', port: 9222 },
   { host: 'host.openshell.internal', port: 9222 },
 ].filter(Boolean);
@@ -31,10 +30,21 @@ function logError(...args) {
   console.error(`[helper ${ts}] ERROR:`, ...args);
 }
 
- function fetchJson(path, endpoint = activeEndpoint) {
+async function fetchJson(path, endpoint = activeEndpoint) {
+  const host = endpoint?.host || 'openrind-browser-pod';
+  const port = endpoint?.port || Number(process.env.BROWSER_POD_PORT || 9222);
+  try {
+    const res = await fetch(`http://${host}:${port}${path}`, {
+      signal: AbortSignal.timeout(5000),
+      headers: { host: `${host}:${port}` },
+    });
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch (err) {
+    // If fetch failed, fallback to direct TCP socket
+  }
   return new Promise((resolve, reject) => {
-    const host = endpoint?.host || process.env.BROWSER_POD_HOST || process.env.BROWSER_POD_NAME || 'openrind-browser-pod';
-    const port = endpoint?.port || Number(process.env.BROWSER_POD_PORT || 9222);
     const sock = net.connect({ host, port }, () => {
       sock.write(`GET ${path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n`);
     });
@@ -68,6 +78,9 @@ async function checkEndpoint(cand) {
 }
 
 async function resolveChromiumEndpoint() {
+  const defaultHost = 'openrind-browser-pod';
+  const defaultPort = Number(process.env.BROWSER_POD_PORT || 9222);
+
   if (activeEndpoint && (await checkEndpoint(activeEndpoint))) {
     return activeEndpoint;
   }
@@ -77,7 +90,7 @@ async function resolveChromiumEndpoint() {
       return cand;
     }
   }
-  return null;
+  return { host: defaultHost, port: defaultPort };
 }
 
 class ConnectAgent extends http.Agent {
@@ -127,12 +140,15 @@ const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
 function openWebSocket(url, options = {}) {
   return new Promise((resolve, reject) => {
     log(`Opening upstream WebSocket: ${url}`);
+    const targetUrl = new URL(url);
     const ws = new WebSocket(url, {
       maxPayload: 128 * 1024 * 1024,
       perMessageDeflate: false,
       handshakeTimeout: 10000,
+      agent: connectAgent,
+      createConnection: connectAgent ? ((opts, cb) => connectAgent.createConnection(opts, cb)) : undefined,
       ...options,
-      headers: { ...(options.headers || {}), Host: 'localhost' },
+      headers: { ...(options.headers || {}), Host: `${targetUrl.host}` },
     });
     ws.once('open', () => {
       log('Upstream WebSocket OPENED successfully');
@@ -199,10 +215,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'POST' && req.url === '/browsers') {
     log('POST /browsers requested');
-    let endpoint = await resolveChromiumEndpoint();
-    if (!endpoint) {
-      endpoint = { host: 'openrind-browser-pod', port: 9222 };
-    }
+    const endpoint = await resolveChromiumEndpoint();
     const id = crypto.randomUUID();
     sessions.set(id, { createdAt: Date.now(), endpoint });
     log(`Created browser session: ${id} on ${endpoint.host}:${endpoint.port}`);

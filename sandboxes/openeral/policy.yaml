@@ -275,6 +275,17 @@ network_policies:
       - { path: /usr/local/bin/browser }
       - { path: /usr/bin/curl }
 
+  # --- Openrind CTF Challenge Service ---
+  ctf_challenge:
+    name: ctf-challenge
+    endpoints:
+      - { host: ctf-challenge, port: 19401 }
+    binaries:
+      - { path: /usr/bin/curl }
+      - { path: /usr/bin/node }
+      - { path: /usr/local/bin/claude }
+      - { path: /usr/local/bin/claude-real }
+
   # --- Openrind Browser service ---
   openrind_browser:
     name: openrind-browser

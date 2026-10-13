@@ -21,7 +21,7 @@ async function attachProvider({ binding, sandboxName, serviceToken, credentialEn
     throw new Error('Invalid browser provider provisioning');
   }
   const run = async (args, options = {}) => {
-    const response = await runFuseOpenShell(args, { ensure: false, timeout: 60_000, ...options });
+    const response = await runFuseOpenShell(args, { ensure: false, timeout: 20_000, ...options });
     if (response.exitCode !== 0) throw new Error('Browser provider provisioning failed');
     return response;
   };
@@ -30,7 +30,7 @@ async function attachProvider({ binding, sandboxName, serviceToken, credentialEn
   const importCommand = buildFuseCliCommand(['provider', 'profile', 'import', '--file']);
   const imported = await wslRun(['-d', DISTRO_NAME, '--', 'sh', '-c',
     `set -eu\numask 077\nprofile_file=$(mktemp /tmp/openrind-browser-profile.XXXXXXXX.json)\ntrap 'rm -f -- "$profile_file"' EXIT\ncat > "$profile_file"\n${importCommand} "$profile_file"`],
-    { timeout: 60_000, stdin: JSON.stringify(binding.profile) });
+    { timeout: 20_000, stdin: JSON.stringify(binding.profile) });
   if (imported.exitCode !== 0) throw new Error('Browser provider profile import failed');
   // A launch binding is unique; create failure must not update someone else's
   // provider or rotate a credential underneath another active sandbox.
@@ -42,7 +42,7 @@ async function attachProvider({ binding, sandboxName, serviceToken, credentialEn
     await run(['sandbox', 'provider', 'attach', sandboxName, binding.name]);
   } catch {
     // Delete only the provider this invocation successfully created.
-    const cleanup = await runFuseOpenShell(['provider', 'delete', binding.name], { ensure: false, timeout: 60_000 });
+    const cleanup = await runFuseOpenShell(['provider', 'delete', binding.name], { ensure: false, timeout: 20_000 });
     throw new Error(cleanup.exitCode === 0 ? 'Browser provider attachment failed' :
       'Browser provider attachment failed; provider cleanup is pending');
   }
