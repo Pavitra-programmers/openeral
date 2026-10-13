@@ -12,6 +12,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 import { exportHarborDatasetToZip } from "./harbor-exporter.mjs";
+import { runtimeDiagnostics } from "./runtime-diagnostics.mjs";
+import { resolveDiagnosticRoute } from "./diagnostic-route.mjs";
 import {
   registerHaloopClientProfile,
   resolveHaloopClientProfileIdentity,
@@ -496,7 +498,7 @@ async function postPrivateCollectorSpans(run, spans) {
   };
 }
 
-async function requestPrivateCollector(run, { method = "GET", requestPath, body = null }) {
+async function requestPrivateCollector(run, { method = "GET", requestPath, body = null, timeoutMs = undefined }) {
   const normalizedMethod = String(method).toUpperCase();
   if (!new Set(["GET", "POST"]).has(normalizedMethod)) {
     throw new Error("The private Haloop collector request method is invalid.");
@@ -507,7 +509,7 @@ async function requestPrivateCollector(run, { method = "GET", requestPath, body 
         requestPath,
       )) ||
     (normalizedMethod === "POST" &&
-      /^\/(?:halo\/analyze|evals\/extract)$/.test(requestPath));
+      /^\/(?:halo\/analyze|evals\/extract|diagnostics\/(?:route|revoke))$/.test(requestPath));
   if (!allowedRequest) {
     throw new Error("The private Haloop collector request path is invalid.");
   }
@@ -518,10 +520,10 @@ async function requestPrivateCollector(run, { method = "GET", requestPath, body 
     "payload=None if request['body'] is None else json.dumps(request['body'],separators=(',',':')).encode('utf-8')",
     "headers={'content-type':'application/json'} if payload is not None else {}",
     "query=urllib.request.Request('http://127.0.0.1:8788'+request['path'],data=payload,headers=headers,method=request['method'])",
-    "try:\n response=urllib.request.urlopen(query,timeout=15)\nexcept urllib.error.HTTPError as error:\n response=error",
+    `try:\n response=urllib.request.urlopen(query,timeout=${timeoutMs === 3000 ? 2 : 15})\nexcept urllib.error.HTTPError as error:\n response=error`,
     "raw=response.read(limit+1)",
     "assert len(raw)<=limit,'collector response too large'",
-    "decoded=json.loads(raw.decode('utf-8'))",
+    "decoded={} if request['path'].startswith('/diagnostics/') and response.status!=200 else json.loads(raw.decode('utf-8'))",
     "sys.stdout.write(json.dumps({'status':response.status,'body':decoded},separators=(',',':'))) ",
   ].join("\n");
   const result = await run(
@@ -535,7 +537,7 @@ async function requestPrivateCollector(run, { method = "GET", requestPath, body 
     ),
     {
       stdin: JSON.stringify({ method: normalizedMethod, path: requestPath, body }),
-      timeout: normalizedMethod === "POST" ? 30_000 : 20_000,
+      timeout: timeoutMs === 3000 ? 3000 : normalizedMethod === "POST" ? 30_000 : 20_000,
     },
   );
   if (result.exitCode !== 0) {
@@ -2075,6 +2077,7 @@ export function createHaloopRuntimeManager({
           detail: safeDiagnosticMessage(error),
           lastConnectionError,
           spanCapture: { ...captureStatus },
+          runtimeDiagnostics: runtimeDiagnostics.status(),
           checkedAt,
         };
       }
@@ -2143,6 +2146,7 @@ export function createHaloopRuntimeManager({
         detail,
         lastConnectionError,
         spanCapture: { ...captureStatus },
+        runtimeDiagnostics: runtimeDiagnostics.status(),
         checkedAt,
       };
     });
@@ -2680,6 +2684,12 @@ export function loadHaloopEvalCases(runId) {
 
 export function recordHaloopApplicationSpans(capture, events) {
   return runtimeManager.recordApplicationSpans(capture, events);
+}
+
+// Host-only. Never expose the returned credential callback through renderer IPC.
+export function getHaloopDiagnosticRoute(sandboxName) {
+  return resolveDiagnosticRoute({ sandboxName,
+    requestRoute: request => requestPrivateCollector(wslRun, request) });
 }
 
 export function restartHaloopRuntime(options) {
