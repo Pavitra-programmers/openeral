@@ -43,7 +43,6 @@ import * as openshellCli from "./openshell/cli.mjs";
 import * as openrindShell from "./openshell/openrind-shell.mjs";
 import * as openrindCredentials from "./openshell/openrind-shell-credentials.mjs";
 import * as openrindPty from "./openshell/openrind-shell-pty.mjs";
-import { openDiagnosticSession, recordLifecycleWithDurabilityFallback, runtimeDiagnostics } from "./openshell/runtime-diagnostics.mjs";
 import {
   deriveOpenrindShellSandboxName,
   launchExternalTerminalToSandbox,
@@ -681,13 +680,15 @@ async function writeOpenrindShellSessionMarker(
   agentSessionId,
   haloopSessionAssertion,
   browserGrant,
+  browserServiceToken,
+  apiKey,
 ) {
   const value = openrindShell.resolveAgentSessionValue(
     profile,
     agentSessionId,
     haloopSessionAssertion,
   );
-  await openrindShell.writeCurrentSessionMarker(sandboxName, value, browserGrant);
+  await openrindShell.writeCurrentSessionMarker(sandboxName, value, browserGrant, browserServiceToken, apiKey);
 }
 
 // Agent sessions are CONCURRENT: a sandbox hosts one live PTY per Openrind Desktop
@@ -762,17 +763,6 @@ function openOpenrindShellPtySession(opts) {
     throw new Error("A validated OPENRIND_SHELL_AGENT value is required for agent launch.");
   }
   assertHaloopCredentialNotChanging(sandboxName);
-  const openTrackedSession = (sessionOptions) => openDiagnosticSession({
-    diagnostics: runtimeDiagnostics,
-    openSession: openrindPty.openSession,
-    resolveConfiguration: () => openrindShell.getHaloopDiagnosticRoute(sandboxName),
-    options: sessionOptions,
-    onLifecycleExit: async (event) => {
-      const lifecycle = openrindShell.buildHaloopAgentLifecycleEvent(agent, event);
-      await recordLifecycleWithDurabilityFallback({ diagnostics: runtimeDiagnostics, identity: haloopCapture,
-        event: lifecycle, legacyRecord: () => openrindShell.recordHaloopApplicationSpans(haloopCapture, [lifecycle]) });
-    },
-  });
   // Follow the README contract: Desktop writes one consume-on-read marker and
   // then opens `openshell sandbox connect`. The login hook installed by
   // setup-fuse.sh consumes that marker and replaces the manual shell with the
@@ -785,7 +775,7 @@ function openOpenrindShellPtySession(opts) {
   if (live && !live.exitInfo) {
     // openSession adopts the live PTY — nothing launches, so the shared
     // marker must not be touched (it may belong to another in-flight open).
-    return openTrackedSession({
+    return openrindPty.openSession({
       sandboxName,
       cols,
       rows,
@@ -809,24 +799,36 @@ function openOpenrindShellPtySession(opts) {
       // opened this PTY while this request was waiting.
       const queuedLive = openrindPty.findSessionBySandboxAndAgent(sandboxName, agentSessionId);
       if (queuedLive && !queuedLive.exitInfo) {
-        return openTrackedSession({ sandboxName, cols, rows, extraEnv, agentSessionId, haloopContextId });
+        return openrindPty.openSession({ sandboxName, cols, rows, extraEnv, agentSessionId, haloopContextId });
       }
+      let upstreamKey = "";
+      try { upstreamKey = await openrindShell.requiredHaloopUpstreamApiKey(); } catch {}
+      upstreamKey = (upstreamKey || process.env.ANTHROPIC_API_KEY || "").trim();
+      await openrindShell.ensureBrowserPod(sandboxName).catch(() => {});
       await writeOpenrindShellSessionMarker(
         sandboxName,
         profile,
         agentSessionId,
         haloopSessionAssertion,
+        undefined,
+        undefined,
+        upstreamKey,
       );
       // Even a desktop launch without a session id writes the `auto` marker, so
       // every fresh connect must wait for this marker to be consumed.
       openrindMarkerPending.add(sandboxName);
-      return openTrackedSession({
+      return openrindPty.openSession({
         sandboxName,
         cols,
         rows,
         extraEnv,
         agentSessionId,
         haloopContextId,
+        onLifecycleExit: async (event) => {
+          await openrindShell.recordHaloopApplicationSpans(haloopCapture, [
+            openrindShell.buildHaloopAgentLifecycleEvent(agent, event),
+          ]);
+        },
       });
     });
   openrindFreshOpenChains.set(sandboxName, next);
@@ -1188,9 +1190,8 @@ let runtimeBootstrapPromise = null;
 async function disposeRuntimeBeforeQuit() {
   if (runtimeDisposedForQuit) return;
   runtimeDisposedForQuit = true;
-  await runtimeManager.dispose().catch(() => undefined);
-  await runtimeDiagnostics.shutdown().catch(() => undefined);
   await openrindShell.stopHaloopRuntime().catch(() => undefined);
+  await runtimeManager.dispose().catch(() => undefined);
 }
 
 function assertOpenrindDesktopServerReady(info) {
@@ -2917,10 +2918,6 @@ async function handleDesktopInvoke(event, command, ...args) {
       // Docker/profile work: switching views must not restart Haloop, the
       // sandbox, or the agent.
       if (existing && !existing.exitInfo) {
-        runtimeDiagnostics.ensureManaged(
-          sandboxName,
-          () => openrindShell.getHaloopDiagnosticRoute(sandboxName),
-        );
         const routeWorkspaceId = await openrindShell.resolveOpenrindShellSandboxWorkspaceId({
           name: sandboxName,
           profile,
@@ -3208,11 +3205,17 @@ async function handleDesktopInvoke(event, command, ...args) {
           }),
         );
         assertHaloopCredentialNotChanging(sandboxName);
+        let upstreamKey = "";
+        try { upstreamKey = await openrindShell.requiredHaloopUpstreamApiKey(); } catch {}
+        upstreamKey = (upstreamKey || process.env.ANTHROPIC_API_KEY || "").trim();
         await writeOpenrindShellSessionMarker(
           sandboxName,
           profile,
           null,
           haloop.sessionAssertion,
+          undefined,
+          undefined,
+          upstreamKey,
         );
         const terminal = await launchExternalTerminalToSandbox(sandboxName);
         return terminal;
@@ -3261,18 +3264,30 @@ async function handleDesktopInvoke(event, command, ...args) {
           return affectedSessions;
         };
         const terminateDistro = async () => {
-          const terminated = await wslRun(["-t", OPENSHELL_DISTRO_NAME], {
-            timeout: 15_000,
-          });
-          if (
-            terminated.exitCode !== 0 &&
-            !/not running|not found|does not exist|wsl_e_distro_not_found/i.test(
-              `${terminated.stderr}\n${terminated.stdout}`,
-            )
-          ) {
-            throw new Error(
-              `Could not terminate distro: ${(terminated.stderr || terminated.stdout).trim() || `exit ${terminated.exitCode}`}`,
-            );
+          try {
+            const terminated = await wslRun(["-t", OPENSHELL_DISTRO_NAME], {
+              timeout: 15_000,
+            });
+            if (
+              terminated.exitCode !== 0 &&
+              !/not running|not found|does not exist|wsl_e_distro_not_found|no distribution|supplied name/i.test(
+                `${terminated.stderr}\n${terminated.stdout}`,
+              )
+            ) {
+              throw new Error(
+                `Could not terminate distro: ${(terminated.stderr || terminated.stdout).trim() || `exit ${terminated.exitCode}`}`,
+              );
+            }
+          } catch (err) {
+            if (
+              !/not running|not found|does not exist|wsl_e_distro_not_found|no distribution|supplied name/i.test(
+                err instanceof Error ? err.message : String(err),
+              )
+            ) {
+              throw new Error(
+                `Could not terminate distro: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
           }
         };
 
@@ -3317,16 +3332,27 @@ async function handleDesktopInvoke(event, command, ...args) {
           const unregistered = await wslRun(["--unregister", OPENSHELL_DISTRO_NAME], {
             timeout: 30_000,
           });
-          if (unregistered.exitCode !== 0) {
+          if (
+            unregistered.exitCode !== 0 &&
+            !/not running|not found|does not exist|wsl_e_distro_not_found|no distribution|supplied name/i.test(
+              `${unregistered.stderr}\n${unregistered.stdout}`,
+            )
+          ) {
             throw new Error(
               (unregistered.stderr || unregistered.stdout).trim() ||
                 `exit ${unregistered.exitCode}`,
             );
           }
         } catch (err) {
-          throw new Error(
-            `Could not unregister distro: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          if (
+            !/not running|not found|does not exist|wsl_e_distro_not_found|no distribution|supplied name/i.test(
+              err instanceof Error ? err.message : String(err),
+            )
+          ) {
+            throw new Error(
+              `Could not unregister distro: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
         }
         // Wipe installer state so the next run re-executes every phase.
         const stateFile = path.join(

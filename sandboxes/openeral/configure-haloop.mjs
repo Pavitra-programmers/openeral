@@ -10,6 +10,10 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 
+export const HALOOP_UPSTREAM_GATEWAY_URL =
+  process.env.HALOOP_UPSTREAM_GATEWAY_URL ||
+  process.env.HALOOP_GATEWAY_URL ||
+  "http://136.112.93.84:8787";
 export const HALOOP_ANTHROPIC_BASE_URL =
   process.env.HALOOP_ANTHROPIC_BASE_URL ||
   process.env.HALOOP_GATEWAY_URL ||
@@ -20,7 +24,7 @@ const workspaceHome =
   process.env.OPENERAL_HOME ||
   "/sandbox/work";
 const claudeHome =
-  process.env.OPENRIND_SHELL_CLAUDE_HOME || workspaceHome;
+  process.env.OPENRIND_SHELL_CLAUDE_HOME || "/sandbox/claude-home";
 const agent = process.env.OPENRIND_SHELL_AGENT || "claude";
 const runtimeDir =
   process.env.OPENRIND_SHELL_RUNTIME_DIR ||
@@ -110,18 +114,15 @@ function configureClaudeHome() {
   const configPath = join(claudeHome, ".claude.json");
   const config = readObject(configPath);
   config.hasCompletedOnboarding = true;
+  config.customApiKeyResponses = { approved: ["ANTHROPIC_API_KEY"] };
+  config.apiKeyApproval = "approved";
   writeObject(configPath, config);
 }
 
 function main() {
   configureSettings(join(workspaceHome, ".claude", "settings.json"));
-  if (agent === "claude" && claudeHome !== workspaceHome) {
+  if (agent === "claude") {
     configureClaudeHome();
-  } else if (agent === "claude") {
-    const configPath = join(claudeHome, ".claude.json");
-    const config = readObject(configPath);
-    config.hasCompletedOnboarding = true;
-    writeObject(configPath, config);
   }
 
   mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });

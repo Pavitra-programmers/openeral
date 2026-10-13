@@ -60,7 +60,7 @@ test("authentication probe accepts only the expected rejection statuses", async 
     assert.equal(requests.length, 1);
     assert.equal(requests[0][1].method, "POST");
     assert.equal(JSON.parse(requests[0][1].body).max_tokens, 1);
-    assert.deepEqual(exits, [400, 401, 403].includes(status) ? [] : [1], `status ${status}`);
+    assert.deepEqual(exits, [401, 403].includes(status) ? [] : [1], `status ${status}`);
   }
   const exits = [];
   await vm.runInNewContext(probe, {
@@ -153,7 +153,7 @@ test("packaged Haloop images are version-pinned as a matched pair", () => {
   });
 });
 
-test("private collector control bridge only permits fixed control routes", async () => {
+test("private collector control bridge only permits fixed analysis routes", async () => {
   let calls = 0;
   await assert.rejects(
     __testing.requestPrivateCollector(async () => {
@@ -189,24 +189,6 @@ test("private collector control bridge only permits fixed control routes", async
     path: "/halo/runs",
     body: null,
   });
-});
-
-test("managed diagnostics use a bounded private control request and retain unsupported status", async () => {
-  let invocation;
-  const body = { contract: "openrind-runtime-diagnostics/v1", sandboxName: "owner" };
-  const response = await __testing.requestPrivateCollector(async (args, options) => {
-    invocation = { args, options };
-    return { exitCode: 0, stdout: '{"status":404,"body":{}}', stderr: "" };
-  }, { method: "POST", requestPath: "/diagnostics/route", body, timeoutMs: 3000 });
-  assert.equal(response.status, 404);
-  assert.equal(invocation.options.timeout, 3000);
-  assert.deepEqual(JSON.parse(invocation.options.stdin), { method: "POST", path: "/diagnostics/route", body });
-  assert.ok(invocation.args.includes(HALOOP_COLLECTOR_CONTAINER_NAME));
-  assert.match(invocation.args.at(-1), /urlopen\(query,timeout=2\)/);
-  assert.match(invocation.args.at(-1), /decoded=\{\} if .*response.status!=200/);
-  await assert.rejects(__testing.requestPrivateCollector(() => assert.fail("unexpected request"), {
-    method: "GET", requestPath: "/diagnostics/route",
-  }), /request path is invalid/);
 });
 
 test("trace and report validation payloads stay on stdin", async () => {

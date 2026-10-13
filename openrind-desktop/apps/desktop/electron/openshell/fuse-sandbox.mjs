@@ -30,7 +30,7 @@ const CLAUDE_SESSION_NAMESPACE = "6f9b1e2a-0c3d-4b7a-9e21-8a4c1d5f7b30";
 const MAX_CAPTURE_BYTES = 2 * 1024 * 1024;
 const sandboxProvisioning = createSandboxProvisioningCoordinator();
 
-async function requiredHaloopUpstreamApiKey() {
+export async function requiredHaloopUpstreamApiKey() {
   const anthropicApiKey = await getCredential("anthropicApiKey");
   return resolveHaloopUpstreamApiKey(anthropicApiKey);
 }
@@ -689,6 +689,7 @@ async function provisionOpenrindShellSandbox(options) {
       /^ready$/i.test(existing.phase) &&
       (await existingFuseSandboxIsWritable(name, agent))
     ) {
+      await ensureBrowserPod(name, onProgress);
       onProgress?.({ phase: "ready", message: `FUSE workspace ${name} is ready.` });
       return {
         name,
@@ -733,6 +734,12 @@ async function provisionOpenrindShellSandbox(options) {
     `OPENRIND_SHELL_AGENT=${agent.id}`,
     "--env",
     `OPENRIND_SHELL_OPENHANDS_MODE=${agent.mode || "cli"}`,
+    "--env",
+    `BROWSER_POD_NAME=openrind-browser-pod-${name}`,
+    "--env",
+    `BROWSER_POD_HOST=openrind-browser-pod-${name}`,
+    "--env",
+    `BROWSER_POD_PORT=9222`,
   );
   if (haloop.endpoint) {
     try {
@@ -780,6 +787,7 @@ async function provisionOpenrindShellSandbox(options) {
     );
   }
 
+  await ensureBrowserPod(name, onProgress);
   onProgress?.({ phase: "ready", message: `FUSE workspace ${name} is initialized; starting ${agent.label}…` });
   return {
     name,
@@ -796,6 +804,85 @@ async function provisionOpenrindShellSandbox(options) {
  * this main-process module, so closing Settings or switching sessions only
  * detaches the renderer; it cannot cancel or restart the underlying FUSE create.
  */
+export async function ensureBrowserPod(sandboxName, onProgress) {
+  const podName = sandboxName ? `openrind-browser-pod-${sandboxName}` : "openrind-browser-pod";
+  const shortPodName = sandboxName && sandboxName.length > 8 ? `openrind-browser-pod-${sandboxName.slice(0, 8)}` : null;
+  onProgress?.({ phase: "browser-pod", message: `Confirming Chromium browser pod (${podName}) is ready…` });
+
+  const check = await wslRun([
+    "-d",
+    DISTRO_NAME,
+    "--",
+    "docker",
+    "ps",
+    "--filter",
+    `name=^/${podName}$`,
+    "--format",
+    "{{.Names}}",
+  ], { timeout: 10_000 }).catch(() => null);
+
+  const running = check?.exitCode === 0 && check.stdout.includes(podName);
+  if (!running) {
+    onProgress?.({ phase: "browser-pod", message: `Starting Chromium browser pod container (${podName})…` });
+    await wslRun([
+      "-d",
+      DISTRO_NAME,
+      "--",
+      "docker",
+      "rm",
+      "-f",
+      podName,
+    ], { timeout: 10_000 }).catch(() => null);
+
+    const aliasArgs = ["--network-alias", "openrind-browser-pod", "--network-alias", podName];
+    if (shortPodName) aliasArgs.push("--network-alias", shortPodName);
+
+    let start = await wslRun([
+      "-d",
+      DISTRO_NAME,
+      "--",
+      "docker",
+      "run",
+      "-d",
+      "--name",
+      podName,
+      "--network",
+      "openshell-docker",
+      ...aliasArgs,
+      "--restart",
+      "unless-stopped",
+      "openrind-browser-pod:e2e",
+    ], { timeout: 30_000 });
+
+    if (start.exitCode !== 0) {
+      start = await wslRun([
+        "-d",
+        DISTRO_NAME,
+        "--",
+        "docker",
+        "run",
+        "-d",
+        "--name",
+        podName,
+        "--network",
+        "openshell-docker",
+        ...aliasArgs,
+        "--restart",
+        "unless-stopped",
+        "openrind-browser-pod:latest",
+      ], { timeout: 30_000 });
+    }
+
+    if (start.exitCode !== 0) {
+      console.warn(`[browser-pod] Could not start browser pod container: ${(start.stderr || start.stdout).trim()}`);
+      return false;
+    }
+  }
+
+  onProgress?.({ phase: "browser-pod", message: `Chromium browser pod (${podName}) is confirmed ready.` });
+  return true;
+}
+
 export function createOpenrindShellSandbox(options) {
   const name = String(options?.name ?? "").trim();
   const profile = String(options?.profile ?? "").trim();
@@ -811,6 +898,8 @@ export function createOpenrindShellSandbox(options) {
 export async function deleteOpenrindShellSandbox(name) {
   if (!name) throw new Error("A sandbox name is required.");
   await ensureFuseRuntime();
+  const podName = `openrind-browser-pod-${name}`;
+  await wslRun(["-d", DISTRO_NAME, "--", "docker", "rm", "-f", podName], { timeout: 10_000 }).catch(() => null);
   return runFuseOpenShell(["sandbox", "delete", name], { ensure: false, timeout: 60_000 });
 }
 

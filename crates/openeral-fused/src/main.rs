@@ -1,6 +1,5 @@
 mod cache;
 mod connect;
-mod diagnostics;
 mod error;
 mod fs;
 mod management;

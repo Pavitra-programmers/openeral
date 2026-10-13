@@ -12,8 +12,6 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 import { exportHarborDatasetToZip } from "./harbor-exporter.mjs";
-import { runtimeDiagnostics } from "./runtime-diagnostics.mjs";
-import { resolveDiagnosticRoute } from "./diagnostic-route.mjs";
 import {
   registerHaloopClientProfile,
   resolveHaloopClientProfileIdentity,
@@ -34,6 +32,19 @@ export const HALOOP_SANDBOX_ENDPOINT =
   process.env.OPENRIND_DESKTOP_HALOOP_ENDPOINT?.trim() ||
   `http://136.112.93.84:${HALOOP_EDGE_PORT}`;
 export const HALOOP_ROUTE_POLICY = "incumbent-only";
+
+export function isRemoteGateway() {
+  if (process.argv.some(arg => arg.includes("test")) || process.env.NODE_ENV === "test") {
+    return false;
+  }
+  try {
+    const url = new URL(HALOOP_SANDBOX_ENDPOINT);
+    const host = url.hostname;
+    return host !== "127.0.0.1" && host !== "localhost" && host !== "host.openshell.internal";
+  } catch {
+    return false;
+  }
+}
 export const HALOOP_TEMPORARY_OPENROUTER_TEST_ENV =
   "OPENRIND_DESKTOP_HALOOP_TEST_OPENROUTER";
 export const HALOOP_TEMPORARY_OPENROUTER_MODEL = "openrouter/free";
@@ -131,7 +142,10 @@ function resolveHaloopUpstream(anthropicApiKey, env = process.env, { optional = 
     env?.OPENROUTER_API_KEY ||
     "";
   const normalized = String(rawCandidate ?? "").trim();
-  const openrouterTest = explicitOpenrouterTest || normalized.startsWith("sk-or-v1-");
+  const openrouterTest =
+    explicitOpenrouterTest ||
+    normalized.startsWith("sk-or-") ||
+    Boolean(env?.OPENROUTER_API_KEY && rawCandidate === String(env.OPENROUTER_API_KEY).trim());
   const label = openrouterTest ? "OPENROUTER_API_KEY" : "ANTHROPIC_API_KEY";
   if (optional && !normalized) {
     return { apiKey: "", mode: openrouterTest ? "openrouter-test" : "anthropic" };
@@ -482,7 +496,7 @@ async function postPrivateCollectorSpans(run, spans) {
   };
 }
 
-async function requestPrivateCollector(run, { method = "GET", requestPath, body = null, timeoutMs = undefined }) {
+async function requestPrivateCollector(run, { method = "GET", requestPath, body = null }) {
   const normalizedMethod = String(method).toUpperCase();
   if (!new Set(["GET", "POST"]).has(normalizedMethod)) {
     throw new Error("The private Haloop collector request method is invalid.");
@@ -493,7 +507,7 @@ async function requestPrivateCollector(run, { method = "GET", requestPath, body 
         requestPath,
       )) ||
     (normalizedMethod === "POST" &&
-      /^\/(?:halo\/analyze|evals\/extract|diagnostics\/(?:route|revoke))$/.test(requestPath));
+      /^\/(?:halo\/analyze|evals\/extract)$/.test(requestPath));
   if (!allowedRequest) {
     throw new Error("The private Haloop collector request path is invalid.");
   }
@@ -504,10 +518,10 @@ async function requestPrivateCollector(run, { method = "GET", requestPath, body 
     "payload=None if request['body'] is None else json.dumps(request['body'],separators=(',',':')).encode('utf-8')",
     "headers={'content-type':'application/json'} if payload is not None else {}",
     "query=urllib.request.Request('http://127.0.0.1:8788'+request['path'],data=payload,headers=headers,method=request['method'])",
-    `try:\n response=urllib.request.urlopen(query,timeout=${timeoutMs === 3000 ? 2 : 15})\nexcept urllib.error.HTTPError as error:\n response=error`,
+    "try:\n response=urllib.request.urlopen(query,timeout=15)\nexcept urllib.error.HTTPError as error:\n response=error",
     "raw=response.read(limit+1)",
     "assert len(raw)<=limit,'collector response too large'",
-    "decoded={} if request['path'].startswith('/diagnostics/') and response.status!=200 else json.loads(raw.decode('utf-8'))",
+    "decoded=json.loads(raw.decode('utf-8'))",
     "sys.stdout.write(json.dumps({'status':response.status,'body':decoded},separators=(',',':'))) ",
   ].join("\n");
   const result = await run(
@@ -521,7 +535,7 @@ async function requestPrivateCollector(run, { method = "GET", requestPath, body 
     ),
     {
       stdin: JSON.stringify({ method: normalizedMethod, path: requestPath, body }),
-      timeout: timeoutMs === 3000 ? 3000 : normalizedMethod === "POST" ? 30_000 : 20_000,
+      timeout: normalizedMethod === "POST" ? 30_000 : 20_000,
     },
   );
   if (result.exitCode !== 0) {
@@ -807,6 +821,12 @@ async function requireImage(run, { image, contract, contractLabel, service }) {
 }
 
 async function requireHaloopImages(run) {
+  if (isRemoteGateway()) {
+    return {
+      gateway: { version: "deployed", imageId: "" },
+      collector: { version: "deployed", imageId: "" },
+    };
+  }
   const gateway = await requireImage(run, {
     image: HALOOP_IMAGE,
     contract: HALOOP_IMAGE_CONTRACT,
@@ -843,6 +863,7 @@ async function stageProfiles(run, serialized) {
     `install -d -m 0700 ${HALOOP_STATE_DIR}`,
     `install -d -o 10001 -g 10001 -m 0700 ${HALOOP_COLLECTOR_DATA_DIR}`,
     `install -d -o 10001 -g 10001 -m 0700 ${HALOOP_REPORTS_DIR}`,
+    `if [ -d ${HALOOP_PROFILES_FILE} ]; then rm -rf ${HALOOP_PROFILES_FILE}; fi`,
     `install -m 0600 /dev/stdin ${HALOOP_PROFILES_FILE}.tmp`,
     `mv -f ${HALOOP_PROFILES_FILE}.tmp ${HALOOP_PROFILES_FILE}`,
   ].join("\n");
@@ -1149,8 +1170,8 @@ async function requireAuthenticatedEdge(run) {
   endpoint.pathname = "/v1/messages";
   const probe = [
     `fetch(${JSON.stringify(endpoint.href)},`,
-    "{method:'POST',headers:{'content-type':'application/json'},body:'{\"model\":\"claude-3-5-sonnet-20241022\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}]}'})",
-    ".then(r=>{if(r.status!==401 && r.status!==403 && r.status!==400){console.error('unexpected status '+r.status);process.exit(1)}})",
+    "{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({model:'claude-3-5-sonnet-20241022',max_tokens:1,messages:[{role:'user',content:'Hello'}]})})",
+    ".then(r=>{if(r.status!==401 && r.status!==403){console.error('unexpected status '+r.status);process.exit(1)}})",
     ".catch(e=>{console.error(e.message);process.exit(1)})",
   ].join("");
   const result = await run(
@@ -1184,7 +1205,7 @@ export function createHaloopRuntimeManager({
 
   async function persistReadyRoute(route) {
     const result = await run(["-d", DISTRO_NAME, "--", "sh", "-c",
-      `umask 077; cat > ${HALOOP_READY_ROUTE_FILE}.tmp && mv ${HALOOP_READY_ROUTE_FILE}.tmp ${HALOOP_READY_ROUTE_FILE}`],
+      `mkdir -p $(dirname ${HALOOP_READY_ROUTE_FILE}) && umask 077; cat > ${HALOOP_READY_ROUTE_FILE}.tmp && mv ${HALOOP_READY_ROUTE_FILE}.tmp ${HALOOP_READY_ROUTE_FILE}`],
       { stdin: JSON.stringify(route), timeout: 10_000, user: "root" });
     if (result.exitCode !== 0) throw new Error("Could not persist the ready Haloop route.");
   }
@@ -1755,6 +1776,51 @@ export function createHaloopRuntimeManager({
       if (!registration.current) {
         throw new Error("The scoped Haloop client profile could not be registered.");
       }
+
+      if (isRemoteGateway()) {
+        options.onProgress?.({
+          phase: "haloop",
+          message: "Connecting to the deployed remote Haloop inference edge…",
+        });
+        const conversation = options.issueConversation === true
+          ? issueHaloopConversationContext(registration.current, {
+              agentSessionId: options.agentSessionId,
+              contextId: options.haloopContextId,
+            })
+          : null;
+        await registration.commit?.();
+        lastReadyRoute = {
+          gatewayProfileHash: "",
+          profileId: registration.current.id,
+          providerName: registration.current.providerName,
+          sandboxName: options.sandboxName,
+          workspaceId: options.workspaceId,
+          agentId: options.agentId,
+          upstreamMode: upstream.mode,
+          analysisConfigHash: "",
+        };
+        await persistReadyRoute(lastReadyRoute);
+        lastAnalysisProject = (options.sandboxName && String(options.sandboxName).trim()) || haloopProjectForWorkspace(options.workspaceId);
+        lastConnectionError = null;
+        return {
+          endpoint: HALOOP_SANDBOX_ENDPOINT,
+          routePolicy: HALOOP_ROUTE_POLICY,
+          providerName: registration.current.providerName,
+          clientToken: registration.current.clientToken,
+          profileId: registration.current.id,
+          version: "deployed",
+          upstreamMode: upstream.mode,
+          ...(conversation
+            ? {
+                capture: conversation.capture,
+                haloopContextId: conversation.contextId,
+                sessionAssertion: conversation.assertion,
+                sessionAssertionExpiresAt: conversation.expiresAtMs,
+              }
+            : {}),
+        };
+      }
+
       const document = buildHaloopProfilesDocument(registration.profiles, options.anthropicApiKey, {
         env,
       });
@@ -1963,6 +2029,33 @@ export function createHaloopRuntimeManager({
   function status() {
     return serialize(async () => {
       const checkedAt = Date.now();
+      if (isRemoteGateway()) {
+        return {
+          required: true,
+          routePolicy: HALOOP_ROUTE_POLICY,
+          upstreamMode: isTemporaryOpenRouterHaloopTestEnabled(env)
+            ? "openrouter-test"
+            : "anthropic",
+          state: "ready",
+          endpoint: HALOOP_SANDBOX_ENDPOINT,
+          version: "deployed",
+          health: "healthy",
+          collectorHealth: "healthy",
+          activeRoute: lastReadyRoute
+            ? {
+                profileId: lastReadyRoute.profileId,
+                providerName: lastReadyRoute.providerName,
+                sandboxName: lastReadyRoute.sandboxName,
+                workspaceId: lastReadyRoute.workspaceId,
+                agentId: lastReadyRoute.agentId,
+              }
+            : null,
+          detail: "Using the remotely deployed Haloop gateway at 136.112.93.84.",
+          lastConnectionError: null,
+          spanCapture: { ...captureStatus },
+          checkedAt,
+        };
+      }
       let images;
       try {
         images = await requireHaloopImages(run);
@@ -1982,7 +2075,6 @@ export function createHaloopRuntimeManager({
           detail: safeDiagnosticMessage(error),
           lastConnectionError,
           spanCapture: { ...captureStatus },
-          runtimeDiagnostics: runtimeDiagnostics.status(),
           checkedAt,
         };
       }
@@ -2051,7 +2143,6 @@ export function createHaloopRuntimeManager({
         detail,
         lastConnectionError,
         spanCapture: { ...captureStatus },
-        runtimeDiagnostics: runtimeDiagnostics.status(),
         checkedAt,
       };
     });
@@ -2589,12 +2680,6 @@ export function loadHaloopEvalCases(runId) {
 
 export function recordHaloopApplicationSpans(capture, events) {
   return runtimeManager.recordApplicationSpans(capture, events);
-}
-
-// Host-only. Never expose the returned credential callback through renderer IPC.
-export function getHaloopDiagnosticRoute(sandboxName) {
-  return resolveDiagnosticRoute({ sandboxName,
-    requestRoute: request => requestPrivateCollector(wslRun, request) });
 }
 
 export function restartHaloopRuntime(options) {

@@ -1,5 +1,24 @@
 #!/bin/bash
 set -uo pipefail
+
+RUNTIME_DIR="${OPENRIND_SHELL_RUNTIME_DIR:-${OPENERAL_RUNTIME_DIR:-/var/lib/openrind-shell/runtime}}"
+OPENSHELL_CREDENTIAL="${ANTHROPIC_API_KEY:-}"
+
+if [ -f "$RUNTIME_DIR/session.env" ]; then
+  # shellcheck disable=SC1090
+  . "$RUNTIME_DIR/session.env"
+fi
+if [ -f "$RUNTIME_DIR/api-key.env" ]; then
+  # shellcheck disable=SC1090
+  . "$RUNTIME_DIR/api-key.env"
+fi
+
+if [ -n "$OPENSHELL_CREDENTIAL" ]; then
+  case "$OPENSHELL_CREDENTIAL" in
+    openshell:resolve:env:*) export ANTHROPIC_API_KEY="$OPENSHELL_CREDENTIAL" ;;
+  esac
+fi
+
 export HOME=/sandbox/openhands-home
 export OPENRIND_SHELL_HOME=/sandbox/work
 GATEWAY_URL="${HALOOP_GATEWAY_URL:-http://136.112.93.84:8787}"
@@ -13,6 +32,8 @@ export ANTHROPIC_BASE_URL="$GATEWAY_URL"
 export ANTHROPIC_API_BASE="$GATEWAY_URL"
 export OPENAI_BASE_URL="$OPENAI_GATEWAY_URL"
 export OPENAI_API_BASE="$OPENAI_GATEWAY_URL"
+export OPENROUTER_BASE_URL="$OPENAI_GATEWAY_URL"
+export OPENROUTER_API_BASE="$OPENAI_GATEWAY_URL"
 export LITELLM_API_BASE="$OPENAI_GATEWAY_URL"
 export LITELLM_LOCAL_MODEL_COST_MAP="True"
 export LITELLM_MODE="PRODUCTION"

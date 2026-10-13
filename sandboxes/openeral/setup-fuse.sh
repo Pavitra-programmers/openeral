@@ -320,6 +320,19 @@ if [ "$OPENRIND_SHELL_AGENT" = claude ]; then
       sync_bundled_skills /opt/openrind-shell/skills "$target_skills_dir"
     done
   fi
+  chmod 0644 /opt/openrind/browser/*.json 2>/dev/null || true
+  install -d -m 0755 /etc/openrind-browser-pods
+  if [ ! -f /etc/openrind-browser-pods/helper.json ]; then
+    printf '{"brokerOrigin":"http://127.0.0.1:19300","generation":"openrind-desktop"}\n' > /etc/openrind-browser-pods/helper.json
+    chmod 0644 /etc/openrind-browser-pods/helper.json 2>/dev/null || true
+  fi
+  if [ -f /opt/openrind-shell/browser-socket-relay.mjs ] && ! pgrep -f "browser-socket-relay" >/dev/null 2>&1; then
+    /usr/bin/node /opt/openrind-shell/browser-socket-relay.mjs >/dev/null 2>&1 &
+  fi
+  if [ -f /opt/openrind-browser-pods/bin/openrind-browser-pod-helper.mjs ]; then
+    pkill -f "openrind-browser-pod-helper" >/dev/null 2>&1 || true
+    OPENRIND_BROWSER_PODS_EXPERIMENTAL=1 /opt/openrind-browser-pods/bin/helper-ensure.sh >/dev/null 2>&1 || true
+  fi
   HOME="$OPENRIND_SHELL_CLAUDE_HOME" node /opt/openrind-shell/configure-haloop.mjs
   # Warm the immutable executable and its dynamic loader while provisioning is
   # still showing progress. This does not create project trust state.
@@ -478,6 +491,17 @@ SESSION_ENV="$OPENRIND_SHELL_RUNTIME_DIR/session.env"
   printf 'export OPENERAL_WORKSPACE_ID='; shell_quote "$WORKSPACE_ID"; printf '\n'
   printf 'export WORKSPACE_ID='; shell_quote "$WORKSPACE_ID"; printf '\n'
   printf 'export SHELL=/bin/bash\n'
+  printf 'export AGENT_BROWSER_PROVIDER=kernel\n'
+  printf 'export KERNEL_ENDPOINT=http://127.0.0.1:19300\n'
+  printf 'export KERNEL_API_KEY=openrind-compat\n'
+  printf 'export KERNEL_HEADLESS=true\n'
+  printf 'export KERNEL_STEALTH=false\n'
+  printf 'export KERNEL_TIMEOUT_SECONDS=300\n'
+  printf 'export AGENT_BROWSER_ACTION_POLICY=/opt/openrind/browser/agent-browser-policy.json\n'
+  printf 'export OPENRIND_BROWSER_PODS_EXPERIMENTAL=1\n'
+  printf 'export BROWSER_POD_NAME=%s\n' "$(shell_quote "${BROWSER_POD_NAME:-openrind-browser-pod}")"
+  printf 'export BROWSER_POD_HOST=%s\n' "$(shell_quote "${BROWSER_POD_HOST:-openrind-browser-pod}")"
+  printf 'export BROWSER_POD_PORT=%s\n' "$(shell_quote "${BROWSER_POD_PORT:-9222}")"
   [ ! -f "$OPENRIND_SHELL_NPMRC" ] || printf 'export NPM_CONFIG_USERCONFIG=%s\n' "$(shell_quote "$OPENRIND_SHELL_NPMRC")"
   if [ "$OPENRIND_SHELL_AGENT" = openclaw ]; then
     # OpenClaw owns the terminal screen; pass output through immediately and

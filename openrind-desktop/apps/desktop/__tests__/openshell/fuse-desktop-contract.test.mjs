@@ -21,33 +21,20 @@ test("desktop image and runtime share the current PTY bridge contract", async ()
   assert.match(sandbox, /IMAGE_CONTRACT = "fuse-haloop-required-v29-browser-client"/);
 });
 
-test("developer image builder targets the dedicated WSL daemon and validates all runtime contracts", async () => {
+test("developer image builder targets the dedicated WSL daemon and validates FUSE runtime contracts", async () => {
   const [builder, desktopPackage] = await Promise.all([
     source("openrind-desktop/apps/desktop/scripts/build-openshell-runtime-images.mjs"),
     source("openrind-desktop/apps/desktop/package.json"),
   ]);
   assert.match(builder, /openrind-desktop-openshell/);
   assert.match(builder, /openrind-shell-fuse:local/);
-  assert.match(builder, /haloop-gateway:local/);
-  assert.match(builder, /haloop-collector:local/);
-  assert.match(builder, /ghcr\.io\/openrind\/openrind-shell\/haloop-gateway/);
-  assert.match(builder, /ghcr\.io\/openrind\/openrind-shell\/haloop-collector/);
-  assert.match(builder, /w8-haloop-openrind-v6-durable-analysis/);
-  assert.match(builder, /--production-haloop/);
-  assert.match(builder, /"docker",\s*"image",\s*"push"/);
   assert.match(builder, /fuse-haloop-required-v29-browser-client/);
-  assert.match(builder, /openrind-haloop-v2/);
-  assert.match(builder, /openrind-haloop-collector-v1/);
-  assert.match(builder, /openrind-desktop-collector/);
-  assert.match(builder, /com\.openrind\.desktop\.haloop-version/);
   assert.match(builder, /"docker",\s*"build"/);
   assert.match(builder, /"docker",\s*"image",\s*"inspect"/);
   assert.match(
     desktopPackage,
     /"build:openshell-runtime-images": "node \.\/scripts\/build-openshell-runtime-images\.mjs"/,
   );
-  assert.match(desktopPackage, /"verify:openshell-haloop-images:production"/);
-  assert.match(desktopPackage, /"publish:openshell-haloop-images:production"/);
 });
 
 test("Windows Electron launchers keep nested processes on the workspace pnpm version", async () => {

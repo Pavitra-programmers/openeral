@@ -70,6 +70,8 @@ def install_session_transport(context, base_url=None):
         request.headers.pop('x-w8-haloop-provider', None)
         request.headers.pop('x-w8-haloop-admin-token', None)
         request.headers.pop('x-w8-haloop-api-key', None)
+        request.headers.pop('x-w8-haloop-metadata', None)
+        request.headers.pop('x-w8-haloop-config', None)
         url = request.url
         if url.scheme in ('http', 'https'):
             host_match = (
@@ -90,20 +92,52 @@ def install_session_transport(context, base_url=None):
                     or ''
                 )
                 openrouter_key = os.environ.get('OPENROUTER_API_KEY') or ''
+                if openrouter_key.startswith('openshell:resolve:env:'):
+                    openrouter_key = ''
                 admin_token = (
                     os.environ.get('ADMIN_TOKEN')
                     or os.environ.get('W8_BYOH_ADMIN_TOKEN')
                     or 'w8-catalog-simulation-admin'
                 )
                 provider = os.environ.get('W8_HALOOP_PROVIDER') or os.environ.get('OPENRIND_GATEWAY_PROVIDER') or 'openrouter'
+                collector_url = os.environ.get('HALOOP_COLLECTOR_URL') or 'http://136.112.93.84:8788'
+                project_name = (
+                    os.environ.get('OPENRIND_SHELL_WORKSPACE_ID')
+                    or os.environ.get('WORKSPACE_ID')
+                    or os.environ.get('OPENRIND_SHELL_SANDBOX_NAME')
+                    or os.environ.get('OPENRIND_SANDBOX_NAME')
+                    or ''
+                ).strip()
+                if not project_name and Path('/var/lib/openrind-shell/runtime/workspace-id').is_file():
+                    try:
+                        project_name = Path('/var/lib/openrind-shell/runtime/workspace-id').read_text().strip()
+                    except Exception:
+                        pass
+                if not project_name and Path('/var/lib/openrind-shell/runtime/sandbox-name').is_file():
+                    try:
+                        project_name = Path('/var/lib/openrind-shell/runtime/sandbox-name').read_text().strip()
+                    except Exception:
+                        pass
+                project_name = re.sub(r'^or-', '', project_name) or 'default'
+
                 request.headers['x-w8-haloop-provider'] = provider
                 request.headers['x-w8-haloop-admin-token'] = admin_token
+                request.headers['x-w8-haloop-metadata'] = json.dumps({'project': project_name})
+                request.headers['x-w8-haloop-config'] = json.dumps({
+                    'input_guardrails': [{'halo.mark': {'collectorURL': collector_url}, 'async': False, 'deny': False}],
+                    'output_guardrails': [{'halo.export': {'collectorURL': collector_url, 'defaultProject': project_name}, 'async': False, 'deny': False}],
+                })
                 
                 auth_key = openrouter_key or credential
                 if auth_key:
                     request.headers['authorization'] = f"Bearer {auth_key}"
                     request.headers['x-api-key'] = auth_key
                     request.headers['x-w8-haloop-api-key'] = auth_key
+                return True
+            elif 'openrouter.ai' in getattr(url, 'host', ''):
+                openrouter_key = os.environ.get('OPENROUTER_API_KEY') or ''
+                if openrouter_key and not openrouter_key.startswith('openshell:resolve:env:'):
+                    request.headers['authorization'] = f"Bearer {openrouter_key}"
                 return True
         return False
 
@@ -131,24 +165,30 @@ def main():
     # Preserve OpenShell's revisioned credential placeholder: its proxy resolves
     # it to the scoped Haloop token only for this authorized native launcher.
     credential = os.environ.get('ANTHROPIC_API_KEY', '')
-    if not credential.startswith('openshell:resolve:env:'):
+    if not (credential.startswith('openshell:resolve:env:') or credential.startswith('sk-')):
         raise ValueError('The OpenShell Haloop provider credential is missing. Reconnect from Desktop.')
     base = normalize_gateway_url(os.environ.get('HALOOP_GATEWAY_URL') or os.environ.get('LLM_BASE_URL') or BASE_URL)
     openai_base = f"{base}/v1" if not base.endswith('/v1') else base
     model = os.environ.get('OPENRIND_SHELL_OPENHANDS_MODEL') or os.environ.get('LLM_MODEL') or 'openai/inclusionai/ling-3.0-flash-sante:free'
+    real_openrouter_key = os.environ.get('OPENROUTER_API_KEY') or ''
+    if real_openrouter_key.startswith('openshell:resolve:env:'):
+        real_openrouter_key = ''
+    active_key = real_openrouter_key or credential
     os.chdir(WORKSPACE)
     os.environ.update({
         'HOME': '/sandbox/openhands-home',
         'LLM_MODEL': model,
         'LLM_BASE_URL': openai_base,
-        'LLM_API_KEY': credential,
-        'OPENAI_API_KEY': credential,
-        'OPENROUTER_API_KEY': credential,
+        'LLM_API_KEY': active_key,
+        'OPENAI_API_KEY': active_key,
+        'OPENROUTER_API_KEY': active_key,
         'ANTHROPIC_API_KEY': credential,
         'ANTHROPIC_BASE_URL': base,
         'ANTHROPIC_API_BASE': base,
         'OPENAI_BASE_URL': openai_base,
         'OPENAI_API_BASE': openai_base,
+        'OPENROUTER_BASE_URL': openai_base,
+        'OPENROUTER_API_BASE': openai_base,
         'LITELLM_API_BASE': openai_base,
         'ANTHROPIC_CUSTOM_HEADERS': f'x-openrind-haloop-session: {context}',
         'DO_NOT_TRACK': '1',
