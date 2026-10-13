@@ -30,22 +30,37 @@ function logError(...args) {
   console.error(`[helper ${ts}] ERROR:`, ...args);
 }
 
-async function fetchJson(path, endpoint = activeEndpoint) {
-  const host = endpoint?.host || 'openrind-browser-pod';
-  const port = endpoint?.port || 9222;
-  const url = `http://${host}:${port}${path}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return await res.json();
+ function fetchJson(path, endpoint = activeEndpoint) {
+  return new Promise((resolve, reject) => {
+    const host = endpoint?.host || 'openrind-browser-pod';
+    const port = endpoint?.port || 9222;
+    const req = http.request({
+      host,
+      port,
+      path,
+      method: 'GET',
+      headers: { host: 'localhost' },
+    }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          if (res.statusCode !== 200) return reject(new Error('HTTP ' + res.statusCode + ' [' + data.slice(0, 200) + ']'));
+          resolve(JSON.parse(data));
+        } catch (e) {
+          reject(e);
+        }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(5000, () => { req.destroy(new Error('TIMEOUT')); });
+    req.end();
+  });
 }
 
 async function checkEndpoint(cand) {
   try {
-    const res = await fetch(`http://${cand.host}:${cand.port}/json/version`, {
-      signal: AbortSignal.timeout(3000),
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
+    const data = await fetchJson('/json/version', cand);
     if (data?.webSocketDebuggerUrl) return cand;
   } catch {}
   return null;
@@ -115,6 +130,7 @@ function openWebSocket(url, options = {}) {
       maxPayload: 128 * 1024 * 1024,
       perMessageDeflate: false,
       handshakeTimeout: 10000,
+      headers: { Host: 'localhost' },
       ...options,
     });
     ws.once('open', () => {
