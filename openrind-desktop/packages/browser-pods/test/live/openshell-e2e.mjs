@@ -24,6 +24,9 @@ const testHyperbrowser = process.argv.includes('--hyperbrowser');
 const testArgide = process.argv.includes('--argide');
 const testWidget = process.argv.includes('--argide-widget');
 const testCtf = process.argv.includes('--ctf');
+const ctfTaskArg = process.argv.find(arg => arg.startsWith('--task=') || arg.startsWith('--ctf-task='));
+const selectedTask = ctfTaskArg ? ctfTaskArg.split('=')[1] : null;
+const ctfTasks = selectedTask ? [selectedTask] : ['flag-command', 'glacier-exchange'];
 const ctfImage = process.env.CTF_CHALLENGE_IMAGE || 'openrind-ctf-challenge:e2e';
 const ctfModel = process.env.OPENRIND_CTF_MODEL || 'openai/gpt-4o-mini';
 const state = await mkdtemp(join(tmpdir(), 'openrind-browser-live-'));
@@ -213,10 +216,10 @@ supervisor_bin = "${binaryDir}/openshell-sandbox"
   gatewayReady = true;
   pass('isolated vendored gateway ready');
   if (testCtf) {
-    for (const [index, id] of ['flag-command', 'glacier-exchange'].entries()) {
+    for (const [index, id] of ctfTasks.entries()) {
       await startCtfChallenge({ id, index, bridge, image: ctfImage });
     }
-    pass('two Openrind-native CTF challenge services are ready in separate sandboxes');
+    pass(`${ctfTasks.length} Openrind-native CTF challenge service(s) ready in separate sandbox(es)`);
   }
   binding = browserPodBinding({ endpoint: 'http://host.openshell.internal:19301', bridgeAddress: bridge, bindingId: tag });
   await writeFile(join(state, 'profile.json'), JSON.stringify(binding.profile), { mode: 0o600 });

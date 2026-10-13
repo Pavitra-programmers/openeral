@@ -95,7 +95,6 @@ network_policies:
       - { path: /usr/local/bin/claude-real }
       - { path: /usr/local/bin/openrind-openclaw-agent }
       - { path: /usr/local/bin/openrind-openhands-agent }
-      - { path: /usr/bin/node }
 
   # --- Claude telemetry and static resources (no inference credential) ---
   claude_support:
@@ -264,7 +263,6 @@ network_policies:
   browser_pod:
     name: browser-pod
     endpoints:
-      - { host: "openrind-browser-pod-*", port: 9222 }
       - { host: openrind-browser-pod, port: 9222 }
       - { host: host.openshell.internal, port: 9222 }
       - { host: 127.0.0.1, port: 9222 }

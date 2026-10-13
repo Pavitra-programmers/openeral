@@ -12,6 +12,9 @@ import { fileURLToPath } from "node:url";
 const DISTRO_NAME = "openrind-desktop-openshell";
 const FUSE_IMAGE = "openrind-shell-fuse:local";
 const FUSE_CONTRACT = "fuse-haloop-required-v29-browser-client";
+const BROWSER_POD_IMAGE_E2E = "openrind-browser-pod:e2e";
+const BROWSER_POD_IMAGE_LATEST = "openrind-browser-pod:latest";
+const CHROMIUM_VERSION = process.env.CHROMIUM_VERSION?.trim() || "154.0.8037.92-1~deb12u1";
 const OPENSHELL_BASE_IMAGE = "ghcr.io/nvidia/openshell-community/sandboxes/base:latest";
 const CLAUDE_CODE_PACKAGE = "@anthropic-ai/claude-code";
 
@@ -152,12 +155,43 @@ if (!verifyOnly) {
     ],
     `Building ${FUSE_IMAGE}`,
   );
+
+  const browserPodDockerfile = path.join(repositoryRoot, "sandboxes/browser-pod/Dockerfile");
+  const browserPodContext = path.join(repositoryRoot, "sandboxes/browser-pod");
+  if (!existsSync(browserPodDockerfile)) fail(`Browser pod Dockerfile not found at ${browserPodDockerfile}.`);
+  console.log(`[runtime-images] building ${BROWSER_POD_IMAGE_E2E} in ${DISTRO_NAME}...`);
+  await requireSuccess(
+    [
+      "docker",
+      "build",
+      "--pull=false",
+      "--build-arg",
+      `CHROMIUM_VERSION=${CHROMIUM_VERSION}`,
+      "-f",
+      toWslPath(browserPodDockerfile),
+      "-t",
+      BROWSER_POD_IMAGE_E2E,
+      "-t",
+      BROWSER_POD_IMAGE_LATEST,
+      toWslPath(browserPodContext),
+    ],
+    `Building ${BROWSER_POD_IMAGE_E2E}`,
+  );
 }
 
 await verifyImage(
   FUSE_IMAGE,
   "com.openrind.desktop.fuse-contract",
   FUSE_CONTRACT,
+);
+
+const browserInspect = await requireSuccess(
+  ["docker", "image", "inspect", BROWSER_POD_IMAGE_E2E, "--format", "{{.Id}}"],
+  `Inspecting ${BROWSER_POD_IMAGE_E2E}`,
+  { capture: true },
+);
+console.log(
+  `[runtime-images] verified ${BROWSER_POD_IMAGE_E2E} ${browserInspect.stdout.trim()}`,
 );
 
 console.log("[runtime-images] required source-checkout images are ready in the OpenShell WSL daemon.");
