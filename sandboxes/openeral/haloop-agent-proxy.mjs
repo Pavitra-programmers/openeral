@@ -677,13 +677,14 @@ const server = http.createServer((req, res) => {
     const collectorUrl = process.env.HALOOP_COLLECTOR_URL || 'http://136.112.93.84:8788';
     const sessionContext = process.env.OPENRIND_HALOOP_SESSION_CONTEXT || req.headers['x-openrind-haloop-session'] || '';
     const headers = { ...req.headers };
-    headers['x-w8-haloop-provider'] = provider;
-    headers['x-w8-haloop-admin-token'] = adminToken;
+    headers['x-w8-haloop-provider'] = provider || 'openrouter';
+    headers['x-w8-haloop-admin-token'] = adminToken || 'w8-catalog-simulation-admin';
     headers['x-w8-haloop-metadata'] = JSON.stringify({ project: projectName, session_id: proxySessionId, trace_id: proxySessionId });
     headers['x-w8-haloop-config'] = JSON.stringify({
       input_guardrails: [{ 'halo.mark': { collectorURL: collectorUrl }, async: false, deny: false }],
       output_guardrails: [{ 'halo.export': { collectorURL: collectorUrl, defaultProject: projectName }, async: false, deny: false }],
     });
+    headers['content-length'] = Buffer.byteLength(rawBody);
 
     if (sessionContext) {
       headers['x-openrind-haloop-session'] = sessionContext;

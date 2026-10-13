@@ -114,7 +114,12 @@ if [ -f /opt/openrind-browser/mcp.json ] && [ -n "${OPENRIND_BROWSER_GRANT:-}" ]
 fi
 
 PROXY_PID=""
-if [ -f /opt/openrind-shell/haloop-agent-proxy.mjs ]; then
+USE_OPENROUTER_PROXY=0
+if [ -n "${OPENROUTER_API_KEY:-}" ] || [ "${W8_HALOOP_PROVIDER:-}" = "openrouter" ] || echo "${ANTHROPIC_API_KEY:-}" | grep -q '^sk-or-'; then
+  USE_OPENROUTER_PROXY=1
+fi
+
+if [ "$USE_OPENROUTER_PROXY" = "1" ] && [ -f /opt/openrind-shell/haloop-agent-proxy.mjs ]; then
   if ! curl -s -o /dev/null http://127.0.0.1:8785/healthz 2>/dev/null; then
     export HALOOP_GATEWAY_URL="${HALOOP_GATEWAY_URL:-${HALOOP_UPSTREAM_URL:-http://136.112.93.84:8787}}"
     export HALOOP_UPSTREAM_URL="$HALOOP_GATEWAY_URL"
