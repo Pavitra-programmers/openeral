@@ -23,6 +23,7 @@ COPY --from=helper-builder /opt/openrind-browser-pods/helper /usr/local/bin/open
 COPY --from=helper-builder /opt/hyperbrowser-fixture/ /opt/hyperbrowser-fixture/
 COPY openrind-desktop/packages/browser-pods/packaging/ /opt/openrind/browser/
 RUN node /opt/openrind/browser/install-agent-browser.mjs \
+    && chmod 0644 /opt/openrind/browser/*.json \
     && chmod 0755 /opt/openrind-browser-pods/bin/helper-ensure.sh \
     && ln -s /opt/openrind-browser-pods/bin/helper-ensure.sh /usr/local/bin/openrind-browser-pod-ensure \
     && install -d -m 0755 /etc/openrind-browser-pods \

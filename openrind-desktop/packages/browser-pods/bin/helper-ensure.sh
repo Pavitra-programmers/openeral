@@ -1,5 +1,5 @@
 #!/bin/sh
-set -eu
+set -eux
 # This is explicit experimental activation, never a mandatory Claude preflight.
 [ "${OPENRIND_BROWSER_PODS_EXPERIMENTAL:-0}" = 1 ] || {
   echo 'browser-pods: experimental opt-in is required' >&2; exit 1;
@@ -28,7 +28,7 @@ elif [ -x /usr/local/bin/openrind-browser-pod-helper ]; then
     </dev/null >>"$state/helper.log" 2>&1 9>&- &
 fi
 for attempt in 1 2 3 4 5 6 7 8 9 10; do
-  if probe >/dev/null 2>&1; then exit 0; fi
+  if probe; then exit 0; fi
   sleep 1
 done
 echo 'browser-pods: helper did not start; check the private helper log' >&2

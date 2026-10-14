@@ -5,6 +5,9 @@
 .codex
 .pytest_cache
 **/__pycache__
+vendor/
+node_modules/
+**/node_modules/
 openrind-desktop
 !openrind-desktop/
 openrind-desktop/*

@@ -10,15 +10,15 @@ const BIND_HOST = '127.0.0.1';
 const proxyEnv = process.env.HTTP_PROXY || process.env.http_proxy;
 const proxyUrl = proxyEnv ? new URL(proxyEnv) : null;
 
-const podHost = process.env.BROWSER_POD_HOST || process.env.BROWSER_POD_NAME;
-const CANDIDATES = [
-  { host: 'openrind-browser-pod', port: 9222 },
-  podHost && podHost !== 'openrind-browser-pod' ? { host: podHost, port: Number(process.env.BROWSER_POD_PORT || 9222) } : null,
-  { host: '172.19.0.1', port: 9222 },
-  { host: 'host.openshell.internal', port: 9222 },
-].filter(Boolean);
-
-let activeEndpoint = null;
+let podHost = process.env.BROWSER_POD_HOST || process.env.BROWSER_POD_NAME;
+try {
+  const fs = await import('node:fs');
+  if (fs.existsSync('/etc/openrind-browser-pods/helper.json')) {
+    const raw = fs.readFileSync('/etc/openrind-browser-pods/helper.json', 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed.podHost) podHost = parsed.podHost;
+  }
+} catch {}
 
 function log(...args) {
   const ts = new Date().toISOString().slice(11, 23);
@@ -30,76 +30,13 @@ function logError(...args) {
   console.error(`[helper ${ts}] ERROR:`, ...args);
 }
 
-async function fetchJson(path, endpoint = activeEndpoint) {
-  const host = endpoint?.host || 'openrind-browser-pod';
-  const port = endpoint?.port || Number(process.env.BROWSER_POD_PORT || 9222);
-  try {
-    const res = await fetch(`http://${host}:${port}${path}`, {
-      signal: AbortSignal.timeout(5000),
-      headers: { host: `${host}:${port}` },
-    });
-    if (res.ok) {
-      return await res.json();
-    }
-  } catch (err) {
-    // If fetch failed, fallback to direct TCP socket
-  }
-  return new Promise((resolve, reject) => {
-    const sock = net.connect({ host, port }, () => {
-      sock.write(`GET ${path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n`);
-    });
-    let data = '';
-    sock.on('data', chunk => data += chunk.toString('utf8'));
-    sock.on('end', () => {
-      try {
-        const bodyIdx = data.indexOf('\r\n\r\n');
-        if (bodyIdx === -1) return reject(new Error('INVALID_HTTP_RESPONSE'));
-        const head = data.slice(0, bodyIdx);
-        const statusMatch = head.match(/HTTP\/1\.[01]\s+(\d+)/);
-        const status = statusMatch ? Number(statusMatch[1]) : 500;
-        const body = data.slice(bodyIdx + 4);
-        if (status !== 200) return reject(new Error('HTTP ' + status + ' [' + body.slice(0, 200) + ']'));
-        resolve(JSON.parse(body));
-      } catch (e) {
-        reject(e);
-      }
-    });
-    sock.on('error', reject);
-    sock.setTimeout(5000, () => { sock.destroy(new Error('TIMEOUT')); });
-  });
-}
-
-async function checkEndpoint(cand) {
-  try {
-    const data = await fetchJson('/json/version', cand);
-    if (data?.webSocketDebuggerUrl) return cand;
-  } catch {}
-  return null;
-}
-
-async function resolveChromiumEndpoint() {
-  const defaultHost = 'openrind-browser-pod';
-  const defaultPort = Number(process.env.BROWSER_POD_PORT || 9222);
-
-  if (activeEndpoint && (await checkEndpoint(activeEndpoint))) {
-    return activeEndpoint;
-  }
-  for (const cand of CANDIDATES) {
-    if (await checkEndpoint(cand)) {
-      activeEndpoint = cand;
-      return cand;
-    }
-  }
-  return { host: defaultHost, port: defaultPort };
-}
-
 class ConnectAgent extends http.Agent {
   constructor(proxy) {
     super({ keepAlive: true });
     this.proxy = proxy;
   }
   createConnection(options, callback) {
-    const host = options.hostname || options.host || 'openrind-browser-pod';
+    const host = options.hostname || options.host || 'host.openshell.internal';
     const port = options.port || 9222;
     if (!this.proxy) {
       log(`Direct TCP connect to ${host}:${port}`);
@@ -120,15 +57,19 @@ class ConnectAgent extends http.Agent {
       if (res.statusCode !== 200) {
         logError(`Proxy CONNECT returned status: ${res.statusCode}`);
         socket.destroy();
-        callback(new Error(`Proxy CONNECT status: ${res.statusCode}`));
+        // Fallback to direct TCP on proxy status error
+        const sock = net.connect({ host, port }, () => callback(null, sock));
+        sock.on('error', () => callback(new Error(`Proxy CONNECT status: ${res.statusCode}`)));
         return;
       }
       log(`Proxy CONNECT established 200 for ${host}:${port}`);
       callback(null, socket);
     });
     connectReq.on('error', (err) => {
-      logError(`Proxy CONNECT error for ${host}:${port}:`, err.message);
-      callback(err);
+      logError(`Proxy CONNECT error for ${host}:${port}: ${err.message}`);
+      // Fallback to direct TCP on connect error
+      const sock = net.connect({ host, port }, () => callback(null, sock));
+      sock.on('error', () => callback(err));
     });
     connectReq.end();
   }
@@ -136,6 +77,65 @@ class ConnectAgent extends http.Agent {
 
 const connectAgent = proxyUrl ? new ConnectAgent(proxyUrl) : null;
 const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
+
+const CANDIDATES = [
+  { host: 'host.openshell.internal', port: 9222 },
+  podHost && podHost !== 'host.openshell.internal' ? { host: podHost, port: Number(process.env.BROWSER_POD_PORT || 9222) } : null,
+  { host: 'openrind-browser-pod', port: 9222 },
+  { host: '127.0.0.1', port: 9222 },
+].filter(Boolean);
+
+let activeEndpoint = null;
+
+async function fetchJson(path, endpoint = activeEndpoint) {
+  const host = endpoint?.host || 'host.openshell.internal';
+  const port = endpoint?.port || Number(process.env.BROWSER_POD_PORT || 9222);
+  return new Promise((resolve, reject) => {
+    const reqOptions = {
+      hostname: host,
+      port,
+      path,
+      method: 'GET',
+      headers: { Host: `${host}:${port}` },
+      agent: connectAgent,
+    };
+    const req = http.request(reqOptions, (res) => {
+      let body = '';
+      res.on('data', chunk => body += chunk);
+      res.on('end', () => {
+        if (res.statusCode !== 200) return reject(new Error('HTTP ' + res.statusCode));
+        try { resolve(JSON.parse(body)); } catch (e) { reject(e); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(5000, () => { req.destroy(new Error('TIMEOUT')); });
+    req.end();
+  });
+}
+
+async function checkEndpoint(cand) {
+  try {
+    const data = await fetchJson('/json/version', cand);
+    if (data?.webSocketDebuggerUrl) return cand;
+  } catch {}
+  return null;
+}
+
+async function resolveChromiumEndpoint() {
+  const defaultHost = podHost || 'openrind-browser-pod';
+  const defaultPort = Number(process.env.BROWSER_POD_PORT || 9222);
+
+  if (activeEndpoint && (await checkEndpoint(activeEndpoint))) {
+    return activeEndpoint;
+  }
+  for (const cand of CANDIDATES) {
+    if (await checkEndpoint(cand)) {
+      activeEndpoint = cand;
+      return cand;
+    }
+  }
+  return { host: defaultHost, port: defaultPort };
+}
 
 function openWebSocket(url, options = {}) {
   return new Promise((resolve, reject) => {
@@ -204,10 +204,19 @@ const sessions = new Map();
 
 const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && req.url === '/health') {
+    let gen = 'openrind-desktop';
+    try {
+      const fs = await import('node:fs');
+      if (fs.existsSync('/etc/openrind-browser-pods/helper.json')) {
+        const raw = fs.readFileSync('/etc/openrind-browser-pods/helper.json', 'utf8');
+        const parsed = JSON.parse(raw);
+        if (parsed.generation) gen = parsed.generation;
+      }
+    } catch {}
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({
       ready: true,
-      generation: 'openrind-desktop',
+      generation: gen,
       implementation: 'provider-pods',
     }));
     return;

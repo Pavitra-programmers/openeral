@@ -48,3 +48,6 @@ dist/
 # Local PostgreSQL fixture material
 tests/fuse/postgres-fixture/certs/
 tests/fuse/postgres-fixture/context/
+
+# CTF Traces
+ctf-traces/

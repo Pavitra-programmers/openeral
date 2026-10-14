@@ -50,12 +50,12 @@ export function browserPodBinding({ endpoint, bridgeAddress, bindingId }) {
       { allow: { method: 'POST', path: '/api/session/*/uploads' } },
       { allow: { method: 'GET', path: '/artifacts/*/*' } },
     ] };
-  const binary = '/usr/local/bin/openrind-browser-pod-helper';
+  const binaries = ['/usr/local/bin/openrind-browser-pod-helper', '/usr/bin/node'];
   return Object.freeze({ name: `${base.name}-pods`,
     profile: { ...base.profile, id: `${base.name}-pods`, display_name: 'Openrind browser pods (experimental)',
       credentials: [{ name: 'pod_token', env_vars: ['OPENRIND_BROWSER_POD_TOKEN'], required: true,
         auth_style: 'bearer', header_name: 'Authorization' }],
-      discovery: { credentials: ['pod_token'] }, endpoints: [route], binaries: [binary] },
-    networkPolicy: { name: `${base.name}-pods`, endpoints: [route], binaries: [{ path: binary }] },
+      discovery: { credentials: ['pod_token'] }, endpoints: [route], binaries },
+    networkPolicy: { name: `${base.name}-pods`, endpoints: [route], binaries: binaries.map(path => ({ path })) },
   });
 }
