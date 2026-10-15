@@ -23,3 +23,5 @@ const version = execFileSync(binary, ['--version'], { encoding: 'utf8', timeout:
 if (!version.trim().endsWith(manifest.version)) throw new Error('agent-browser version mismatch');
 await writeFile('/usr/local/bin/agent-browser', await readFile(new URL('./agent-browser.sh', import.meta.url)),
   { flag: 'wx', mode: 0o755 });
+await chmod('/opt/openrind/browser/agent-browser-policy.json', 0o644).catch(() => {});
+await chmod('/opt/openrind/browser/agent-browser.json', 0o644).catch(() => {});

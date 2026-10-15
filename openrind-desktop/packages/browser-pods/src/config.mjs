@@ -4,13 +4,13 @@ import { isAbsolute } from 'node:path';
 import { isIP } from 'node:net';
 import { requireThat } from './contracts.mjs';
 
-export async function readConfig(path, { uid = process.getuid(), privateFile = true } = {}) {
+export async function readConfig(path, { uid = typeof process.getuid === 'function' ? process.getuid() : undefined, privateFile = true } = {}) {
   requireThat(isAbsolute(path), 'ABSOLUTE_CONFIG_PATH_REQUIRED');
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = await file.stat();
-    requireThat(stat.isFile() && stat.nlink === 1 && stat.uid === uid && stat.size < 64 * 1024 &&
-      (stat.mode & (privateFile ? 0o077 : 0o022)) === 0, 'UNSAFE_CONFIG_FILE');
+    requireThat(stat.isFile() && stat.nlink === 1 && (uid === undefined || stat.uid === uid) && stat.size < 64 * 1024 &&
+      (process.platform === 'win32' || (stat.mode & (privateFile ? 0o077 : 0o022)) === 0), 'UNSAFE_CONFIG_FILE');
     return JSON.parse(await file.readFile('utf8'));
   } finally { await file.close(); }
 }

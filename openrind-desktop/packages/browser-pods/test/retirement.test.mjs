@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 
 const root = new URL('../../../../', import.meta.url);
 
-test('Claude still starts with stale managed browser credentials and flushes FUSE', async t => {
+test('Claude still starts with stale managed browser credentials and flushes FUSE', { skip: process.platform === 'win32' && '/bin/sh shell runner requires Linux/WSL' }, async t => {
   const dir = await mkdtemp(join(tmpdir(), 'browser-retirement-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const wrapper = await readFile(new URL('sandboxes/openeral/openeral-claude-fuse.sh', root), 'utf8');
@@ -37,7 +37,7 @@ test('primary images agree on client packaging without another FUSE contract bum
   assert.match(skill, /name: openrind-browser/);
 });
 
-test('client defaults work without image ENV and preserve explicit conflicts', async () => {
+test('client defaults work without image ENV and preserve explicit conflicts', { skip: process.platform === 'win32' && '/bin/sh shell runner requires Linux/WSL' }, async () => {
   const defaults = new URL('../packaging/client-env.sh', import.meta.url).pathname;
   const run = env => spawnSync('/bin/sh', ['-c', '. "$1"; printf "%s\\n" "$AGENT_BROWSER_PROVIDER" "$KERNEL_ENDPOINT" "$KERNEL_API_KEY" "$AGENT_BROWSER_ACTION_POLICY"', 'test', defaults],
     { env, encoding: 'utf8' });
@@ -48,7 +48,7 @@ test('client defaults work without image ENV and preserve explicit conflicts', a
 });
 
 test('Docker context includes the browser-pod image assets', async () => {
-  const ignore = await readFile(new URL('.dockerignore', root), 'utf8');
+  const ignore = (await readFile(new URL('.dockerignore', root), 'utf8')).replace(/\r/g, '');
   for (const path of ['package.json', 'package-lock.json', 'src/**', 'bin/**', 'native/**', 'packaging/**']) {
     assert.ok(ignore.split('\n').includes(`!openrind-desktop/packages/browser-pods/${path}`), path);
   }

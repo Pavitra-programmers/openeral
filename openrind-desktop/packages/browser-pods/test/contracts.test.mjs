@@ -120,11 +120,11 @@ test('provider binding uses header injection only and a dedicated helper binary'
     ['POST', '/api/session'], ['GET', '/api/session/*'], ['GET', '/api/session/*/downloads-url'], ['GET', '/api/sessions'],
     ['PUT', '/api/session/*/stop'], ['POST', '/api/session/*/uploads'], ['GET', '/artifacts/*/*'],
   ]);
-  assert.deepEqual(binding.profile.binaries, ['/usr/local/bin/openrind-browser-pod-helper']);
+  assert.deepEqual(binding.profile.binaries, ['/usr/local/bin/openrind-browser-pod-helper', '/usr/bin/node']);
   assert.throws(() => browserPodBinding({ endpoint: 'http://host.openshell.internal:18770', bridgeAddress: '172.18.0.1', bindingId: 'fixture' }));
 });
 
-test('broker configuration must be private, owned, and not a symlink', async t => {
+test('broker configuration must be private, owned, and not a symlink', { skip: process.platform === 'win32' && 'POSIX file permissions and symlinks require Linux/WSL' }, async t => {
   const dir = await mkdtemp(join(tmpdir(), 'browser-config-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const path = join(dir, 'config');

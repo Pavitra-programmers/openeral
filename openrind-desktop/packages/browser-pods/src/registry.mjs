@@ -10,12 +10,15 @@ export class PodRegistry {
     requireThat(isAbsolute(path), 'PRIVATE_REGISTRY_REQUIRED');
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     const directory = statSync(dirname(path));
-    requireThat((directory.mode & 0o077) === 0 && directory.uid === process.getuid(), 'PRIVATE_REGISTRY_REQUIRED');
+    const isPosix = typeof process.getuid === 'function';
+    if (isPosix) {
+      requireThat((directory.mode & 0o077) === 0 && directory.uid === process.getuid(), 'PRIVATE_REGISTRY_REQUIRED');
+    }
     const fd = openSync(path, constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW, 0o600);
     try {
       const info = fstatSync(fd);
-      requireThat(info.isFile() && info.nlink === 1 && info.uid === process.getuid(), 'PRIVATE_REGISTRY_REQUIRED');
-      fchmodSync(fd, 0o600);
+      requireThat(info.isFile() && info.nlink === 1 && (!isPosix || info.uid === process.getuid()), 'PRIVATE_REGISTRY_REQUIRED');
+      if (isPosix) fchmodSync(fd, 0o600);
     } finally { closeSync(fd); }
     this.db = new DatabaseSync(path);
     try {
