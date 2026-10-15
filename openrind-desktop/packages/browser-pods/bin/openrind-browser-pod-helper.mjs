@@ -173,19 +173,24 @@ function relayWebSockets(client, remote) {
   client.on('error', (e) => { logError('Client WS error:', e.message); close(); });
   remote.on('error', (e) => { logError('Remote WS error:', e.message); close(); });
 
-  client.on('close', (code, reason) => {
+  const propagateClose = (target) => (code, reason) => {
     if (!closed) {
       closed = true;
-      try { remote.close(code, reason); } catch {}
+      const valid = (code >= 1000 && code <= 1014 && ![1004, 1005, 1006].includes(code)) || (code >= 3000 && code <= 4999);
+      try {
+        if (valid) {
+          target.close(code, reason);
+        } else {
+          target.terminate();
+        }
+      } catch {
+        try { target.terminate(); } catch {}
+      }
     }
-  });
+  };
 
-  remote.on('close', (code, reason) => {
-    if (!closed) {
-      closed = true;
-      try { client.close(code, reason); } catch {}
-    }
-  });
+  client.on('close', propagateClose(remote));
+  remote.on('close', propagateClose(client));
 
   client.on('message', (data, isBinary) => {
     if (remote.readyState === WebSocket.OPEN) {
