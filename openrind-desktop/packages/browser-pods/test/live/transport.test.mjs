@@ -72,7 +72,7 @@ test('Kernel create probes the full helper route; CDP relays a 17 MiB message', 
     proxyUrl: `http://127.0.0.1:${proxyPort}`, placeholder: serviceToken, generation: owner.generation });
   await helper.start();
   const response = await fetch(`${HELPER_ORIGIN}/browsers`, { method: 'POST',
-    headers: { 'content-type': 'application/json' }, body: JSON.stringify({ headless: true, stealth: false, timeout_seconds: 300 }) });
+    headers: { 'content-type': 'application/json', connection: 'close' }, body: JSON.stringify({ headless: true, stealth: false, timeout_seconds: 300 }) });
   assert.equal(response.status, 200);
   const session = await response.json();
   const ws = await openWebSocket(session.cdp_ws_url);
@@ -90,12 +90,12 @@ test('Kernel create probes the full helper route; CDP relays a 17 MiB message', 
   core.stop = () => new Promise(resolve => { unblock = resolve; });
   try {
     const started = performance.now();
-    const refused = await fetch(`${HELPER_ORIGIN}/browsers/${session.session_id}`, { method: 'DELETE' });
+    const refused = await fetch(`${HELPER_ORIGIN}/browsers/${session.session_id}`, { method: 'DELETE', headers: { connection: 'close' } });
     assert.ok(refused.status >= 500, 'an unconfirmed stop must not report success');
     const elapsed = performance.now() - started;
     assert.ok(elapsed >= 1900 && elapsed < 3000, `DELETE deadline took ${elapsed} ms`);
   } finally { core.stop = originalStop; unblock?.(); }
-  assert.equal((await fetch(`${HELPER_ORIGIN}/browsers/${session.session_id}`, { method: 'DELETE' })).status, 204);
+  assert.equal((await fetch(`${HELPER_ORIGIN}/browsers/${session.session_id}`, { method: 'DELETE', headers: { connection: 'close' } })).status, 204);
   assert.ok(connects >= 3);
 });
 

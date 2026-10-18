@@ -156,8 +156,6 @@ jobs:
         with:
           context: sandboxes/browser-pod
           file: sandboxes/browser-pod/Dockerfile
-          build-args: |
-            CHROMIUM_VERSION=154.0.8037.92-1~deb12u1
           push: true
           tags: |
             ${{ env.IMAGE_REPO_BASE }}/browser-pod:latest

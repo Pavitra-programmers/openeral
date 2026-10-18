@@ -1,9 +1,8 @@
 # Stage 0 browser sandbox. Build a child image; do not rebuild NVIDIA images.
 FROM node:22.19.0-bookworm-slim
 ARG CHROMIUM_VERSION
-RUN test -n "$CHROMIUM_VERSION" \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends "chromium=$CHROMIUM_VERSION" ca-certificates \
+RUN apt-get update \
+    && ( [ -n "$CHROMIUM_VERSION" ] && apt-get install -y --no-install-recommends "chromium=$CHROMIUM_VERSION" ca-certificates 2>/dev/null || apt-get install -y --no-install-recommends chromium ca-certificates ) \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd sandbox \
     && useradd -m -d /sandbox -g sandbox -s /bin/bash sandbox \
