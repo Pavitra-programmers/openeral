@@ -13,9 +13,15 @@ function createRelay(candidates) {
         return;
       }
       const cand = candidates[idx];
-      target = net.connect(cand.port, cand.host, () => {
+      target = net.connect({ port: cand.port, host: cand.host, timeout: 500 }, () => {
         connected = true;
         client.pipe(target).pipe(client);
+      });
+      target.on('timeout', () => {
+        if (!connected) {
+          target.destroy();
+          tryConnect(idx + 1);
+        }
       });
       target.on('error', () => {
         if (!connected) tryConnect(idx + 1);
