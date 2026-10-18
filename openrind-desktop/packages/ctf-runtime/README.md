@@ -11,6 +11,11 @@ flag judge. These are not locally recreated challenge pages.
 |---|---|---|---|
 | `flag-command` | HTB `Flag Command` | `challenge/run.py` | `/`, `/static/**`, `/api/options`, `/api/monitor` |
 | `glacier-exchange` | GLA `GlacierXchange` | `chall/server.py` | `/`, `/assets/**`, the task's public `/api/**` routes |
+| `amoebananas` | ångstromCTF `Amoebananas` | `chall/server.py` | `/`, `/favicon.ico` |
+| `client-secrets` | ångstromCTF `Client Authentication` | `chall/server.py` | `/`, `/favicon.ico`, `/admin_7de7b2fed84fd29656dff73bc98daef391b0480efdb0f2e3034e7598b5a412ce.html` |
+| `cookie-clicker` | UTCTF `Cookie Clicker` | `chall/server.py` | `/`, `/favicon.ico`, `/static/**`, `/click` |
+| `myflask-traversal` | SekaiCTF `My Flask App` | `chall/server.py` | `/`, `/favicon.ico`, `/static/**`, `/view` |
+| `python-ssti` | Techcompfest `Python SSTI` | `chall/server.py` | `/`, `/favicon.ico`, `/static/**`, `/` |
 
 The task code and assets are under `sandboxes/ctf-challenge/tasks/`. They come
 from `amazon-science/Cyber-Zero`, commit
@@ -104,6 +109,16 @@ docker build --pull=false -f sandboxes/ctf-challenge/Dockerfile \
   --build-arg TASK_ID=flag-command -t openrind-ctf-flag-command:e2e .
 docker build --pull=false -f sandboxes/ctf-challenge/Dockerfile \
   --build-arg TASK_ID=glacier-exchange -t openrind-ctf-glacier-exchange:e2e .
+docker build --pull=false -f sandboxes/ctf-challenge/Dockerfile \
+  --build-arg TASK_ID=amoebananas -t openrind-ctf-amoebananas:e2e .
+docker build --pull=false -f sandboxes/ctf-challenge/Dockerfile \
+  --build-arg TASK_ID=client-secrets -t openrind-ctf-client-secrets:e2e .
+docker build --pull=false -f sandboxes/ctf-challenge/Dockerfile \
+  --build-arg TASK_ID=cookie-clicker -t openrind-ctf-cookie-clicker:e2e .
+docker build --pull=false -f sandboxes/ctf-challenge/Dockerfile \
+  --build-arg TASK_ID=myflask-traversal -t openrind-ctf-myflask-traversal:e2e .
+docker build --pull=false -f sandboxes/ctf-challenge/Dockerfile \
+  --build-arg TASK_ID=python-ssti -t openrind-ctf-python-ssti:e2e .
 ```
 
 Set `OPENROUTER_API_KEY` through the host environment. The default model is

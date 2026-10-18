@@ -9,20 +9,47 @@ import { createChallengeServer } from '../src/challenge-server.mjs';
 import { runCtfAgent, validateChallengeEventExport } from '../src/agent.mjs';
 import { createTask, publicTask } from '../src/tasks.mjs';
 
-test('task definitions point to the two upstream runnable web applications', () => {
+test('task definitions point to the runnable web applications', () => {
   const flagCommand = createTask('flag-command');
   const glacier = createTask('glacier-exchange');
+  const amoeba = createTask('amoebananas');
+  const clientSecrets = createTask('client-secrets');
+  const cookieClicker = createTask('cookie-clicker');
+  const myflask = createTask('myflask-traversal');
+  const pythonSsti = createTask('python-ssti');
   assert.equal(flagCommand.title, 'Flag Command');
   assert.equal(flagCommand.entrypoint, '/opt/openrind-ctf/task/challenge/run.py');
   assert.equal(glacier.title, 'GlacierXchange');
   assert.equal(glacier.entrypoint, '/opt/openrind-ctf/task/chall/server.py');
+  assert.equal(amoeba.title, 'Amoeba Central');
+  assert.equal(amoeba.entrypoint, '/opt/openrind-ctf/task/chall/server.py');
+  assert.equal(clientSecrets.title, 'Client Authentication');
+  assert.equal(clientSecrets.entrypoint, '/opt/openrind-ctf/task/chall/server.py');
+  assert.equal(cookieClicker.title, 'Cookie Clicker');
+  assert.equal(cookieClicker.entrypoint, '/opt/openrind-ctf/task/chall/server.py');
+  assert.equal(myflask.title, 'My Flask App');
+  assert.equal(myflask.entrypoint, '/opt/openrind-ctf/task/chall/server.py');
+  assert.equal(pythonSsti.title, 'Python Template Injection');
+  assert.equal(pythonSsti.entrypoint, '/opt/openrind-ctf/task/chall/server.py');
   assert.equal(flagCommand.sitePath, '/');
   assert.equal(glacier.sitePath, '/');
+  assert.equal(amoeba.sitePath, '/');
+  assert.equal(clientSecrets.sitePath, '/');
+  assert.equal(cookieClicker.sitePath, '/');
+  assert.equal(myflask.sitePath, '/');
+  assert.equal(pythonSsti.sitePath, '/');
   assert.ok(flagCommand.browserRules.some(rule => rule.path === '/api/options'));
   assert.ok(glacier.browserRules.some(rule => rule.path === '/api/wallet/transaction'));
+  assert.ok(amoeba.browserRules.some(rule => rule.path === '/'));
+  assert.ok(clientSecrets.browserRules.some(rule => rule.path === '/admin_7de7b2fed84fd29656dff73bc98daef391b0480efdb0f2e3034e7598b5a412ce.html'));
+  assert.ok(cookieClicker.browserRules.some(rule => rule.path === '/click'));
+  assert.ok(myflask.browserRules.some(rule => rule.path === '/view'));
+  assert.ok(pythonSsti.browserRules.some(rule => rule.path === '/'));
   assert.equal('flag' in flagCommand, false);
   assert.equal('entrypoint' in publicTask(glacier), false);
   assert.equal('browserRules' in publicTask(glacier), false);
+  assert.equal('entrypoint' in publicTask(amoeba), false);
+  assert.equal('entrypoint' in publicTask(cookieClicker), false);
   assert.throws(() => createTask('unknown'), /UNKNOWN_TASK/);
 });
 

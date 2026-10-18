@@ -26,10 +26,23 @@ const testWidget = process.argv.includes('--argide-widget');
 const testCtf = process.argv.includes('--ctf');
 const ctfTaskArg = process.argv.find(arg => arg.startsWith('--task=') || arg.startsWith('--ctf-task='));
 const selectedTask = ctfTaskArg ? ctfTaskArg.split('=')[1] : null;
-const ctfTasks = selectedTask ? [selectedTask] : ['flag-command', 'glacier-exchange'];
+const ctfTasks = selectedTask ? [selectedTask] : [
+  'flag-command',
+  'glacier-exchange',
+  'amoebananas',
+  'client-secrets',
+  'cookie-clicker',
+  'myflask-traversal',
+  'python-ssti',
+];
 const ctfImages = {
   'flag-command': process.env.CTF_FLAG_COMMAND_IMAGE || 'openrind-ctf-flag-command:e2e',
   'glacier-exchange': process.env.CTF_GLACIER_EXCHANGE_IMAGE || 'openrind-ctf-glacier-exchange:e2e',
+  'amoebananas': process.env.CTF_AMOEBANANAS_IMAGE || 'openrind-ctf-amoebananas:e2e',
+  'client-secrets': process.env.CTF_CLIENT_SECRETS_IMAGE || 'openrind-ctf-client-secrets:e2e',
+  'cookie-clicker': process.env.CTF_COOKIE_CLICKER_IMAGE || 'openrind-ctf-cookie-clicker:e2e',
+  'myflask-traversal': process.env.CTF_MYFLASK_TRAVERSAL_IMAGE || 'openrind-ctf-myflask-traversal:e2e',
+  'python-ssti': process.env.CTF_PYTHON_SSTI_IMAGE || 'openrind-ctf-python-ssti:e2e',
 };
 const ctfModel = process.env.OPENRIND_CTF_MODEL || 'openai/gpt-4o-mini';
 const state = await mkdtemp(join(tmpdir(), 'openrind-browser-live-'));
@@ -47,6 +60,10 @@ const ctfChallenges = [];
 async function run(file, args, options = {}) {
   try {
     const task = exec(file, args, { env, timeout: 90_000, maxBuffer: 4 * 1024 * 1024, ...options });
+    if (options.stream) {
+      task.child.stdout?.pipe(process.stdout);
+      task.child.stderr?.pipe(process.stderr);
+    }
     task.child.stdin.end(options.stdin);
     const result = await task;
     return (result.stdout + (options.includeStderr ? result.stderr : '')).trim();
@@ -133,8 +150,10 @@ async function runCtfAgent(challenge) {
   const apiKey = process.env.OPENROUTER_API_KEY?.trim();
   assert.ok(apiKey, '--ctf requires OPENROUTER_API_KEY');
   const runId = `${challenge.id}-${tag}`;
+  const maxSteps = Number(process.env.OPENRIND_CTF_MAX_STEPS || 50);
+  const agentTimeoutMs = Number(process.env.OPENRIND_CTF_TIMEOUT_MS || Math.max(20 * 60_000, maxSteps * 40_000));
   const config = { endpoint: challenge.endpoint, judgeToken: challenge.token, runId, model: ctfModel,
-    modelMode: 'openrouter-fixture',
+    modelMode: 'openrouter-fixture', maxSteps,
     ...(process.env.OPENRIND_CTF_REASONING_EFFORT ? { reasoningEffort: process.env.OPENRIND_CTF_REASONING_EFFORT } : {}),
     keyPath: `${clientDir}/openrouter.key`, eventsPath: `/sandbox/work/ctf/${challenge.id}-agent-events.jsonl`,
     trajectoryPath: `/sandbox/work/ctf/${challenge.id}-trajectory.json`,
@@ -153,7 +172,7 @@ async function runCtfAgent(challenge) {
       require('fs').writeFileSync(${JSON.stringify(`${clientDir}/src/agent.mjs`)}, ${JSON.stringify(srcCode)});
       require('fs').writeFileSync(${JSON.stringify(`${clientDir}/bin/agent.mjs`)}, ${JSON.stringify(binCode)});
     `]);
-    await inside(['/usr/bin/node', `${clientDir}/bin/agent.mjs`, `${clientDir}/agent.json`], { timeout: 12 * 60_000 });
+    await inside(['/usr/bin/node', `${clientDir}/bin/agent.mjs`, `${clientDir}/agent.json`], { timeout: agentTimeoutMs, stream: true });
     const trajectory = JSON.parse(await inside(['/usr/bin/node', '-e',
       `process.stdout.write(require("fs").readFileSync(${JSON.stringify(config.trajectoryPath)}, "utf8"))`], { timeout: 10_000 }));
     assert.equal(trajectory.format, 'openrind-ctf-trajectory/v1');

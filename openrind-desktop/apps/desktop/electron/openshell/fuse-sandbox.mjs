@@ -423,25 +423,39 @@ async function inspectFuseImage() {
 }
 
 async function requireFuseImage(onProgress) {
-  let inspect = await inspectFuseImage();
+  let inspect = await inspectFuseImage(FUSE_IMAGE);
   if (
-    (inspect.exitCode !== 0 || inspect.stdout.trim() !== IMAGE_CONTRACT) &&
-    FUSE_IMAGE_PULL_POLICY.toLowerCase() !== "never"
+    inspect.exitCode !== 0 ||
+    inspect.stdout.trim() !== IMAGE_CONTRACT
   ) {
-    onProgress?.({
-      phase: "image",
-      message: `Downloading the current Openrind Shell FUSE image (${FUSE_IMAGE})...`,
-    });
-    const pulled = await wslRun(
-      ["-d", DISTRO_NAME, "--", "docker", "pull", FUSE_IMAGE],
-      { timeout: 10 * 60_000 },
-    );
-    if (pulled.exitCode !== 0) {
-      throw new Error(
-        `Could not download the Openrind Shell FUSE image: ${(pulled.stderr || pulled.stdout).trim() || `exit ${pulled.exitCode}`}`,
-      );
+    // Check if local image openrind-shell-fuse:local is present in Docker
+    if (FUSE_IMAGE !== "openrind-shell-fuse:local") {
+      const localInspect = await inspectFuseImage("openrind-shell-fuse:local");
+      if (localInspect.exitCode === 0 && localInspect.stdout.trim() === IMAGE_CONTRACT) {
+        return;
+      }
     }
-    inspect = await inspectFuseImage();
+
+    if (FUSE_IMAGE_PULL_POLICY.toLowerCase() !== "never") {
+      onProgress?.({
+        phase: "image",
+        message: `Downloading the current Openrind Shell FUSE image (${FUSE_IMAGE})...`,
+      });
+      const pulled = await wslRun(
+        ["-d", DISTRO_NAME, "--", "docker", "pull", FUSE_IMAGE],
+        { timeout: 10 * 60_000 },
+      );
+      if (pulled.exitCode !== 0) {
+        const localInspect = await inspectFuseImage("openrind-shell-fuse:local");
+        if (localInspect.exitCode === 0 && localInspect.stdout.trim() === IMAGE_CONTRACT) {
+          return;
+        }
+        throw new Error(
+          `Could not download the Openrind Shell FUSE image: ${(pulled.stderr || pulled.stdout).trim() || `exit ${pulled.exitCode}`}`,
+        );
+      }
+      inspect = await inspectFuseImage(FUSE_IMAGE);
+    }
   }
   if (inspect.exitCode !== 0) {
     throw new Error(
