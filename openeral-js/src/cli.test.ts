@@ -90,7 +90,10 @@ echo "connected to: $DATABASE_URL"
     require('fs').writeFileSync(pgPath, script);
     require('fs').chmodSync(pgPath, 0o755);
 
-    const out = execSync(`DATABASE_URL=test://db bash ${pgPath} "SELECT 1"`, { encoding: 'utf8' });
+    const out = execSync(`bash ${pgPath} "SELECT 1"`, {
+      encoding: 'utf8',
+      env: { ...process.env, DATABASE_URL: 'test://db' },
+    });
     expect(out.trim()).toBe('connected to: test://db');
 
     rmSync(tmpDir, { recursive: true });
@@ -102,7 +105,7 @@ describe('openrind-shell skill shape', () => {
   const skill = readFileSync(skillPath, 'utf8');
 
   it('requires Desktop-managed Haloop and FUSE without a compatibility fallback', () => {
-    expect(skill).toContain('New sandbox → Claude Code');
+    expect(skill).toContain('New sandbox -> Openrind Shell - Claude Code');
     expect(skill).toContain('Desktop registers the scoped Haloop provider');
     expect(skill).toContain('issues a signed conversation context');
     expect(skill).toContain('`/sandbox/work` is PostgreSQL-backed FUSE');
@@ -124,7 +127,7 @@ describe('openrind-shell skill shape', () => {
   });
 
   it('keeps credentials in Desktop configuration and forbids unsigned launches', () => {
-    expect(skill).toContain('upstream provider credential in Desktop Settings');
+    expect(skill).toContain('Anthropic key in Desktop\'s credential fields');
     expect(skill).toContain('Never print database URLs or provider keys');
     expect(skill).toContain('or pass provider keys through `--env`');
     expect(skill).toContain('Do not invent a provider ID for a standalone CLI launch');
