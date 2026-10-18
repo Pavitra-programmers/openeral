@@ -2,7 +2,10 @@ name: Publish sandbox image
 
 on:
   push:
-    branches: [nemo]
+    branches:
+      - nemo
+      - browser-pods
+      - run/ctf-agent
     paths:
       - 'Cargo.lock'
       - 'Cargo.toml'
@@ -13,6 +16,7 @@ on:
       - '.claude/skills/**'
       - '.dockerignore'
       - 'sandboxes/openeral/**'
+      - 'sandboxes/browser-pod/**'
       - '.github/workflows/publish-images.yml'
   workflow_dispatch:
 
@@ -127,3 +131,36 @@ jobs:
             ${{ env.IMAGE_REPO_BASE }}/sandbox:${{ matrix.tag }}-sha-${{ github.sha }}
           cache-from: type=gha,scope=sandbox-${{ matrix.tag }}
           cache-to: type=gha,mode=max,scope=sandbox-${{ matrix.tag }}
+
+  build-and-push-browser-pod:
+    needs: [test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push browser-pod image
+        uses: docker/build-push-action@v6
+        with:
+          context: sandboxes/browser-pod
+          file: sandboxes/browser-pod/Dockerfile
+          build-args: |
+            CHROMIUM_VERSION=154.0.8037.92-1~deb12u1
+          push: true
+          tags: |
+            ${{ env.IMAGE_REPO_BASE }}/browser-pod:latest
+            ${{ env.IMAGE_REPO_BASE }}/browser-pod:sha-${{ github.sha }}
+          cache-from: type=gha,scope=browser-pod
+          cache-to: type=gha,mode=max,scope=browser-pod

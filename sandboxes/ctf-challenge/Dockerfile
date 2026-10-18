@@ -16,7 +16,7 @@ COPY openrind-desktop/packages/ctf-runtime/src/ ./src/
 COPY openrind-desktop/packages/ctf-runtime/bin/challenge.mjs ./bin/challenge.mjs
 COPY sandboxes/ctf-challenge/tasks/${TASK_ID}/ /opt/openrind-ctf/task/
 
-RUN case "$TASK_ID" in flag-command|glacier-exchange) ;; *) echo "Unsupported TASK_ID" >&2; exit 1 ;; esac \
+RUN case "$TASK_ID" in flag-command|glacier-exchange|amoebananas|client-secrets|cookie-clicker|myflask-traversal|python-ssti) ;; *) echo "Unsupported TASK_ID" >&2; exit 1 ;; esac \
     && python3 -m venv /opt/openrind-ctf/venv \
     && /opt/openrind-ctf/venv/bin/pip install --no-cache-dir \
       Flask==2.3.3 Flask-RESTful==0.3.10 colorama==0.4.6 \
