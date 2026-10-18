@@ -405,7 +405,7 @@ export async function sandboxExists(name) {
   return (await listSandboxes()).some((sandbox) => sandbox.name === name);
 }
 
-async function inspectFuseImage() {
+async function inspectFuseImage(image = FUSE_IMAGE) {
   return wslRun(
     [
       "-d",
@@ -414,7 +414,7 @@ async function inspectFuseImage() {
       "docker",
       "image",
       "inspect",
-      FUSE_IMAGE,
+      image,
       "--format",
       `{{ index .Config.Labels "com.openrind.desktop.fuse-contract" }}`,
     ],
