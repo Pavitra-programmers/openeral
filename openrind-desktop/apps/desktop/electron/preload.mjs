@@ -141,7 +141,29 @@ contextBridge.exposeInMainWorld("__OPENRIND_DESKTOP_ELECTRON__", {
         ipcRenderer.removeListener("openrind-shell:pty-exit", handler);
       };
     },
-
+  },
+  ctf: {
+    onStep(callback) {
+      const handler = (_event, data) => callback(data);
+      ipcRenderer.on("openrind-desktop:ctf:step", handler);
+      return () => {
+        ipcRenderer.removeListener("openrind-desktop:ctf:step", handler);
+      };
+    },
+    onStatus(callback) {
+      const handler = (_event, data) => callback(data);
+      ipcRenderer.on("openrind-desktop:ctf:status", handler);
+      return () => {
+        ipcRenderer.removeListener("openrind-desktop:ctf:status", handler);
+      };
+    },
+    onComplete(callback) {
+      const handler = (_event, data) => callback(data);
+      ipcRenderer.on("openrind-desktop:ctf:complete", handler);
+      return () => {
+        ipcRenderer.removeListener("openrind-desktop:ctf:complete", handler);
+      };
+    },
   },
   meta: {
     initialDeepLinks: [],

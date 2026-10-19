@@ -64,6 +64,9 @@ import {
   toWslPath,
   wslRun,
 } from "./openshell/wsl.mjs";
+import { createCtfService } from "./openshell/ctf-service.mjs";
+
+const ctfService = createCtfService();
 
 // Preflight gate for every Openrind Shell entry point. If the WSL distro
 // isn't registered, the very first `wsl -d openrind-desktop-openshell -- docker
@@ -2540,6 +2543,44 @@ async function handleDesktopInvoke(event, command, ...args) {
     case "openrindHaloopEvalDownload":
     case "openrindHaloopHarborDownload":
       throw new Error("Analysis, reports, and Harbor task generation are available in the w8-haloop web app.");
+    case "ctfListTasks":
+      return ctfService.listTasks();
+    case "ctfImportTask":
+      return ctfService.importTask(args[0]);
+    case "ctfBuildImage":
+      return ctfService.buildImage(args[0], (data) => {
+        event.sender.send("openrind-desktop:ctf:status", data);
+      });
+    case "ctfRunTask":
+      return ctfService.runTask(args[0], {
+        onStep: (step) => event.sender.send("openrind-desktop:ctf:step", step),
+        onStatus: (status) => event.sender.send("openrind-desktop:ctf:status", status),
+        onComplete: (res) => event.sender.send("openrind-desktop:ctf:complete", res),
+      });
+    case "ctfStopTask":
+      return ctfService.stopTask();
+    case "ctfGetTrace":
+      return ctfService.getTrace(args[0]);
+    case "ctfExportHarbor": {
+      const { taskId } = args[0] || {};
+      const filename = `${taskId || "challenge"}-harbor-task.zip`;
+      const result = await dialog.showSaveDialog(activeWindowFromEvent(event), {
+        title: "Export Harbor Task Archive",
+        defaultPath: path.join(app.getPath("downloads"), filename),
+        filters: [{ name: "ZIP Archives", extensions: ["zip"] }],
+      });
+      if (result.canceled || !result.filePath) return { canceled: true };
+      const outPath = result.filePath.endsWith(".zip") ? result.filePath : `${result.filePath}.zip`;
+      return ctfService.exportHarbor(taskId, outPath);
+    }
+    case "ctfSelectFolder": {
+      const result = await dialog.showOpenDialog(activeWindowFromEvent(event), {
+        title: "Select CTF Challenge Folder",
+        properties: ["openDirectory"],
+      });
+      if (result.canceled || !result.filePaths?.[0]) return { canceled: true };
+      return { canceled: false, path: result.filePaths[0] };
+    }
     case "openrindHaloopRestart": {
       assertHaloopIntegrationNotResetting();
       const anthropicApiKey = await openrindCredentials.getCredential("anthropicApiKey");

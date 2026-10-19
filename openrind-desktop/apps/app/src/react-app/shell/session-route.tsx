@@ -106,6 +106,9 @@ import { useSandboxRows } from "../domains/session/sidebar/use-sandbox-rows";
 import { needsUserAttention } from "../domains/session/sidebar/sandbox-status";
 import { sandboxStatusLabel } from "../domains/session/sidebar/sandbox-status-labels";
 import type { SidebarTab } from "../domains/session/sidebar/sidebar-tabs";
+import { CtfTaskSidebar, type CtfTask } from "../domains/ctf/ctf-task-sidebar";
+import { CtfSurface } from "../domains/ctf/ctf-surface";
+import { ImportTaskModal } from "../domains/ctf/import-task-modal";
 
 type SelectedSandbox = {
   name: string;
@@ -924,13 +927,46 @@ export function SessionRoute() {
   const [sidebarTab, setSidebarTab] = React.useState<SidebarTab>(() => {
     try {
       const saved = localStorage.getItem("openrind-shell-sidebar-tab");
-      if (saved === "sessions" || saved === "sandboxes") return saved;
+      if (saved === "ctf" || saved === "sandboxes") return saved;
     } catch {}
-    return "sessions";
+    return "ctf";
   });
+
+  const [ctfTasks, setCtfTasks] = React.useState<CtfTask[]>([]);
+  const [selectedCtfTask, setSelectedCtfTask] = React.useState<CtfTask | null>(null);
+  const [importCtfModalOpen, setImportCtfModalOpen] = React.useState(false);
+  const [loadingCtfTasks, setLoadingCtfTasks] = React.useState(false);
+
+  const loadCtfTasks = React.useCallback(async () => {
+    try {
+      setLoadingCtfTasks(true);
+      const invoke = (window as any).__OPENRIND_DESKTOP_ELECTRON__?.invokeDesktop;
+      if (!invoke) return;
+      const tasks = await invoke("ctfListTasks");
+      if (Array.isArray(tasks)) {
+        setCtfTasks(tasks);
+        setSelectedCtfTask((current) => {
+          if (current) {
+            const found = tasks.find((t: any) => t.id === current.id);
+            if (found) return found;
+          }
+          return tasks[0] || null;
+        });
+      }
+    } catch {} finally {
+      setLoadingCtfTasks(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadCtfTasks();
+  }, [loadCtfTasks]);
 
   const handleSetSidebarTab = React.useCallback((tab: SidebarTab) => {
     setSidebarTab(tab);
+    if (tab === "ctf") {
+      handleSetSelectedSandbox(null);
+    }
     try {
       localStorage.setItem("openrind-shell-sidebar-tab", tab);
     } catch {}
@@ -1944,11 +1980,28 @@ export function SessionRoute() {
             onOpenSettings={(target) => navigate(`/settings/${target}`)}
             onSandboxDeleted={() => handleSetSelectedSandbox(null)}
           />
-        ) : undefined
+        ) : (
+          sidebarTab === "ctf" ? (
+            <CtfSurface
+              task={selectedCtfTask}
+              onRefreshTasks={loadCtfTasks}
+            />
+          ) : undefined
+        )
       }
       sidebarTab={sidebarTab}
       onSidebarTabChange={handleSetSidebarTab}
       sandboxWarningCount={sandboxRows.warningCount}
+      ctfSidebar={
+        <CtfTaskSidebar
+          tasks={ctfTasks}
+          selectedTaskId={selectedCtfTask?.id ?? null}
+          onSelectTask={setSelectedCtfTask}
+          onOpenImport={() => setImportCtfModalOpen(true)}
+          onRefresh={loadCtfTasks}
+          loading={loadingCtfTasks}
+        />
+      }
       sandboxSidebar={
         typeof window !== "undefined" && Boolean((window as any).__OPENRIND_DESKTOP_ELECTRON__) ? (
           <SandboxPanel
@@ -2244,6 +2297,14 @@ export function SessionRoute() {
         open={createSandboxOpen}
         onClose={() => setCreateSandboxOpen(false)}
         existingNames={sandboxRows.rows.map((r) => r.name)}
+      />
+      <ImportTaskModal
+        open={importCtfModalOpen}
+        onClose={() => setImportCtfModalOpen(false)}
+        onSuccess={(task) => {
+          void loadCtfTasks();
+          setSelectedCtfTask(task);
+        }}
       />
     </>
   );
