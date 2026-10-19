@@ -555,7 +555,7 @@ export function SandboxView(props: SandboxViewProps) {
               <span>3. Check OpenShell Gateway Service</span>
             </div>
             <div className="rounded-lg bg-black/50 p-2 font-mono text-xs text-gray-12 select-all overflow-x-auto border border-gray-7/30">
-              <code>wsl -d openrind-desktop-openshell -- systemctl --user status openshell-gateway</code>
+              <code>wsl -d openrind-desktop-openshell -- sudo systemctl status openrind-desktop-fuse-gateway</code>
             </div>
           </div>
 
@@ -564,7 +564,7 @@ export function SandboxView(props: SandboxViewProps) {
               <span>4. Restart the OpenShell Gateway</span>
             </div>
             <div className="rounded-lg bg-black/50 p-2 font-mono text-xs text-gray-12 select-all overflow-x-auto border border-gray-7/30">
-              <code>wsl -d openrind-desktop-openshell -- systemctl --user restart openshell-gateway</code>
+              <code>wsl -d openrind-desktop-openshell -- sudo systemctl restart openrind-desktop-fuse-gateway</code>
             </div>
           </div>
 

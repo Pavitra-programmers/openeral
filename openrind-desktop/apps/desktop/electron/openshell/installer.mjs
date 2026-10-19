@@ -21,6 +21,7 @@ import {
   resetCache as resetCliCache,
 } from "./cli.mjs";
 import { openshellDoctor } from "./doctor.mjs";
+import { ensureManagedFuseGateway } from "./fuse-gateway.mjs";
 import { DISTRO_NAME, distroExists, wslRun } from "./wsl.mjs";
 
 const DEFAULT_STATE_FILE = path.join(
@@ -416,9 +417,17 @@ const LOCAL_GATEWAY_NAME = "openshell";
 async function bringUpGateway({ onProgress, signal }) {
   onProgress?.({
     phase: "openshell",
-    message: "Starting OpenShell gateway...",
+    message: "Starting OpenShell FUSE gateway on port 18770...",
     percent: 70,
   });
+
+  try {
+    await ensureManagedFuseGateway({ onProgress });
+    return;
+  } catch (err) {
+    // Continue to legacy fallback if needed
+  }
+
   const info = await getCliInfo();
 
   // Path 1 — legacy `gateway start`. We probe before calling so we

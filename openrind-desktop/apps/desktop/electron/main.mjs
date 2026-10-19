@@ -2196,6 +2196,27 @@ async function handleDesktopInvoke(event, command, ...args) {
         return r.exitCode === 0;
       };
 
+      // Path 0 — managed FUSE gateway service (the primary desktop runtime).
+      const restartFuse = await wslRun(
+        [
+          "-d",
+          OPENSHELL_DISTRO_NAME,
+          "--user",
+          "root",
+          "--",
+          "systemctl",
+          "restart",
+          "openrind-desktop-fuse-gateway",
+        ],
+        { timeout: 30_000 },
+      ).catch(() => ({ exitCode: -1 }));
+      if (restartFuse.exitCode === 0) {
+        return {
+          ok: true,
+          recoveredVia: "systemctl restart openrind-desktop-fuse-gateway",
+        };
+      }
+
       // Path 1 — legacy gateway start verb (will silently no-op on 0.0.37+).
       if (await openshellCli.hasSubcommand("gateway", "start")) {
         if (
