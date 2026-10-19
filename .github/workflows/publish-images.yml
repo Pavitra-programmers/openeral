@@ -26,7 +26,7 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_REPO_BASE: ghcr.io/openrind/openrind-shell
+  IMAGE_REPO_BASE: ghcr.io/${{ github.repository }}
 
 jobs:
   test:

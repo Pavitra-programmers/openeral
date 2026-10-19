@@ -14,6 +14,7 @@ import {
   ensureFuseRuntime,
   buildFuseCliCommand,
   buildFuseWslEnv,
+  FUSE_CANDIDATE_IMAGES,
   FUSE_IMAGE,
   FUSE_IMAGE_PULL_POLICY,
   runFuseOpenShell,
@@ -423,63 +424,56 @@ async function inspectFuseImage(image = FUSE_IMAGE) {
 }
 
 async function requireFuseImage(onProgress) {
-  let inspect = await inspectFuseImage(FUSE_IMAGE);
-  if (inspect.exitCode === 0 && inspect.stdout.trim() === IMAGE_CONTRACT) {
-    return FUSE_IMAGE;
-  }
-
-  // Check if local image openrind-shell-fuse:local is present in Docker
-  if (FUSE_IMAGE !== "openrind-shell-fuse:local") {
-    const localInspect = await inspectFuseImage("openrind-shell-fuse:local");
-    if (localInspect.exitCode === 0 && localInspect.stdout.trim() === IMAGE_CONTRACT) {
-      return "openrind-shell-fuse:local";
-    }
-  }
-
-  if (FUSE_IMAGE_PULL_POLICY.toLowerCase() !== "never") {
-    onProgress?.({
-      phase: "image",
-      message: `Downloading the current Openrind Shell FUSE image (${FUSE_IMAGE})...`,
-    });
-    const pulled = await wslRun(
-      ["-d", DISTRO_NAME, "--", "docker", "pull", FUSE_IMAGE],
-      { timeout: 10 * 60_000 },
-    );
-    if (pulled.exitCode !== 0) {
-      const localInspect = await inspectFuseImage("openrind-shell-fuse:local");
-      if (localInspect.exitCode === 0 && localInspect.stdout.trim() === IMAGE_CONTRACT) {
-        return "openrind-shell-fuse:local";
-      }
-      throw new Error(
-        `Could not download the Openrind Shell FUSE image: ${(pulled.stderr || pulled.stdout).trim() || `exit ${pulled.exitCode}`}`,
-      );
-    }
-    inspect = await inspectFuseImage(FUSE_IMAGE);
-    if (inspect.exitCode === 0 && inspect.stdout.trim() === IMAGE_CONTRACT) {
-      return FUSE_IMAGE;
-    }
-  }
-
+  // 1. Check if openrind-shell-fuse:local is already present in Docker
   const localInspect = await inspectFuseImage("openrind-shell-fuse:local");
   if (localInspect.exitCode === 0 && localInspect.stdout.trim() === IMAGE_CONTRACT) {
     return "openrind-shell-fuse:local";
   }
 
-  if (inspect.exitCode !== 0) {
-    throw new Error(
-      FUSE_IMAGE_PULL_POLICY.toLowerCase() === "never"
-        ? `The README FUSE image ${FUSE_IMAGE} is not present in Openrind Desktop's Docker daemon. Build Dockerfile.openrind-shell with that tag, then retry.`
-        : `The Openrind Shell FUSE image ${FUSE_IMAGE} is unavailable in Openrind Desktop's Docker daemon.`,
-    );
+  // 2. Try candidate GHCR remote images
+  if (FUSE_IMAGE_PULL_POLICY.toLowerCase() !== "never") {
+    for (const remoteCandidate of FUSE_CANDIDATE_IMAGES) {
+      if (remoteCandidate.endsWith(":local")) continue;
+      onProgress?.({
+        phase: "image",
+        message: `Downloading Openrind Shell FUSE image (${remoteCandidate})...`,
+      });
+      const pulled = await wslRun(
+        ["-d", DISTRO_NAME, "--", "docker", "pull", remoteCandidate],
+        { timeout: 10 * 60_000 },
+      ).catch(() => ({ exitCode: -1, stdout: "", stderr: "" }));
+
+      if (pulled.exitCode === 0) {
+        const inspect = await inspectFuseImage(remoteCandidate);
+        if (inspect.exitCode === 0 && inspect.stdout.trim() === IMAGE_CONTRACT) {
+          // Tag as local for offline consistency
+          await wslRun(
+            [
+              "-d",
+              DISTRO_NAME,
+              "--",
+              "docker",
+              "tag",
+              remoteCandidate,
+              "openrind-shell-fuse:local",
+            ],
+            { timeout: 15_000 },
+          ).catch(() => {});
+          return "openrind-shell-fuse:local";
+        }
+      }
+    }
   }
-  if (inspect.stdout.trim() !== IMAGE_CONTRACT) {
-    throw new Error(
-      FUSE_IMAGE_PULL_POLICY.toLowerCase() === "never"
-        ? `The local FUSE image ${FUSE_IMAGE} is outdated (expected contract ${IMAGE_CONTRACT}). Rebuild Dockerfile.openrind-shell, then retry.`
-        : `The published FUSE image ${FUSE_IMAGE} does not provide the required desktop contract ${IMAGE_CONTRACT}.`,
-    );
+
+  // 3. Final check for local image
+  const finalInspect = await inspectFuseImage("openrind-shell-fuse:local");
+  if (finalInspect.exitCode === 0 && finalInspect.stdout.trim() === IMAGE_CONTRACT) {
+    return "openrind-shell-fuse:local";
   }
-  return FUSE_IMAGE;
+
+  throw new Error(
+    `The Openrind Shell FUSE image (${FUSE_IMAGE}) is unavailable in Openrind Desktop's Docker daemon.`,
+  );
 }
 
 export function resolveClaudeHomeVolumeName(sandboxName) {
