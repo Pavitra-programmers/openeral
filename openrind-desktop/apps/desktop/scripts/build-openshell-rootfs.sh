@@ -56,3 +56,18 @@ docker export "$CONTAINER_ID" | gzip -9 > "$OUT_FILE"
 
 SIZE="$(du -h "$OUT_FILE" | cut -f1)"
 echo "build-openshell-rootfs: wrote $OUT_FILE ($SIZE)"
+
+SANDBOX_DOCKERFILE="$REPOSITORY_ROOT/Dockerfile.openrind-shell"
+SANDBOX_OUT_FILE="$OUT_DIR/sandbox-fuse-image.tar.gz"
+
+if [ -f "$SANDBOX_DOCKERFILE" ]; then
+  echo "build-openshell-rootfs: building sandbox image..."
+  docker build \
+    -f "$SANDBOX_DOCKERFILE" \
+    -t "openrind-shell-fuse:local" \
+    "$REPOSITORY_ROOT"
+  echo "build-openshell-rootfs: saving sandbox image tarball..."
+  docker save "openrind-shell-fuse:local" | gzip -9 > "$SANDBOX_OUT_FILE"
+  SANDBOX_SIZE="$(du -h "$SANDBOX_OUT_FILE" | cut -f1)"
+  echo "build-openshell-rootfs: wrote $SANDBOX_OUT_FILE ($SANDBOX_SIZE)"
+fi

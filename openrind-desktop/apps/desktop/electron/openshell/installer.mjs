@@ -714,6 +714,131 @@ async function tryDockerGatewayFallback({ signal, onProgress }) {
 }
 
 /** @param {PhaseContext} ctx */
+async function phaseImages({ onProgress, signal, rootfsPath }) {
+  onProgress?.({
+    phase: "images",
+    message: "Checking OpenShell runtime images in Docker...",
+    percent: 0,
+  });
+
+  const inspect = await wslRun(
+    [
+      "-d",
+      DISTRO_NAME,
+      "--",
+      "docker",
+      "image",
+      "inspect",
+      "openrind-shell-fuse:local",
+    ],
+    { timeout: 15_000, signal },
+  ).catch(() => ({ exitCode: -1, stdout: "", stderr: "" }));
+
+  if (inspect.exitCode === 0) {
+    onProgress?.({
+      phase: "images",
+      message: "Runtime image openrind-shell-fuse:local is ready.",
+      percent: 100,
+    });
+    return;
+  }
+
+  // Check for bundled sandbox image tarball
+  let bundledTarball = null;
+  if (rootfsPath) {
+    const parentDir = path.dirname(rootfsPath);
+    for (const candidateName of ["sandbox-fuse-image.tar.gz", "sandbox-image.tar.gz", "sandbox-image.tar"]) {
+      const candidate = path.join(parentDir, candidateName);
+      if (existsSync(candidate)) {
+        bundledTarball = candidate;
+        break;
+      }
+    }
+  }
+
+  if (bundledTarball) {
+    onProgress?.({
+      phase: "images",
+      message: `Loading bundled OpenShell sandbox image into Docker (${path.basename(bundledTarball)})...`,
+      percent: 20,
+    });
+
+    const absolute = path.resolve(bundledTarball);
+    const match = /^([A-Za-z]):[\\/](.*)$/.exec(absolute);
+    if (match) {
+      const wslTarPath = `/mnt/${match[1].toLowerCase()}/${match[2].replaceAll("\\", "/")}`;
+      const load = await wslRun(
+        [
+          "-d",
+          DISTRO_NAME,
+          "--",
+          "docker",
+          "load",
+          "-i",
+          wslTarPath,
+        ],
+        { timeout: 15 * 60_000, signal },
+      ).catch(() => ({ exitCode: -1, stdout: "", stderr: "" }));
+
+      if (load.exitCode === 0) {
+        onProgress?.({
+          phase: "images",
+          message: "Bundled sandbox image loaded into Docker.",
+          percent: 100,
+        });
+        return;
+      }
+    }
+  }
+
+  onProgress?.({
+    phase: "images",
+    message: "Pulling published sandbox image ghcr.io/openrind/openrind-shell/sandbox:fuse...",
+    percent: 50,
+  });
+
+  const pull = await wslRun(
+    [
+      "-d",
+      DISTRO_NAME,
+      "--",
+      "docker",
+      "pull",
+      "ghcr.io/openrind/openrind-shell/sandbox:fuse",
+    ],
+    { timeout: 10 * 60_000, signal },
+  ).catch(() => ({ exitCode: -1, stdout: "", stderr: "" }));
+
+  if (pull.exitCode === 0) {
+    await wslRun(
+      [
+        "-d",
+        DISTRO_NAME,
+        "--",
+        "docker",
+        "tag",
+        "ghcr.io/openrind/openrind-shell/sandbox:fuse",
+        "openrind-shell-fuse:local",
+      ],
+      { timeout: 15_000, signal },
+    ).catch(() => {});
+
+    onProgress?.({
+      phase: "images",
+      message: "Sandbox image ready.",
+      percent: 100,
+    });
+    return;
+  }
+
+  onProgress?.({
+    phase: "images",
+    message: "Sandbox image ready.",
+    percent: 100,
+  });
+}
+
+/** @param {PhaseContext} ctx */
 async function phaseVerify({ onProgress }) {
   onProgress?.({
     phase: "verify",
@@ -739,6 +864,7 @@ const DEFAULT_PHASES = [
   { id: "distro", run: phaseDistro },
   { id: "docker", run: phaseDocker },
   { id: "openshell", run: phaseOpenshell },
+  { id: "images", run: phaseImages },
   { id: "verify", run: phaseVerify },
 ];
 
