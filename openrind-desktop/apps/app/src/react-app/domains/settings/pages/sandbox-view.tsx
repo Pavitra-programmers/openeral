@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 
-import { AlertTriangle, CheckCircle2, CircleDashed, Loader2, RefreshCcw, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, CircleDashed, Copy, Check, HelpCircle, Loader2, RefreshCcw, Terminal, XCircle } from "lucide-react";
 
 import type { SandboxBackend } from "../../../../app/lib/desktop";
 import { Button } from "../../../design-system/button";
@@ -283,6 +283,21 @@ export function SandboxView(props: SandboxViewProps) {
             </div>
           ) : null}
 
+          {props.doctor?.status !== "ready" ? (
+            <div className="rounded-xl border border-dls-border bg-gray-2/50 p-3.5 space-y-2">
+              <div className="text-xs font-medium text-gray-12">
+                Manual OpenShell installation (WSL2 / Linux terminal):
+              </div>
+              <div className="flex items-center justify-between gap-2 rounded-lg bg-black/40 px-3 py-2 font-mono text-xs text-gray-12 border border-gray-6/40 select-all overflow-x-auto">
+                <span className="text-blue-400 select-none mr-1">$</span>
+                <code className="flex-1">curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh | sh</code>
+              </div>
+              <div className="text-[11px] text-gray-9">
+                You can click the button below to install automatically, or run the command above in your WSL distribution terminal.
+              </div>
+            </div>
+          ) : null}
+
           {props.doctor?.components?.length ? (
             <div className="rounded-2xl border border-dls-border">
               {props.doctor.components.map((component, idx, all) => (
@@ -344,6 +359,38 @@ export function SandboxView(props: SandboxViewProps) {
               Reset distro
             </Button>
           </div>
+
+          {running ? (
+            <div className="rounded-xl border border-blue-500/30 bg-blue-500/10 p-3.5 space-y-2.5">
+              <div className="flex items-center justify-between text-xs">
+                <div className="flex items-center gap-2 font-medium text-blue-300">
+                  <Loader2 size={13} className="animate-spin text-blue-400" />
+                  <span>
+                    {props.progressLog.length
+                      ? props.progressLog[props.progressLog.length - 1].message || "Installing OpenShell..."
+                      : "Starting installation..."}
+                  </span>
+                </div>
+                {props.progressLog.length && props.progressLog[props.progressLog.length - 1].percent != null ? (
+                  <span className="font-mono font-medium text-blue-300">
+                    {props.progressLog[props.progressLog.length - 1].percent}%
+                  </span>
+                ) : null}
+              </div>
+              <div className="h-2 w-full overflow-hidden rounded-full bg-blue-950/60">
+                <div
+                  className="h-full bg-gradient-to-r from-blue-500 to-cyan-400 transition-all duration-300 ease-out"
+                  style={{
+                    width: `${
+                      props.progressLog.length && props.progressLog[props.progressLog.length - 1].percent != null
+                        ? props.progressLog[props.progressLog.length - 1].percent
+                        : 20
+                    }%`,
+                  }}
+                />
+              </div>
+            </div>
+          ) : null}
 
           {props.actionError ? (
             <div className="rounded-xl border border-red-7/40 bg-red-2/30 p-2 text-xs text-red-12">
@@ -411,6 +458,64 @@ export function SandboxView(props: SandboxViewProps) {
             ))}
           </ul>
         )}
+      </div>
+
+      <div className={`${settingsPanelClass} space-y-4`}>
+        <div className="flex items-center gap-2">
+          <Terminal size={16} className="text-blue-400" />
+          <div className="text-sm font-medium text-gray-12">OpenShell Health & Troubleshooting Guide</div>
+        </div>
+        <div className="text-xs text-gray-10 leading-relaxed">
+          OpenShell runs inside an isolated WSL2 distribution named <code className="rounded bg-black/40 px-1 py-0.5 font-mono text-gray-11">openrind-desktop-openshell</code>.
+          The app manages the stack automatically when you click <strong>Install OpenShell</strong>. If you ever need to inspect or repair the stack manually, run these commands in PowerShell:
+        </div>
+
+        <div className="space-y-3">
+          <div className="rounded-xl border border-dls-border bg-gray-1/30 p-3 space-y-1.5">
+            <div className="flex items-center justify-between text-xs font-medium text-gray-11">
+              <span>1. Check WSL and Distro Registration</span>
+            </div>
+            <div className="rounded-lg bg-black/50 p-2 font-mono text-xs text-gray-12 select-all overflow-x-auto border border-gray-7/30">
+              <code>wsl -l -v</code>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-dls-border bg-gray-1/30 p-3 space-y-1.5">
+            <div className="flex items-center justify-between text-xs font-medium text-gray-11">
+              <span>2. Check Docker Engine inside the OpenShell Distro</span>
+            </div>
+            <div className="rounded-lg bg-black/50 p-2 font-mono text-xs text-gray-12 select-all overflow-x-auto border border-gray-7/30">
+              <code>wsl -d openrind-desktop-openshell -- docker ps</code>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-dls-border bg-gray-1/30 p-3 space-y-1.5">
+            <div className="flex items-center justify-between text-xs font-medium text-gray-11">
+              <span>3. Check OpenShell Gateway Service</span>
+            </div>
+            <div className="rounded-lg bg-black/50 p-2 font-mono text-xs text-gray-12 select-all overflow-x-auto border border-gray-7/30">
+              <code>wsl -d openrind-desktop-openshell -- systemctl --user status openshell-gateway</code>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-dls-border bg-gray-1/30 p-3 space-y-1.5">
+            <div className="flex items-center justify-between text-xs font-medium text-gray-11">
+              <span>4. Restart the OpenShell Gateway</span>
+            </div>
+            <div className="rounded-lg bg-black/50 p-2 font-mono text-xs text-gray-12 select-all overflow-x-auto border border-gray-7/30">
+              <code>wsl -d openrind-desktop-openshell -- systemctl --user restart openshell-gateway</code>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-dls-border bg-gray-1/30 p-3 space-y-1.5">
+            <div className="flex items-center justify-between text-xs font-medium text-gray-11">
+              <span>5. Reset / Restart WSL (Clean Reload)</span>
+            </div>
+            <div className="rounded-lg bg-black/50 p-2 font-mono text-xs text-gray-12 select-all overflow-x-auto border border-gray-7/30">
+              <code>wsl --shutdown</code>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
