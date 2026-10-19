@@ -581,31 +581,6 @@ async function checkOrphans() {
 /** @returns {Promise<OpenShellComponent>} */
 async function checkOpenShellGateway() {
   try {
-    const fuseInfo = await wslRun(
-      [
-        "-d",
-        DISTRO_NAME,
-        "--",
-        "/opt/openrind-desktop/fuse-runtime/openshell",
-        "--gateway-endpoint",
-        "http://127.0.0.1:18770",
-        "gateway",
-        "info",
-      ],
-      { timeout: 10_000 },
-    ).catch(() => ({ exitCode: -1, stdout: "", stderr: "" }));
-
-    if (fuseInfo.exitCode === 0) {
-      return {
-        id: "openshell-gateway",
-        label: "OpenShell gateway",
-        state: "ok",
-        version: "port 18770",
-        detail: null,
-        actionable: null,
-      };
-    }
-
     const json = await wslRun(
       ["-d", DISTRO_NAME, "--", "openshell", "status", "--json"],
       { timeout: 10_000, user: "banker" },

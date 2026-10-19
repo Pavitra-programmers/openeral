@@ -411,7 +411,7 @@ async function phaseOpenshell({ onProgress, signal }) {
  *   3. As a last resort, try to restart an `openshell-cluster*` container
  *      directly through docker — recovery path only.
  */
-const LOCAL_GATEWAY_URL = "https://127.0.0.1:17670";
+const LOCAL_GATEWAY_URL = "http://127.0.0.1:18770";
 const LOCAL_GATEWAY_NAME = "openshell";
 
 async function bringUpGateway({ onProgress, signal }) {
@@ -423,6 +423,7 @@ async function bringUpGateway({ onProgress, signal }) {
 
   try {
     await ensureManagedFuseGateway({ onProgress });
+    await registerLocalGateway({ signal, onProgress });
     return;
   } catch (err) {
     // Continue to legacy fallback if needed
