@@ -747,7 +747,7 @@ async function phaseImages({ onProgress, signal, rootfsPath }) {
   let bundledTarball = null;
   if (rootfsPath) {
     const parentDir = path.dirname(rootfsPath);
-    for (const candidateName of ["sandbox-fuse-image.tar.gz", "sandbox-image.tar.gz", "sandbox-image.tar"]) {
+    for (const candidateName of ["sandbox-fuse-image.tar.xz", "sandbox-fuse-image.tar.gz", "sandbox-image.tar.gz", "sandbox-image.tar"]) {
       const candidate = path.join(parentDir, candidateName);
       if (existsSync(candidate)) {
         bundledTarball = candidate;
