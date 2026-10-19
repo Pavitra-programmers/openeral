@@ -128,7 +128,6 @@ win:
       to: openshell
       filter:
         - "*.tar.gz"
-        - "*.tar.xz"
   target:
     - nsis
 nsis:
