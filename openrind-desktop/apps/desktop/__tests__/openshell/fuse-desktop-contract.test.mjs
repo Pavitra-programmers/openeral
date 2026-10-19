@@ -480,7 +480,7 @@ test("OpenClaw uses the same FUSE workspace with a separate persistent agent hom
   assert.match(nativeLauncher, /unsetenv\("NODE_OPTIONS"\)/);
   assert.match(nativeLauncher, /execv\(NODE_BIN, openclaw_argv\)/);
   assert.match(provider, /\/usr\/local\/bin\/openrind-openclaw-agent/);
-  assert.match(provider, /\/usr\/bin\/node/);
+  assert.doesNotMatch(provider, /\/usr\/bin\/node/);
   assert.match(config, /const WORKSPACE = "\/sandbox\/work"/);
   assert.match(setup, /OPENRIND_SHELL_PTY_KEEP_SCROLLBACK=0/);
   assert.doesNotMatch(setup, /OPENRIND_SHELL_PTY_PIN_OPENCLAW_BANNER/);
@@ -642,7 +642,7 @@ test("composed FUSE policy removes direct inference and restricts Haloop executa
   );
   assert.match(haloopBlock, /\/usr\/local\/bin\/claude-real/);
   assert.match(haloopBlock, /\/usr\/local\/bin\/openrind-openclaw-agent/);
-  assert.match(haloopBlock, /\/usr\/bin\/node/);
+  assert.doesNotMatch(haloopBlock, /\/usr\/bin\/node/);
   assert.doesNotMatch(
     policy,
     /api\.anthropic\.com|proxy\.openrind\.com|proxy\.stringcost\.com/,
@@ -662,7 +662,7 @@ test("Haloop provider binds its scoped token to the inference edge only", async 
   assert.match(provider, /method: POST, path: "\/v1\/messages\/count_tokens"/);
   assert.match(provider, /\/usr\/local\/bin\/claude-real/);
   assert.match(provider, /\/usr\/local\/bin\/openrind-openclaw-agent/);
-  assert.match(provider, /\/usr\/bin\/node/);
+  assert.doesNotMatch(provider, /\/usr\/bin\/node/);
   assert.doesNotMatch(provider, /api\.anthropic\.com/);
 });
 
