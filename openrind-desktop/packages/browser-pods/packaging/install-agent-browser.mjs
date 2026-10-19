@@ -6,8 +6,24 @@ import { execFileSync } from 'node:child_process';
 const manifest = JSON.parse(await readFile(new URL('./agent-browser.json', import.meta.url), 'utf8'));
 const target = manifest.targets[process.arch];
 if (process.platform !== 'linux' || !target) throw new Error('Unsupported agent-browser image architecture');
-const response = await fetch(target.url, { signal: AbortSignal.timeout(120_000) });
-if (!response.ok) throw new Error('Pinned agent-browser download failed');
+async function fetchWithRetry(url, attempts = 5) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(180_000) });
+      if (res.ok) return res;
+      lastError = new Error(`HTTP ${res.status} ${res.statusText}`);
+    } catch (err) {
+      lastError = err;
+    }
+    if (attempt < attempts) {
+      await new Promise(r => setTimeout(r, attempt * 3000));
+    }
+  }
+  throw lastError;
+}
+
+const response = await fetchWithRetry(target.url);
 const parts = []; let size = 0;
 for await (const part of response.body) {
   size += part.length;

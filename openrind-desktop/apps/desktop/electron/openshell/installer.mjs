@@ -792,6 +792,7 @@ async function phaseImages({ onProgress, signal, rootfsPath }) {
   }
 
   const candidates = [
+    "ghcr.io/pavitra-programmers/openeral/sandbox:fuse",
     "ghcr.io/pavitra-programmers/openrind-shell/sandbox:fuse",
     "ghcr.io/openrind/openrind-shell/sandbox:fuse",
   ];
