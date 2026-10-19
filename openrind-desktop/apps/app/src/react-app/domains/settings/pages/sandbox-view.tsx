@@ -1,6 +1,7 @@
 /** @jsxImportSource react */
 
-import { AlertTriangle, CheckCircle2, CircleDashed, Copy, Check, HelpCircle, Loader2, RefreshCcw, Terminal, XCircle } from "lucide-react";
+import { useEffect, useState } from "react";
+import { AlertTriangle, CheckCircle2, CircleDashed, Copy, Check, Clock, HelpCircle, Loader2, RefreshCcw, Terminal, XCircle } from "lucide-react";
 
 import type { SandboxBackend } from "../../../../app/lib/desktop";
 import { Button } from "../../../design-system/button";
@@ -131,6 +132,39 @@ export function SandboxView(props: SandboxViewProps) {
   const showOpenShellPanel = props.selectedBackend === "openshell";
   const running =
     props.installStatus?.status === "running" || props.installStatus?.status === "cancelling";
+
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
+  useEffect(() => {
+    if (!running) {
+      setElapsedSeconds(0);
+      return;
+    }
+    const timer = setInterval(() => {
+      setElapsedSeconds((s) => s + 1);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [running]);
+
+  const lastProgressEvent = props.progressLog.length
+    ? props.progressLog[props.progressLog.length - 1]
+    : null;
+
+  const currentPercent = Math.min(
+    100,
+    Math.max(
+      running ? 10 : 0,
+      lastProgressEvent?.percent ?? (running ? 25 : 0)
+    )
+  );
+
+  const estimatedTotalSeconds = 150;
+  const remainingSeconds = Math.max(0, Math.round(estimatedTotalSeconds * (1 - currentPercent / 100)));
+  const formatTime = (secs: number) => {
+    const mins = Math.floor(secs / 60);
+    const rem = secs % 60;
+    return mins > 0 ? `${mins}m ${rem}s` : `${rem}s`;
+  };
   const installButtonLabel = running
     ? "Installing…"
     : props.installStatus?.status === "reboot_required"
@@ -284,16 +318,14 @@ export function SandboxView(props: SandboxViewProps) {
           ) : null}
 
           {props.doctor?.status !== "ready" ? (
-            <div className="rounded-xl border border-dls-border bg-gray-2/50 p-3.5 space-y-2">
-              <div className="text-xs font-medium text-gray-12">
-                Manual OpenShell installation (WSL2 / Linux terminal):
-              </div>
-              <div className="flex items-center justify-between gap-2 rounded-lg bg-black/40 px-3 py-2 font-mono text-xs text-gray-12 border border-gray-6/40 select-all overflow-x-auto">
-                <span className="text-blue-400 select-none mr-1">$</span>
-                <code className="flex-1">curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh | sh</code>
-              </div>
-              <div className="text-[11px] text-gray-9">
-                You can click the button below to install automatically, or run the command above in your WSL distribution terminal.
+            <div className="rounded-xl border border-blue-500/30 bg-blue-500/10 p-3.5 flex items-center justify-between gap-3 text-xs">
+              <div className="space-y-0.5">
+                <div className="font-medium text-blue-200">
+                  Ready to install OpenShell environment
+                </div>
+                <div className="text-gray-10 text-[11px]">
+                  Click "Install OpenShell" below. Desktop will automatically set up WSL2, import the dedicated Linux distro, start Docker, and bring the gateway to a healthy state.
+                </div>
               </div>
             </div>
           ) : null}
@@ -361,33 +393,62 @@ export function SandboxView(props: SandboxViewProps) {
           </div>
 
           {running ? (
-            <div className="rounded-xl border border-blue-500/30 bg-blue-500/10 p-3.5 space-y-2.5">
-              <div className="flex items-center justify-between text-xs">
-                <div className="flex items-center gap-2 font-medium text-blue-300">
-                  <Loader2 size={13} className="animate-spin text-blue-400" />
-                  <span>
-                    {props.progressLog.length
-                      ? props.progressLog[props.progressLog.length - 1].message || "Installing OpenShell..."
-                      : "Starting installation..."}
+            <div className="rounded-2xl border border-blue-500/40 bg-blue-950/30 p-4 space-y-3.5 shadow-lg shadow-blue-950/20">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-2 font-medium text-blue-200">
+                  <Loader2 size={15} className="animate-spin text-blue-400" />
+                  <span className="text-sm">
+                    {lastProgressEvent?.message || "Installing OpenShell stack..."}
                   </span>
                 </div>
-                {props.progressLog.length && props.progressLog[props.progressLog.length - 1].percent != null ? (
-                  <span className="font-mono font-medium text-blue-300">
-                    {props.progressLog[props.progressLog.length - 1].percent}%
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-1.5 text-gray-10 font-mono text-[11px]">
+                    <Clock size={12} className="text-gray-9" />
+                    <span>Elapsed: {formatTime(elapsedSeconds)}</span>
+                    <span className="text-gray-8">·</span>
+                    <span className="text-cyan-400">~{formatTime(remainingSeconds)} remaining</span>
+                  </div>
+                  <span className="rounded-full bg-blue-500/20 px-2 py-0.5 font-mono text-xs font-semibold text-blue-300 border border-blue-400/30">
+                    {currentPercent}%
                   </span>
-                ) : null}
+                </div>
               </div>
-              <div className="h-2 w-full overflow-hidden rounded-full bg-blue-950/60">
+
+              <div className="h-3 w-full overflow-hidden rounded-full bg-black/60 p-0.5 border border-blue-500/30">
                 <div
-                  className="h-full bg-gradient-to-r from-blue-500 to-cyan-400 transition-all duration-300 ease-out"
-                  style={{
-                    width: `${
-                      props.progressLog.length && props.progressLog[props.progressLog.length - 1].percent != null
-                        ? props.progressLog[props.progressLog.length - 1].percent
-                        : 20
-                    }%`,
-                  }}
+                  className="h-full rounded-full bg-gradient-to-r from-blue-600 via-cyan-400 to-emerald-400 transition-all duration-500 ease-out shadow-sm shadow-cyan-400/50"
+                  style={{ width: `${currentPercent}%` }}
                 />
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-1 text-[11px] text-gray-11">
+                <span className={currentPercent >= 10 ? "text-blue-300 font-medium" : "text-gray-9"}>
+                  1. Preflight
+                </span>
+                <span>→</span>
+                <span className={currentPercent >= 25 ? "text-blue-300 font-medium" : "text-gray-9"}>
+                  2. WSL2
+                </span>
+                <span>→</span>
+                <span className={currentPercent >= 45 ? "text-blue-300 font-medium" : "text-gray-9"}>
+                  3. Distro Import
+                </span>
+                <span>→</span>
+                <span className={currentPercent >= 65 ? "text-blue-300 font-medium" : "text-gray-9"}>
+                  4. Docker Engine
+                </span>
+                <span>→</span>
+                <span className={currentPercent >= 80 ? "text-blue-300 font-medium" : "text-gray-9"}>
+                  5. Gateway & CLI
+                </span>
+                <span>→</span>
+                <span className={currentPercent >= 95 ? "text-blue-300 font-medium" : "text-gray-9"}>
+                  6. Sandbox Images
+                </span>
+                <span>→</span>
+                <span className={currentPercent >= 100 ? "text-emerald-300 font-medium" : "text-gray-9"}>
+                  7. Ready
+                </span>
               </div>
             </div>
           ) : null}
