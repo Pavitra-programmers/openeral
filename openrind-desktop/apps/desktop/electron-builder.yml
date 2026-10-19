@@ -22,7 +22,6 @@ extraResources:
     to: openshell-policies
 asar: true
 npmRebuild: false
-compression: store
 afterPack: scripts/electron-after-pack.cjs
 afterSign: scripts/electron-after-sign.cjs
 # electron-updater feed. Matches the existing release workflow's GitHub target
@@ -129,7 +128,6 @@ win:
       to: openshell
       filter:
         - "*.tar.gz"
-        - "*.tar.xz"
   target:
     - nsis
 nsis:
