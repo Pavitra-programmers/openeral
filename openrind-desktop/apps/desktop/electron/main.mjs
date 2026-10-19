@@ -2204,16 +2204,16 @@ async function handleDesktopInvoke(event, command, ...args) {
           "--user",
           "root",
           "--",
-          "systemctl",
-          "restart",
-          "openrind-desktop-fuse-gateway",
+          "bash",
+          "-c",
+          "systemctl restart openrind-desktop-fuse-gateway 2>/dev/null || (pkill -f openshell-gateway 2>/dev/null || true; su - banker -c 'nohup /opt/openrind-desktop/fuse-runtime/openshell-gateway --config /home/banker/.local/state/openrind-desktop/fuse-gateway/gateway.toml --db-url sqlite:/home/banker/.local/state/openrind-desktop/fuse-gateway/gateway.db?mode=rwc >/home/banker/.local/state/openrind-desktop/fuse-gateway/gateway.log 2>&1 &')",
         ],
         { timeout: 30_000 },
       ).catch(() => ({ exitCode: -1 }));
       if (restartFuse.exitCode === 0) {
         return {
           ok: true,
-          recoveredVia: "systemctl restart openrind-desktop-fuse-gateway",
+          recoveredVia: "openrind-desktop-fuse-gateway restart",
         };
       }
 
