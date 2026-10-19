@@ -21,7 +21,7 @@ import {
   resetCache as resetCliCache,
 } from "./cli.mjs";
 import { openshellDoctor } from "./doctor.mjs";
-import { DISTRO_NAME, wslRun } from "./wsl.mjs";
+import { DISTRO_NAME, distroExists, wslRun } from "./wsl.mjs";
 
 const DEFAULT_STATE_FILE = path.join(
   os.homedir(),
@@ -44,7 +44,7 @@ const DISTRO_IMPORT_TIMEOUT_MS = 5 * 60_000;
  * @property {number|null} updatedAt
  *
  * @typedef {Object} PhaseContext
- * @property {(evt: {phase: string, message: string, percent?: number}) => void} [onProgress]
+ * @property {(evt: {phase: string, message: string, percent?: number, status?: string}) => void} [onProgress]
  * @property {AbortSignal} [signal]
  * @property {InstallerState} [state]
  * @property {string} [rootfsPath]
@@ -881,7 +881,7 @@ const DEFAULT_PHASES = [
 /**
  * @param {Object} [options]
  * @param {(phase: string, status: "starting"|"done"|"failed"|"reboot_required", error?: Error) => void} [options.onPhase]
- * @param {(evt: {phase: string, message: string, percent?: number}) => void} [options.onProgress]
+ * @param {(evt: {phase: string, message: string, percent?: number, status?: string}) => void} [options.onProgress]
  * @param {AbortSignal} [options.signal]
  * @param {string} [options.rootfsPath]
  * @param {string} [options.powershellExe]
@@ -903,6 +903,26 @@ export async function installOpenShellStack(options = {}) {
   let state = await loadInstallerState(stateFile);
   if (!state.startedAt) {
     state.startedAt = Date.now();
+  }
+
+  // Reconcile state against system reality for production runs
+  if (phases === DEFAULT_PHASES) {
+    const distroPresent = await distroExists().catch(() => false);
+    if (!distroPresent) {
+      state.completed = state.completed.filter(
+        (id) => id === "preflight" || id === "wsl",
+      );
+    } else {
+      const dockerInfo = await wslRun(
+        ["-d", DISTRO_NAME, "--", "docker", "info"],
+        { timeout: 10_000 },
+      ).catch(() => ({ exitCode: -1 }));
+      if (dockerInfo.exitCode !== 0) {
+        state.completed = state.completed.filter(
+          (id) => id === "preflight" || id === "wsl" || id === "distro",
+        );
+      }
+    }
     state = await saveInstallerState(state, stateFile);
   }
 

@@ -55,6 +55,7 @@ import { openshellDoctor } from "./openshell/doctor.mjs";
 import {
   installOpenShellStack,
   loadInstallerState as loadOpenShellInstallerState,
+  saveInstallerState as saveOpenShellInstallerState,
 } from "./openshell/installer.mjs";
 import {
   DISTRO_NAME as OPENSHELL_DISTRO_NAME,
@@ -2320,20 +2321,29 @@ async function handleDesktopInvoke(event, command, ...args) {
       // case itself and elevates inline; this dialog gives the banker a
       // clear "you'll see a UAC prompt" warning before it fires.
       if (process.platform === "win32") {
-        await dialog.showMessageBox(activeWindowFromEvent(event), {
+        const choice = await dialog.showMessageBox(activeWindowFromEvent(event), {
           type: "info",
           title: "OpenShell setup",
           message:
             "OpenShell installs WSL2, Ubuntu, Docker, and the OpenShell CLI.",
           detail:
-            "Windows will ask for admin permission once. Your laptop may also ask for a " +
-            "BitLocker recovery key after the first reboot — get this from IT before " +
-            "continuing if you do not have it.",
+            "Windows will ask for admin permission once. The setup will automatically configure WSL2, import the Linux distro, start Docker, and bring OpenShell to a healthy state.",
           buttons: ["Continue", "Cancel"],
           defaultId: 0,
           cancelId: 1,
         });
+        if (choice.response === 1) {
+          return { status: "cancelled" };
+        }
       }
+      // Reset state file on explicit user install request so missing phases are never skipped
+      await saveOpenShellInstallerState({
+        completed: [],
+        rebootRequired: false,
+        lastError: null,
+        startedAt: Date.now(),
+        updatedAt: Date.now(),
+      }).catch(() => {});
       const ac = new AbortController();
       openshellInstaller.abortController = ac;
       openshellInstaller.status = "running";
