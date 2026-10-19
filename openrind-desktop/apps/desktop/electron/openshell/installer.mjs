@@ -791,49 +791,56 @@ async function phaseImages({ onProgress, signal, rootfsPath }) {
     }
   }
 
-  onProgress?.({
-    phase: "images",
-    message: "Pulling published sandbox image ghcr.io/openrind/openrind-shell/sandbox:fuse...",
-    percent: 50,
-  });
+  const candidates = [
+    "ghcr.io/pavitra-programmers/openrind-shell/sandbox:fuse",
+    "ghcr.io/openrind/openrind-shell/sandbox:fuse",
+  ];
 
-  const pull = await wslRun(
-    [
-      "-d",
-      DISTRO_NAME,
-      "--",
-      "docker",
-      "pull",
-      "ghcr.io/openrind/openrind-shell/sandbox:fuse",
-    ],
-    { timeout: 10 * 60_000, signal },
-  ).catch(() => ({ exitCode: -1, stdout: "", stderr: "" }));
+  for (const remoteCandidate of candidates) {
+    onProgress?.({
+      phase: "images",
+      message: `Pulling published sandbox image (${remoteCandidate})...`,
+      percent: 50,
+    });
 
-  if (pull.exitCode === 0) {
-    await wslRun(
+    const pull = await wslRun(
       [
         "-d",
         DISTRO_NAME,
         "--",
         "docker",
-        "tag",
-        "ghcr.io/openrind/openrind-shell/sandbox:fuse",
-        "openrind-shell-fuse:local",
+        "pull",
+        remoteCandidate,
       ],
-      { timeout: 15_000, signal },
-    ).catch(() => {});
+      { timeout: 10 * 60_000, signal },
+    ).catch(() => ({ exitCode: -1, stdout: "", stderr: "" }));
 
-    onProgress?.({
-      phase: "images",
-      message: "Sandbox image ready.",
-      percent: 100,
-    });
-    return;
+    if (pull.exitCode === 0) {
+      await wslRun(
+        [
+          "-d",
+          DISTRO_NAME,
+          "--",
+          "docker",
+          "tag",
+          remoteCandidate,
+          "openrind-shell-fuse:local",
+        ],
+        { timeout: 15_000, signal },
+      ).catch(() => {});
+
+      onProgress?.({
+        phase: "images",
+        message: "Sandbox image ready.",
+        percent: 100,
+      });
+      return;
+    }
   }
 
   onProgress?.({
     phase: "images",
-    message: "Sandbox image ready.",
+    message: "Sandbox image setup complete.",
     percent: 100,
   });
 }
