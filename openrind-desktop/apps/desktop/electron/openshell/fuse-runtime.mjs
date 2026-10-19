@@ -18,6 +18,7 @@ const REPOSITORY_ROOT = path.resolve(MODULE_DIR, "../../../../../");
 const SOURCE_CHECKOUT = existsSync(path.join(REPOSITORY_ROOT, "Dockerfile.openrind-shell"));
 
 export const FUSE_CANDIDATE_IMAGES = [
+  "ghcr.io/pavitra-programmers/openeral/sandbox:fuse",
   "ghcr.io/pavitra-programmers/openrind-shell/sandbox:fuse",
   "ghcr.io/openrind/openrind-shell/sandbox:fuse",
   "openrind-shell-fuse:local",
