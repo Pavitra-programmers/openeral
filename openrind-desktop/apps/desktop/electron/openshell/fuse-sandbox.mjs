@@ -1,4 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { getCredential } from "./openrind-shell-credentials.mjs";
 import {
@@ -19,7 +22,22 @@ import {
   FUSE_IMAGE_PULL_POLICY,
   runFuseOpenShell,
 } from "./fuse-runtime.mjs";
-import { DISTRO_NAME, ensureWslKeepalive, wslRun, wslSpawn } from "./wsl.mjs";
+import { DISTRO_NAME, ensureWslKeepalive, toWslPath, wslRun, wslSpawn } from "./wsl.mjs";
+
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const REPOSITORY_ROOT = path.resolve(MODULE_DIR, "../../../../../");
+
+function resolveFusePolicyPath() {
+  if (process.resourcesPath) {
+    const packaged = path.join(process.resourcesPath, "openshell-policies", "fuse-sandbox-policy.yaml");
+    if (existsSync(packaged)) return packaged;
+  }
+  const devPath = path.resolve(REPOSITORY_ROOT, "openrind-desktop/apps/orchestrator/policies/fuse-sandbox-policy.yaml");
+  if (existsSync(devPath)) return devPath;
+  const fallback = path.resolve(REPOSITORY_ROOT, "sandboxes/openeral/policy.yaml");
+  if (existsSync(fallback)) return fallback;
+  return null;
+}
 
 const IMAGE_CONTRACT = "fuse-haloop-required-v29-browser-client";
 const SESSION_MARKER = "/var/lib/openrind-shell/runtime/desktop-session";
@@ -758,6 +776,10 @@ async function provisionOpenrindShellSandbox(options) {
     "--provider",
     haloop.providerName,
   ];
+  const policyFile = resolveFusePolicyPath();
+  if (policyFile) {
+    sandboxArgs.push("--policy", toWslPath(policyFile));
+  }
   sandboxArgs.push(
     "--env",
     `OPENRIND_SHELL_WORKSPACE_ID=${workspaceId}`,
