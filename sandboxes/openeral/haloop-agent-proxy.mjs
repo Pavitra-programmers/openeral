@@ -226,7 +226,6 @@ function mapToolNameToClient(name, clientToolNames = []) {
 }
 
 const server = http.createServer((req, res) => {
-  console.error('PROXY REQ:', req.method, req.url);
   if (req.url === '/healthz' || req.url === '/health' || req.url === '/api/hello' || req.url?.startsWith('/api/hello')) {
     res.writeHead(200, { 'content-type': 'application/json', 'content-length': 0 });
     res.end();

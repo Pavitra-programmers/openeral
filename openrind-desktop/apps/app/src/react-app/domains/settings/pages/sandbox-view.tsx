@@ -1,6 +1,7 @@
 /** @jsxImportSource react */
 
-import { AlertTriangle, CheckCircle2, CircleDashed, Loader2, RefreshCcw, XCircle } from "lucide-react";
+import { useEffect, useState } from "react";
+import { AlertTriangle, CheckCircle2, CircleDashed, Copy, Check, Clock, HelpCircle, Loader2, RefreshCcw, Terminal, XCircle } from "lucide-react";
 
 import type { SandboxBackend } from "../../../../app/lib/desktop";
 import { Button } from "../../../design-system/button";
@@ -131,7 +132,42 @@ export function SandboxView(props: SandboxViewProps) {
   const showOpenShellPanel = props.selectedBackend === "openshell";
   const running =
     props.installStatus?.status === "running" || props.installStatus?.status === "cancelling";
-  const installButtonLabel = running
+
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
+  useEffect(() => {
+    if (!running) {
+      setElapsedSeconds(0);
+      return;
+    }
+    const timer = setInterval(() => {
+      setElapsedSeconds((s) => s + 1);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [running]);
+
+  const lastProgressEvent = props.progressLog.length
+    ? props.progressLog[props.progressLog.length - 1]
+    : null;
+
+  const currentPercent = Math.min(
+    100,
+    Math.max(
+      running ? 10 : 0,
+      lastProgressEvent?.percent ?? (running ? 25 : 0)
+    )
+  );
+
+  const estimatedTotalSeconds = 150;
+  const remainingSeconds = Math.max(0, Math.round(estimatedTotalSeconds * (1 - currentPercent / 100)));
+  const formatTime = (secs: number) => {
+    const mins = Math.floor(secs / 60);
+    const rem = secs % 60;
+    return mins > 0 ? `${mins}m ${rem}s` : `${rem}s`;
+  };
+  const isReady = props.doctor?.status === "ready";
+  const showProgressBar = running && !isReady;
+  const installButtonLabel = running && !isReady
     ? "Installing…"
     : props.installStatus?.status === "reboot_required"
       ? "Resume after reboot"
@@ -283,6 +319,19 @@ export function SandboxView(props: SandboxViewProps) {
             </div>
           ) : null}
 
+          {props.doctor?.status !== "ready" ? (
+            <div className="rounded-2xl border border-dls-border bg-dls-surface p-4 flex items-center justify-between gap-3 text-xs">
+              <div className="space-y-1">
+                <div className="font-medium text-gray-12">
+                  OpenShell setup
+                </div>
+                <div className="text-gray-10 text-xs">
+                  Click "Install OpenShell" below. Desktop will automatically set up WSL2, import the dedicated Linux distro, start Docker, and bring the gateway to a healthy state.
+                </div>
+              </div>
+            </div>
+          ) : null}
+
           {props.doctor?.components?.length ? (
             <div className="rounded-2xl border border-dls-border">
               {props.doctor.components.map((component, idx, all) => (
@@ -330,6 +379,7 @@ export function SandboxView(props: SandboxViewProps) {
             ) : null}
             {props.doctor?.status === "degraded" ? (
               <Button variant="outline" onClick={props.onRestartGateway} disabled={props.actionBusy}>
+                {props.actionBusy ? <Loader2 size={13} className="mr-1.5 animate-spin" /> : null}
                 Restart gateway
               </Button>
             ) : null}
@@ -345,30 +395,70 @@ export function SandboxView(props: SandboxViewProps) {
             </Button>
           </div>
 
-          {props.actionError ? (
-            <div className="rounded-xl border border-red-7/40 bg-red-2/30 p-2 text-xs text-red-12">
-              {props.actionError}
+          {showProgressBar ? (
+            <div className="rounded-2xl border border-dls-border bg-dls-surface p-4 space-y-3.5">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-2 font-medium text-gray-12">
+                  <Loader2 size={14} className="animate-spin text-blue-500" />
+                  <span className="text-sm">
+                    {lastProgressEvent?.message || "Installing OpenShell stack..."}
+                  </span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-1.5 text-gray-10 font-mono text-[11px]">
+                    <Clock size={12} className="text-gray-9" />
+                    <span>Elapsed: {formatTime(elapsedSeconds)}</span>
+                    <span className="text-gray-8">·</span>
+                    <span className="text-gray-11">~{formatTime(remainingSeconds)} remaining</span>
+                  </div>
+                  <span className="rounded-full bg-gray-3/60 px-2 py-0.5 font-mono text-xs font-semibold text-gray-12 border border-dls-border">
+                    {currentPercent}%
+                  </span>
+                </div>
+              </div>
+
+              <div className="h-2 w-full overflow-hidden rounded-full bg-gray-3 border border-dls-border">
+                <div
+                  className="h-full rounded-full bg-blue-500 transition-all duration-500 ease-out"
+                  style={{ width: `${currentPercent}%` }}
+                />
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-1 text-[11px] text-gray-10">
+                <span className={currentPercent >= 10 ? "text-gray-12 font-medium" : "text-gray-8"}>
+                  1. Preflight
+                </span>
+                <span>→</span>
+                <span className={currentPercent >= 25 ? "text-gray-12 font-medium" : "text-gray-8"}>
+                  2. WSL2
+                </span>
+                <span>→</span>
+                <span className={currentPercent >= 45 ? "text-gray-12 font-medium" : "text-gray-8"}>
+                  3. Distro Import
+                </span>
+                <span>→</span>
+                <span className={currentPercent >= 65 ? "text-gray-12 font-medium" : "text-gray-8"}>
+                  4. Docker Engine
+                </span>
+                <span>→</span>
+                <span className={currentPercent >= 80 ? "text-gray-12 font-medium" : "text-gray-8"}>
+                  5. Gateway & CLI
+                </span>
+                <span>→</span>
+                <span className={currentPercent >= 95 ? "text-gray-12 font-medium" : "text-gray-8"}>
+                  6. Sandbox Images
+                </span>
+                <span>→</span>
+                <span className={currentPercent >= 100 ? "text-green-9 font-medium" : "text-gray-8"}>
+                  7. Ready
+                </span>
+              </div>
             </div>
           ) : null}
 
-          {props.progressLog.length ? (
-            <div className="rounded-xl border border-dls-border bg-gray-1/40 p-3">
-              <div className="mb-1 text-[11px] font-medium uppercase tracking-wider text-gray-8">
-                Install activity
-              </div>
-              <div className="max-h-40 overflow-y-auto font-mono text-[11px] text-gray-11">
-                {props.progressLog.slice(-50).map((event, idx) => (
-                  <div key={idx} className="py-0.5">
-                    <span className="text-gray-8">{event.phase}</span>
-                    {event.status ? <span className="text-gray-7"> · {event.status}</span> : null}
-                    {event.percent != null ? (
-                      <span className="text-gray-7"> · {event.percent}%</span>
-                    ) : null}
-                    {event.message ? <span>: {event.message}</span> : null}
-                    {event.error ? <span className="text-red-9"> — {event.error}</span> : null}
-                  </div>
-                ))}
-              </div>
+          {props.actionError ? (
+            <div className="rounded-xl border border-red-7/40 bg-red-2/30 p-2 text-xs text-red-12">
+              {props.actionError}
             </div>
           ) : null}
         </div>
@@ -411,6 +501,64 @@ export function SandboxView(props: SandboxViewProps) {
             ))}
           </ul>
         )}
+      </div>
+
+      <div className={`${settingsPanelClass} space-y-4`}>
+        <div className="flex items-center gap-2">
+          <Terminal size={16} className="text-blue-400" />
+          <div className="text-sm font-medium text-gray-12">OpenShell Health & Troubleshooting Guide</div>
+        </div>
+        <div className="text-xs text-gray-10 leading-relaxed">
+          OpenShell runs inside an isolated WSL2 distribution named <code className="rounded bg-black/40 px-1 py-0.5 font-mono text-gray-11">openrind-desktop-openshell</code>.
+          The app manages the stack automatically when you click <strong>Install OpenShell</strong>. If you ever need to inspect or repair the stack manually, run these commands in PowerShell:
+        </div>
+
+        <div className="space-y-3">
+          <div className="rounded-xl border border-dls-border bg-gray-1/30 p-3 space-y-1.5">
+            <div className="flex items-center justify-between text-xs font-medium text-gray-11">
+              <span>1. Check WSL and Distro Registration</span>
+            </div>
+            <div className="rounded-lg bg-black/50 p-2 font-mono text-xs text-gray-12 select-all overflow-x-auto border border-gray-7/30">
+              <code>wsl -l -v</code>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-dls-border bg-gray-1/30 p-3 space-y-1.5">
+            <div className="flex items-center justify-between text-xs font-medium text-gray-11">
+              <span>2. Check Docker Engine inside the OpenShell Distro</span>
+            </div>
+            <div className="rounded-lg bg-black/50 p-2 font-mono text-xs text-gray-12 select-all overflow-x-auto border border-gray-7/30">
+              <code>wsl -d openrind-desktop-openshell -- docker ps</code>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-dls-border bg-gray-1/30 p-3 space-y-1.5">
+            <div className="flex items-center justify-between text-xs font-medium text-gray-11">
+              <span>3. Check OpenShell Gateway Service</span>
+            </div>
+            <div className="rounded-lg bg-black/50 p-2 font-mono text-xs text-gray-12 select-all overflow-x-auto border border-gray-7/30">
+              <code>wsl -d openrind-desktop-openshell -- sudo systemctl status openrind-desktop-fuse-gateway</code>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-dls-border bg-gray-1/30 p-3 space-y-1.5">
+            <div className="flex items-center justify-between text-xs font-medium text-gray-11">
+              <span>4. Restart the OpenShell Gateway</span>
+            </div>
+            <div className="rounded-lg bg-black/50 p-2 font-mono text-xs text-gray-12 select-all overflow-x-auto border border-gray-7/30">
+              <code>wsl -d openrind-desktop-openshell -- sudo systemctl restart openrind-desktop-fuse-gateway</code>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-dls-border bg-gray-1/30 p-3 space-y-1.5">
+            <div className="flex items-center justify-between text-xs font-medium text-gray-11">
+              <span>5. Reset / Restart WSL (Clean Reload)</span>
+            </div>
+            <div className="rounded-lg bg-black/50 p-2 font-mono text-xs text-gray-12 select-all overflow-x-auto border border-gray-7/30">
+              <code>wsl --shutdown</code>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );

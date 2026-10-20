@@ -21,7 +21,8 @@ import {
   resetCache as resetCliCache,
 } from "./cli.mjs";
 import { openshellDoctor } from "./doctor.mjs";
-import { DISTRO_NAME, wslRun } from "./wsl.mjs";
+import { ensureManagedFuseGateway } from "./fuse-gateway.mjs";
+import { DISTRO_NAME, distroExists, wslRun } from "./wsl.mjs";
 
 const DEFAULT_STATE_FILE = path.join(
   os.homedir(),
@@ -29,7 +30,7 @@ const DEFAULT_STATE_FILE = path.join(
   "openshell-install.json",
 );
 const MIN_WIN11_BUILD = 22_000;
-const MIN_RAM_GB = 14; // 16 GB nominal with system reserve slack
+const MIN_RAM_GB = 5; // Support 8 GB RAM machines (nominal with OS reserve slack)
 const WSL_INSTALL_TIMEOUT_MS = 15 * 60_000;
 const DOCKER_INSTALL_TIMEOUT_MS = 10 * 60_000;
 const OPENSHELL_INSTALL_TIMEOUT_MS = 10 * 60_000;
@@ -44,7 +45,7 @@ const DISTRO_IMPORT_TIMEOUT_MS = 5 * 60_000;
  * @property {number|null} updatedAt
  *
  * @typedef {Object} PhaseContext
- * @property {(evt: {phase: string, message: string, percent?: number}) => void} [onProgress]
+ * @property {(evt: {phase: string, message: string, percent?: number, status?: string}) => void} [onProgress]
  * @property {AbortSignal} [signal]
  * @property {InstallerState} [state]
  * @property {string} [rootfsPath]
@@ -126,7 +127,7 @@ async function phasePreflight({ onProgress }) {
   const memGB = os.totalmem() / 1024 ** 3;
   if (memGB < MIN_RAM_GB) {
     throw new Error(
-      `Only ${memGB.toFixed(1)} GB RAM detected; OpenShell needs ≥ 16 GB.`,
+      `Only ${memGB.toFixed(1)} GB RAM detected; OpenShell needs ≥ 8 GB.`,
     );
   }
   onProgress?.({
@@ -203,7 +204,7 @@ async function phaseDistro({ onProgress, signal, rootfsPath }) {
   onProgress?.({
     phase: "distro",
     message: `Importing ${DISTRO_NAME}...`,
-    percent: 0,
+    percent: 30,
   });
   if (!rootfsPath) {
     throw new Error(
@@ -243,7 +244,7 @@ async function phaseDistro({ onProgress, signal, rootfsPath }) {
       `wsl --import failed: ${importResult.stderr || importResult.stdout}`,
     );
   }
-  onProgress?.({ phase: "distro", message: "Distro imported.", percent: 100 });
+  onProgress?.({ phase: "distro", message: "Distro imported.", percent: 45 });
 }
 
 /** @param {PhaseContext} ctx */
@@ -251,7 +252,7 @@ async function phaseDocker({ onProgress, signal }) {
   onProgress?.({
     phase: "docker",
     message: "Installing Docker Engine inside the distro...",
-    percent: 0,
+    percent: 50,
   });
   // One bash -c script keeps us to a single wsl.exe round-trip and avoids
   // partial-state failures between apt commands.
@@ -282,7 +283,7 @@ async function phaseDocker({ onProgress, signal }) {
   onProgress?.({
     phase: "docker",
     message: "Docker Engine running inside distro.",
-    percent: 100,
+    percent: 65,
   });
 }
 
@@ -307,7 +308,7 @@ async function phaseOpenshell({ onProgress, signal }) {
   onProgress?.({
     phase: "openshell",
     message: "Verifying OpenShell CLI...",
-    percent: 0,
+    percent: 70,
   });
 
   // The cached probe must reflect the post-import binary state, not
@@ -386,7 +387,7 @@ async function phaseOpenshell({ onProgress, signal }) {
   onProgress?.({
     phase: "openshell",
     message: `OpenShell CLI ${info.version ?? ""} ready.`.trim(),
-    percent: 100,
+    percent: 85,
   });
 }
 
@@ -410,15 +411,24 @@ async function phaseOpenshell({ onProgress, signal }) {
  *   3. As a last resort, try to restart an `openshell-cluster*` container
  *      directly through docker — recovery path only.
  */
-const LOCAL_GATEWAY_URL = "https://127.0.0.1:17670";
+const LOCAL_GATEWAY_URL = "http://127.0.0.1:18770";
 const LOCAL_GATEWAY_NAME = "openshell";
 
 async function bringUpGateway({ onProgress, signal }) {
   onProgress?.({
     phase: "openshell",
-    message: "Starting OpenShell gateway...",
+    message: "Starting OpenShell FUSE gateway on port 18770...",
     percent: 70,
   });
+
+  try {
+    await ensureManagedFuseGateway({ onProgress });
+    await registerLocalGateway({ signal, onProgress });
+    return;
+  } catch (err) {
+    // Continue to legacy fallback if needed
+  }
+
   const info = await getCliInfo();
 
   // Path 1 — legacy `gateway start`. We probe before calling so we
@@ -850,10 +860,17 @@ async function phaseImages({ onProgress, signal, rootfsPath }) {
 async function phaseVerify({ onProgress }) {
   onProgress?.({
     phase: "verify",
-    message: "Verifying installation...",
-    percent: 0,
+    message: "Verifying installation components...",
+    percent: 95,
   });
-  const result = await openshellDoctor();
+
+  let result = await openshellDoctor();
+  // Allow a short window for background daemon and gateway registration to settle
+  for (let attempt = 0; attempt < 15 && result.status !== "ready"; attempt++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    result = await openshellDoctor();
+  }
+
   if (result.status !== "ready") {
     const reason =
       result.fatal[0] ?? result.actionable[0] ?? `status: ${result.status}`;
@@ -861,7 +878,7 @@ async function phaseVerify({ onProgress }) {
   }
   onProgress?.({
     phase: "verify",
-    message: "All components healthy.",
+    message: "All components healthy. OpenShell is ready!",
     percent: 100,
   });
 }
@@ -881,7 +898,7 @@ const DEFAULT_PHASES = [
 /**
  * @param {Object} [options]
  * @param {(phase: string, status: "starting"|"done"|"failed"|"reboot_required", error?: Error) => void} [options.onPhase]
- * @param {(evt: {phase: string, message: string, percent?: number}) => void} [options.onProgress]
+ * @param {(evt: {phase: string, message: string, percent?: number, status?: string}) => void} [options.onProgress]
  * @param {AbortSignal} [options.signal]
  * @param {string} [options.rootfsPath]
  * @param {string} [options.powershellExe]
@@ -903,6 +920,26 @@ export async function installOpenShellStack(options = {}) {
   let state = await loadInstallerState(stateFile);
   if (!state.startedAt) {
     state.startedAt = Date.now();
+  }
+
+  // Reconcile state against system reality for production runs
+  if (phases === DEFAULT_PHASES) {
+    const distroPresent = await distroExists().catch(() => false);
+    if (!distroPresent) {
+      state.completed = state.completed.filter(
+        (id) => id === "preflight" || id === "wsl",
+      );
+    } else {
+      const dockerInfo = await wslRun(
+        ["-d", DISTRO_NAME, "--", "docker", "info"],
+        { timeout: 10_000 },
+      ).catch(() => ({ exitCode: -1 }));
+      if (dockerInfo.exitCode !== 0) {
+        state.completed = state.completed.filter(
+          (id) => id === "preflight" || id === "wsl" || id === "distro",
+        );
+      }
+    }
     state = await saveInstallerState(state, stateFile);
   }
 

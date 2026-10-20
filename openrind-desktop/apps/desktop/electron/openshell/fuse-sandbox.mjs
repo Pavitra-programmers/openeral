@@ -438,9 +438,23 @@ async function requireFuseImage(onProgress) {
         phase: "image",
         message: `Downloading Openrind Shell FUSE image (${remoteCandidate})...`,
       });
+      let lastMessage = "";
       const pulled = await wslRun(
         ["-d", DISTRO_NAME, "--", "docker", "pull", remoteCandidate],
-        { timeout: 10 * 60_000 },
+        {
+          timeout: 10 * 60_000,
+          onOutput: (chunk) => {
+            const lines = String(chunk).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+            const activeLine = lines[lines.length - 1];
+            if (activeLine && (activeLine.includes("Downloading") || activeLine.includes("Extracting") || activeLine.includes("Pull complete") || activeLine.includes("Download complete"))) {
+              const msg = `Downloading ${remoteCandidate}: ${activeLine}`;
+              if (msg !== lastMessage) {
+                lastMessage = msg;
+                onProgress?.({ phase: "image", message: msg });
+              }
+            }
+          },
+        },
       ).catch(() => ({ exitCode: -1, stdout: "", stderr: "" }));
 
       if (pulled.exitCode === 0) {
@@ -851,6 +865,32 @@ export async function ensureBrowserPod(sandboxName, onProgress) {
       podName,
     ], { timeout: 10_000 }).catch(() => null);
 
+    const BROWSER_POD_CANDIDATES = [
+      "ghcr.io/pavitra-programmers/openeral/browser-pod:latest",
+      "openrind-browser-pod:latest",
+      "openrind-browser-pod:e2e",
+    ];
+
+    let selectedPodImage = null;
+    for (const img of BROWSER_POD_CANDIDATES) {
+      const checkImg = await wslRun(["-d", DISTRO_NAME, "--", "docker", "image", "inspect", img], { timeout: 10_000 }).catch(() => null);
+      if (checkImg?.exitCode === 0) {
+        selectedPodImage = img;
+        break;
+      }
+    }
+
+    if (!selectedPodImage) {
+      onProgress?.({ phase: "browser-pod", message: `Pulling Chromium browser pod image (${BROWSER_POD_CANDIDATES[0]})…` });
+      const pull = await wslRun(["-d", DISTRO_NAME, "--", "docker", "pull", BROWSER_POD_CANDIDATES[0]], { timeout: 10 * 60_000 }).catch(() => null);
+      if (pull?.exitCode === 0) {
+        selectedPodImage = BROWSER_POD_CANDIDATES[0];
+        await wslRun(["-d", DISTRO_NAME, "--", "docker", "tag", selectedPodImage, "openrind-browser-pod:latest"], { timeout: 10_000 }).catch(() => null);
+      }
+    }
+
+    selectedPodImage = selectedPodImage || BROWSER_POD_CANDIDATES[0];
+
     const aliasArgs = ["--network-alias", "openrind-browser-pod", "--network-alias", podName];
     if (shortPodName) aliasArgs.push("--network-alias", shortPodName);
 
@@ -865,34 +905,33 @@ export async function ensureBrowserPod(sandboxName, onProgress) {
       podName,
       "--network",
       "openshell-docker",
+      "--shm-size=1g",
       ...aliasArgs,
       "--restart",
       "unless-stopped",
-      "openrind-browser-pod:e2e",
-    ], { timeout: 30_000 });
-
-    if (start.exitCode !== 0) {
-      start = await wslRun([
-        "-d",
-        DISTRO_NAME,
-        "--",
-        "docker",
-        "run",
-        "-d",
-        "--name",
-        podName,
-        "--network",
-        "openshell-docker",
-        ...aliasArgs,
-        "--restart",
-        "unless-stopped",
-        "openrind-browser-pod:latest",
-      ], { timeout: 30_000 });
-    }
+      selectedPodImage,
+    ], { timeout: 60_000 });
 
     if (start.exitCode !== 0) {
       console.warn(`[browser-pod] Could not start browser pod container: ${(start.stderr || start.stdout).trim()}`);
       return false;
+    }
+
+    // Wait for Chromium in the browser pod to be ready on port 9222
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const probe = await wslRun([
+        "-d",
+        DISTRO_NAME,
+        "--",
+        "docker",
+        "exec",
+        podName,
+        "node",
+        "-e",
+        "fetch('http://127.0.0.1:9222/json/version').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+      ], { timeout: 3000 }).catch(() => null);
+      if (probe?.exitCode === 0) break;
+      await new Promise((r) => setTimeout(r, 500));
     }
   }
 

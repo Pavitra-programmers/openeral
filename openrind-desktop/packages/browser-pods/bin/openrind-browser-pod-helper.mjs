@@ -146,7 +146,6 @@ function openWebSocket(url, options = {}) {
       perMessageDeflate: false,
       handshakeTimeout: 10000,
       agent: connectAgent,
-      createConnection: connectAgent ? ((opts, cb) => connectAgent.createConnection(opts, cb)) : undefined,
       ...options,
       headers: { ...(options.headers || {}), Host: `${targetUrl.host}` },
     });
