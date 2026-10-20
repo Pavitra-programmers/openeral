@@ -169,7 +169,7 @@ def main():
         raise ValueError('The OpenShell Haloop provider credential is missing. Reconnect from Desktop.')
     base = normalize_gateway_url(os.environ.get('HALOOP_GATEWAY_URL') or os.environ.get('LLM_BASE_URL') or BASE_URL)
     openai_base = f"{base}/v1" if not base.endswith('/v1') else base
-    model = os.environ.get('OPENRIND_SHELL_OPENHANDS_MODEL') or os.environ.get('LLM_MODEL') or 'openai/inclusionai/ling-3.0-flash-sante:free'
+    model = os.environ.get('OPENRIND_SHELL_OPENHANDS_MODEL') or os.environ.get('LLM_MODEL') or 'openai/openrouter/free'
     real_openrouter_key = os.environ.get('OPENROUTER_API_KEY') or ''
     if real_openrouter_key.startswith('openshell:resolve:env:'):
         real_openrouter_key = ''

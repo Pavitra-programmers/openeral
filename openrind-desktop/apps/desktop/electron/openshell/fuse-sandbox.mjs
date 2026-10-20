@@ -438,9 +438,23 @@ async function requireFuseImage(onProgress) {
         phase: "image",
         message: `Downloading Openrind Shell FUSE image (${remoteCandidate})...`,
       });
+      let lastMessage = "";
       const pulled = await wslRun(
         ["-d", DISTRO_NAME, "--", "docker", "pull", remoteCandidate],
-        { timeout: 10 * 60_000 },
+        {
+          timeout: 10 * 60_000,
+          onOutput: (chunk) => {
+            const lines = String(chunk).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+            const activeLine = lines[lines.length - 1];
+            if (activeLine && (activeLine.includes("Downloading") || activeLine.includes("Extracting") || activeLine.includes("Pull complete") || activeLine.includes("Download complete"))) {
+              const msg = `Downloading ${remoteCandidate}: ${activeLine}`;
+              if (msg !== lastMessage) {
+                lastMessage = msg;
+                onProgress?.({ phase: "image", message: msg });
+              }
+            }
+          },
+        },
       ).catch(() => ({ exitCode: -1, stdout: "", stderr: "" }));
 
       if (pulled.exitCode === 0) {
