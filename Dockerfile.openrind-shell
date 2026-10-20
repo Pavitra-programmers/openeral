@@ -1,4 +1,5 @@
-    # Openrind Shell primary sandbox: OpenShell-mounted PostgreSQL FUSE workspace.
+# Openrind Shell primary sandbox: OpenShell-mounted PostgreSQL FUSE workspace.
+# Build version: 0.14.0-release-ready
 # Keep synchronized with sandboxes/openeral/Dockerfile. Dockerfile.openeral is
 # retained as a legacy entry point.
 
