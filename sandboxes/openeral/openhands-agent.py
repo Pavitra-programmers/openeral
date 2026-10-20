@@ -169,11 +169,13 @@ def main():
         raise ValueError('The OpenShell Haloop provider credential is missing. Reconnect from Desktop.')
     base = normalize_gateway_url(os.environ.get('HALOOP_GATEWAY_URL') or os.environ.get('LLM_BASE_URL') or BASE_URL)
     openai_base = f"{base}/v1" if not base.endswith('/v1') else base
-    model = os.environ.get('OPENRIND_SHELL_OPENHANDS_MODEL') or os.environ.get('LLM_MODEL') or 'openai/openrouter/free'
     real_openrouter_key = os.environ.get('OPENROUTER_API_KEY') or ''
     if real_openrouter_key.startswith('openshell:resolve:env:'):
         real_openrouter_key = ''
     active_key = real_openrouter_key or credential
+    is_openrouter = active_key.startswith('sk-or-') or (os.environ.get('W8_HALOOP_PROVIDER') == 'openrouter')
+    default_model = 'openai/anthropic/claude-3.5-sonnet' if is_openrouter else 'claude-3-5-sonnet-20241022'
+    model = os.environ.get('OPENRIND_SHELL_OPENHANDS_MODEL') or os.environ.get('LLM_MODEL') or default_model
     os.chdir(WORKSPACE)
     os.environ.update({
         'HOME': '/sandbox/openhands-home',
