@@ -1,3 +1,4 @@
+// Openrind Shell FUSE Sandbox Provisioning - Release Build v0.14.0
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import path from "node:path";
