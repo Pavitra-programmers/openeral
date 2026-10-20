@@ -30,7 +30,7 @@ const DEFAULT_STATE_FILE = path.join(
   "openshell-install.json",
 );
 const MIN_WIN11_BUILD = 22_000;
-const MIN_RAM_GB = 14; // 16 GB nominal with system reserve slack
+const MIN_RAM_GB = 5; // Support 8 GB RAM machines (nominal with OS reserve slack)
 const WSL_INSTALL_TIMEOUT_MS = 15 * 60_000;
 const DOCKER_INSTALL_TIMEOUT_MS = 10 * 60_000;
 const OPENSHELL_INSTALL_TIMEOUT_MS = 10 * 60_000;
@@ -127,7 +127,7 @@ async function phasePreflight({ onProgress }) {
   const memGB = os.totalmem() / 1024 ** 3;
   if (memGB < MIN_RAM_GB) {
     throw new Error(
-      `Only ${memGB.toFixed(1)} GB RAM detected; OpenShell needs ≥ 16 GB.`,
+      `Only ${memGB.toFixed(1)} GB RAM detected; OpenShell needs ≥ 8 GB.`,
     );
   }
   onProgress?.({
@@ -860,10 +860,17 @@ async function phaseImages({ onProgress, signal, rootfsPath }) {
 async function phaseVerify({ onProgress }) {
   onProgress?.({
     phase: "verify",
-    message: "Verifying installation...",
-    percent: 0,
+    message: "Verifying installation components...",
+    percent: 95,
   });
-  const result = await openshellDoctor();
+
+  let result = await openshellDoctor();
+  // Allow a short window for background daemon and gateway registration to settle
+  for (let attempt = 0; attempt < 15 && result.status !== "ready"; attempt++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    result = await openshellDoctor();
+  }
+
   if (result.status !== "ready") {
     const reason =
       result.fatal[0] ?? result.actionable[0] ?? `status: ${result.status}`;
@@ -871,7 +878,7 @@ async function phaseVerify({ onProgress }) {
   }
   onProgress?.({
     phase: "verify",
-    message: "All components healthy.",
+    message: "All components healthy. OpenShell is ready!",
     percent: 100,
   });
 }

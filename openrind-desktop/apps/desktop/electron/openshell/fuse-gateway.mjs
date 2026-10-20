@@ -188,6 +188,7 @@ async function provisionManagedGateway(runtime) {
     `printf '%s' ${shellQuote(gatewayToml(runtime))} > ${shellQuote(configPath)}`,
     `printf '%s' ${shellQuote(systemdUnit())} > ${shellQuote(SERVICE_PATH)}`,
     `chown -R banker:banker ${shellQuote(STATE_DIR)}`,
+    `chmod 777 ${shellQuote(STATE_DIR)}`,
     `chmod 600 ${shellQuote(configPath)} ${shellQuote(`${STATE_DIR}/jwt/signing.pem`)}`,
     "service docker start 2>/dev/null || systemctl start docker 2>/dev/null || true",
     "chmod 666 /var/run/docker.sock 2>/dev/null || true",
@@ -195,8 +196,10 @@ async function provisionManagedGateway(runtime) {
     `systemctl enable ${shellQuote(SERVICE_NAME)} 2>/dev/null || true`,
     `if [ "$changed" -eq 1 ]; then systemctl restart ${shellQuote(SERVICE_NAME)} 2>/dev/null || true; else systemctl start ${shellQuote(SERVICE_NAME)} 2>/dev/null || true; fi`,
     `if ! pgrep -f openshell-gateway >/dev/null 2>&1; then`,
-    `  nohup ${RUNTIME_DIR}/openshell-gateway --config ${STATE_DIR}/gateway.toml --db-url sqlite:${STATE_DIR}/gateway.db?mode=rwc >${STATE_DIR}/gateway.log 2>&1 &`,
+    `  (nohup ${RUNTIME_DIR}/openshell-gateway --config ${STATE_DIR}/gateway.toml --db-url sqlite:${STATE_DIR}/gateway.db?mode=rwc >${STATE_DIR}/gateway.log 2>&1 &)`,
+    `  disown -a 2>/dev/null || true`,
     `fi`,
+    "sleep 2",
   ].join("\n");
 
   const result = await wslRun(
