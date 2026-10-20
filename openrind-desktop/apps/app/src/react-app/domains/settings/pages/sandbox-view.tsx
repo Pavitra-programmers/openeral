@@ -165,7 +165,9 @@ export function SandboxView(props: SandboxViewProps) {
     const rem = secs % 60;
     return mins > 0 ? `${mins}m ${rem}s` : `${rem}s`;
   };
-  const installButtonLabel = running
+  const isReady = props.doctor?.status === "ready";
+  const showProgressBar = running && !isReady;
+  const installButtonLabel = running && !isReady
     ? "Installing…"
     : props.installStatus?.status === "reboot_required"
       ? "Resume after reboot"
@@ -393,11 +395,11 @@ export function SandboxView(props: SandboxViewProps) {
             </Button>
           </div>
 
-          {running ? (
-            <div className="rounded-2xl border border-blue-500/40 bg-blue-950/30 p-4 space-y-3.5 shadow-lg shadow-blue-950/20">
+          {showProgressBar ? (
+            <div className="rounded-2xl border border-dls-border bg-dls-surface p-4 space-y-3.5">
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                <div className="flex items-center gap-2 font-medium text-blue-200">
-                  <Loader2 size={15} className="animate-spin text-blue-400" />
+                <div className="flex items-center gap-2 font-medium text-gray-12">
+                  <Loader2 size={14} className="animate-spin text-blue-500" />
                   <span className="text-sm">
                     {lastProgressEvent?.message || "Installing OpenShell stack..."}
                   </span>
@@ -407,47 +409,47 @@ export function SandboxView(props: SandboxViewProps) {
                     <Clock size={12} className="text-gray-9" />
                     <span>Elapsed: {formatTime(elapsedSeconds)}</span>
                     <span className="text-gray-8">·</span>
-                    <span className="text-cyan-400">~{formatTime(remainingSeconds)} remaining</span>
+                    <span className="text-gray-11">~{formatTime(remainingSeconds)} remaining</span>
                   </div>
-                  <span className="rounded-full bg-blue-500/20 px-2 py-0.5 font-mono text-xs font-semibold text-blue-300 border border-blue-400/30">
+                  <span className="rounded-full bg-gray-3/60 px-2 py-0.5 font-mono text-xs font-semibold text-gray-12 border border-dls-border">
                     {currentPercent}%
                   </span>
                 </div>
               </div>
 
-              <div className="h-3 w-full overflow-hidden rounded-full bg-black/60 p-0.5 border border-blue-500/30">
+              <div className="h-2 w-full overflow-hidden rounded-full bg-gray-3 border border-dls-border">
                 <div
-                  className="h-full rounded-full bg-gradient-to-r from-blue-600 via-cyan-400 to-emerald-400 transition-all duration-500 ease-out shadow-sm shadow-cyan-400/50"
+                  className="h-full rounded-full bg-blue-500 transition-all duration-500 ease-out"
                   style={{ width: `${currentPercent}%` }}
                 />
               </div>
 
-              <div className="flex flex-wrap items-center justify-between gap-1 text-[11px] text-gray-11">
-                <span className={currentPercent >= 10 ? "text-blue-300 font-medium" : "text-gray-9"}>
+              <div className="flex flex-wrap items-center justify-between gap-1 text-[11px] text-gray-10">
+                <span className={currentPercent >= 10 ? "text-gray-12 font-medium" : "text-gray-8"}>
                   1. Preflight
                 </span>
                 <span>→</span>
-                <span className={currentPercent >= 25 ? "text-blue-300 font-medium" : "text-gray-9"}>
+                <span className={currentPercent >= 25 ? "text-gray-12 font-medium" : "text-gray-8"}>
                   2. WSL2
                 </span>
                 <span>→</span>
-                <span className={currentPercent >= 45 ? "text-blue-300 font-medium" : "text-gray-9"}>
+                <span className={currentPercent >= 45 ? "text-gray-12 font-medium" : "text-gray-8"}>
                   3. Distro Import
                 </span>
                 <span>→</span>
-                <span className={currentPercent >= 65 ? "text-blue-300 font-medium" : "text-gray-9"}>
+                <span className={currentPercent >= 65 ? "text-gray-12 font-medium" : "text-gray-8"}>
                   4. Docker Engine
                 </span>
                 <span>→</span>
-                <span className={currentPercent >= 80 ? "text-blue-300 font-medium" : "text-gray-9"}>
+                <span className={currentPercent >= 80 ? "text-gray-12 font-medium" : "text-gray-8"}>
                   5. Gateway & CLI
                 </span>
                 <span>→</span>
-                <span className={currentPercent >= 95 ? "text-blue-300 font-medium" : "text-gray-9"}>
+                <span className={currentPercent >= 95 ? "text-gray-12 font-medium" : "text-gray-8"}>
                   6. Sandbox Images
                 </span>
                 <span>→</span>
-                <span className={currentPercent >= 100 ? "text-emerald-300 font-medium" : "text-gray-9"}>
+                <span className={currentPercent >= 100 ? "text-green-9 font-medium" : "text-gray-8"}>
                   7. Ready
                 </span>
               </div>
