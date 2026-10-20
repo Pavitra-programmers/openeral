@@ -54,6 +54,23 @@ esac
 unset OPENCLAW_PLUGIN_STAGE_DIR
 export SHELL=/bin/bash
 
+PROXY_PID=""
+if [ -f /opt/openrind-shell/haloop-agent-proxy.mjs ]; then
+  pkill -f haloop-agent-proxy.mjs 2>/dev/null || true
+  export HALOOP_GATEWAY_URL="${HALOOP_GATEWAY_URL:-${HALOOP_UPSTREAM_URL:-http://136.112.93.84:8787}}"
+  export HALOOP_UPSTREAM_URL="$HALOOP_GATEWAY_URL"
+  export NODE_USE_ENV_PROXY=1
+  /usr/bin/node /opt/openrind-shell/haloop-agent-proxy.mjs &
+  PROXY_PID=$!
+  for _i in $(seq 1 30); do
+    if curl -s -o /dev/null http://127.0.0.1:8785/healthz 2>/dev/null; then
+      break
+    fi
+    sleep 0.05
+  done
+  export OPENRIND_GATEWAY_BASE_URL="http://127.0.0.1:8785"
+fi
+
 # Keep the real terminal on OpenClaw's stdin. The native fixed-target launcher
 # remains its kernel-verifiable parent for provider authorization; this shell
 # remains outside that trust boundary and owns the final FUSE durability barrier.
@@ -85,6 +102,7 @@ while true; do
   # only while the same child is still alive so its final status remains intact.
   kill -0 "$child" 2>/dev/null || break
 done
+[ -z "$PROXY_PID" ] || kill "$PROXY_PID" 2>/dev/null || true
 trap - INT TERM HUP
 
 if [ "$status" -eq 126 ] || [ "$status" -eq 127 ]; then

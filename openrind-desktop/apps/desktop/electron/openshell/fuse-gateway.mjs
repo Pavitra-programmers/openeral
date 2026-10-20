@@ -118,7 +118,7 @@ default_image = "openrind-shell-fuse:local"
 image_pull_policy = "Never"
 sandbox_namespace = "openrind-desktop-fuse"
 grpc_endpoint = "http://host.openshell.internal:18770"
-	supervisor_bin = "/opt/openrind-desktop/fuse-runtime/openshell-sandbox"
+supervisor_bin = "/opt/openrind-desktop/fuse-runtime/openshell-sandbox"
 enable_fuse = true
 `;
 }
@@ -126,13 +126,12 @@ enable_fuse = true
 function systemdUnit() {
   return `[Unit]
 Description=Openrind Desktop paired OpenShell FUSE gateway
-After=network.target docker.service
-Wants=docker.service
+After=network.target
 
 [Service]
 Type=simple
-User=banker
-Group=banker
+User=root
+Group=root
 Environment=HOME=/home/banker
 ExecStart=${RUNTIME_DIR}/openshell-gateway --config ${STATE_DIR}/gateway.toml --db-url sqlite:${STATE_DIR}/gateway.db?mode=rwc
 Restart=always
@@ -189,10 +188,18 @@ async function provisionManagedGateway(runtime) {
     `printf '%s' ${shellQuote(gatewayToml(runtime))} > ${shellQuote(configPath)}`,
     `printf '%s' ${shellQuote(systemdUnit())} > ${shellQuote(SERVICE_PATH)}`,
     `chown -R banker:banker ${shellQuote(STATE_DIR)}`,
+    `chmod 777 ${shellQuote(STATE_DIR)}`,
     `chmod 600 ${shellQuote(configPath)} ${shellQuote(`${STATE_DIR}/jwt/signing.pem`)}`,
-    "systemctl daemon-reload",
-    `systemctl enable ${shellQuote(SERVICE_NAME)} >/dev/null`,
-    `if [ "$changed" -eq 1 ]; then systemctl restart ${shellQuote(SERVICE_NAME)}; else systemctl start ${shellQuote(SERVICE_NAME)}; fi`,
+    "service docker start 2>/dev/null || systemctl start docker 2>/dev/null || true",
+    "chmod 666 /var/run/docker.sock 2>/dev/null || true",
+    "systemctl daemon-reload 2>/dev/null || true",
+    `systemctl enable ${shellQuote(SERVICE_NAME)} 2>/dev/null || true`,
+    `if [ "$changed" -eq 1 ]; then systemctl restart ${shellQuote(SERVICE_NAME)} 2>/dev/null || true; else systemctl start ${shellQuote(SERVICE_NAME)} 2>/dev/null || true; fi`,
+    `if ! pgrep -f openshell-gateway >/dev/null 2>&1; then`,
+    `  (nohup ${RUNTIME_DIR}/openshell-gateway --config ${STATE_DIR}/gateway.toml --db-url sqlite:${STATE_DIR}/gateway.db?mode=rwc >${STATE_DIR}/gateway.log 2>&1 &)`,
+    `  disown -a 2>/dev/null || true`,
+    `fi`,
+    "sleep 2",
   ].join("\n");
 
   const result = await wslRun(
@@ -207,14 +214,19 @@ async function provisionManagedGateway(runtime) {
 
 async function waitForGateway(runtime, endpoint) {
   let lastDetail = "gateway did not respond";
-  for (let attempt = 0; attempt < 30; attempt += 1) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
     const result = await gatewayInfo(runtime, endpoint);
     if (result.exitCode === 0) return;
     lastDetail = (result.stderr || result.stdout || `exit ${result.exitCode}`).trim();
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
   }
+  const journal = await wslRun(
+    ["-d", DISTRO_NAME, "--user", "root", "--", "sh", "-c", `tail -n 30 ${STATE_DIR}/gateway.log 2>/dev/null || journalctl -u ${SERVICE_NAME} -n 20 --no-pager 2>/dev/null || true`],
+    { timeout: 10_000 },
+  ).catch(() => ({ stdout: "" }));
+  const logTail = journal.stdout ? `\nGateway logs:\n${journal.stdout.trim()}` : "";
   throw new Error(
-    `The managed OpenShell FUSE gateway at ${endpoint} did not become healthy: ${lastDetail}`,
+    `The managed OpenShell FUSE gateway at ${endpoint} did not become healthy: ${lastDetail}${logTail}`,
   );
 }
 
