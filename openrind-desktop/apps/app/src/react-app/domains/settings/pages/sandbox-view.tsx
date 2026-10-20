@@ -1,4 +1,5 @@
 /** @jsxImportSource react */
+// Openrind Desktop Sandbox Settings View - Release Build v0.14.0
 
 import { useEffect, useState } from "react";
 import { AlertTriangle, CheckCircle2, CircleDashed, Copy, Check, Clock, HelpCircle, Loader2, RefreshCcw, Terminal, XCircle } from "lucide-react";
