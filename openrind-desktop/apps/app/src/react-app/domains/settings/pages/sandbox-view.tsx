@@ -318,12 +318,12 @@ export function SandboxView(props: SandboxViewProps) {
           ) : null}
 
           {props.doctor?.status !== "ready" ? (
-            <div className="rounded-xl border border-blue-500/30 bg-blue-500/10 p-3.5 flex items-center justify-between gap-3 text-xs">
-              <div className="space-y-0.5">
-                <div className="font-medium text-blue-200">
-                  Ready to install OpenShell environment
+            <div className="rounded-2xl border border-dls-border bg-dls-surface p-4 flex items-center justify-between gap-3 text-xs">
+              <div className="space-y-1">
+                <div className="font-medium text-gray-12">
+                  OpenShell setup
                 </div>
-                <div className="text-gray-10 text-[11px]">
+                <div className="text-gray-10 text-xs">
                   Click "Install OpenShell" below. Desktop will automatically set up WSL2, import the dedicated Linux distro, start Docker, and bring the gateway to a healthy state.
                 </div>
               </div>
@@ -377,6 +377,7 @@ export function SandboxView(props: SandboxViewProps) {
             ) : null}
             {props.doctor?.status === "degraded" ? (
               <Button variant="outline" onClick={props.onRestartGateway} disabled={props.actionBusy}>
+                {props.actionBusy ? <Loader2 size={13} className="mr-1.5 animate-spin" /> : null}
                 Restart gateway
               </Button>
             ) : null}
@@ -456,27 +457,6 @@ export function SandboxView(props: SandboxViewProps) {
           {props.actionError ? (
             <div className="rounded-xl border border-red-7/40 bg-red-2/30 p-2 text-xs text-red-12">
               {props.actionError}
-            </div>
-          ) : null}
-
-          {props.progressLog.length ? (
-            <div className="rounded-xl border border-dls-border bg-gray-1/40 p-3">
-              <div className="mb-1 text-[11px] font-medium uppercase tracking-wider text-gray-8">
-                Install activity
-              </div>
-              <div className="max-h-40 overflow-y-auto font-mono text-[11px] text-gray-11">
-                {props.progressLog.slice(-50).map((event, idx) => (
-                  <div key={idx} className="py-0.5">
-                    <span className="text-gray-8">{event.phase}</span>
-                    {event.status ? <span className="text-gray-7"> · {event.status}</span> : null}
-                    {event.percent != null ? (
-                      <span className="text-gray-7"> · {event.percent}%</span>
-                    ) : null}
-                    {event.message ? <span>: {event.message}</span> : null}
-                    {event.error ? <span className="text-red-9"> — {event.error}</span> : null}
-                  </div>
-                ))}
-              </div>
             </div>
           ) : null}
         </div>

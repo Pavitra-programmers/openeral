@@ -204,7 +204,7 @@ async function phaseDistro({ onProgress, signal, rootfsPath }) {
   onProgress?.({
     phase: "distro",
     message: `Importing ${DISTRO_NAME}...`,
-    percent: 0,
+    percent: 30,
   });
   if (!rootfsPath) {
     throw new Error(
@@ -244,7 +244,7 @@ async function phaseDistro({ onProgress, signal, rootfsPath }) {
       `wsl --import failed: ${importResult.stderr || importResult.stdout}`,
     );
   }
-  onProgress?.({ phase: "distro", message: "Distro imported.", percent: 100 });
+  onProgress?.({ phase: "distro", message: "Distro imported.", percent: 45 });
 }
 
 /** @param {PhaseContext} ctx */
@@ -252,7 +252,7 @@ async function phaseDocker({ onProgress, signal }) {
   onProgress?.({
     phase: "docker",
     message: "Installing Docker Engine inside the distro...",
-    percent: 0,
+    percent: 50,
   });
   // One bash -c script keeps us to a single wsl.exe round-trip and avoids
   // partial-state failures between apt commands.
@@ -283,7 +283,7 @@ async function phaseDocker({ onProgress, signal }) {
   onProgress?.({
     phase: "docker",
     message: "Docker Engine running inside distro.",
-    percent: 100,
+    percent: 65,
   });
 }
 
@@ -308,7 +308,7 @@ async function phaseOpenshell({ onProgress, signal }) {
   onProgress?.({
     phase: "openshell",
     message: "Verifying OpenShell CLI...",
-    percent: 0,
+    percent: 70,
   });
 
   // The cached probe must reflect the post-import binary state, not
@@ -387,7 +387,7 @@ async function phaseOpenshell({ onProgress, signal }) {
   onProgress?.({
     phase: "openshell",
     message: `OpenShell CLI ${info.version ?? ""} ready.`.trim(),
-    percent: 100,
+    percent: 85,
   });
 }
 
