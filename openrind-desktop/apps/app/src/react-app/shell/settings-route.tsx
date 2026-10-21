@@ -36,6 +36,7 @@ import { ExtensionsView } from "../domains/settings/pages/extensions-view";
 import { McpView } from "../domains/settings/pages/mcp-view";
 import { SandboxView } from "../domains/settings/pages/sandbox-view";
 import { SkillsView } from "../domains/settings/pages/skills-view";
+import { CtfTaskSidebar, type CtfTask } from "../domains/ctf/ctf-task-sidebar";
 import { useOpenShellState } from "../domains/settings/state/openshell-state";
 import { useDebugViewModel } from "../domains/settings/state/debug-view-model";
 import { useBootState } from "./boot-state";
@@ -315,6 +316,27 @@ export function SettingsRoute() {
   const [themeMode, setThemeMode] = useState<PersistedThemeMode>(readStoredThemeMode);
   const [configActionStatus, setConfigActionStatus] = useState<string | null>(null);
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false);
+  const [ctfTasks, setCtfTasks] = useState<CtfTask[]>([]);
+  const [loadingCtfTasks, setLoadingCtfTasks] = useState(false);
+
+  const loadCtfTasks = useCallback(async () => {
+    try {
+      setLoadingCtfTasks(true);
+      const invoke = (window as any).__OPENRIND_DESKTOP_ELECTRON__?.invokeDesktop;
+      if (!invoke) return;
+      const tasks = await invoke("ctfListTasks");
+      if (Array.isArray(tasks)) {
+        setCtfTasks(tasks);
+      }
+    } catch {} finally {
+      setLoadingCtfTasks(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadCtfTasks();
+  }, [loadCtfTasks]);
+
   const [createSandboxOpen, setCreateSandboxOpen] = useState(false);
   const [createWorkspaceBusy, setCreateWorkspaceBusy] = useState(false);
   const [createWorkspaceError, setCreateWorkspaceError] = useState<string | null>(null);
@@ -446,9 +468,9 @@ export function SettingsRoute() {
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>(() => {
     try {
       const saved = localStorage.getItem("openrind-shell-sidebar-tab");
-      if (saved === "sessions" || saved === "sandboxes") return saved;
+      if (saved === "ctf" || saved === "sandboxes") return saved;
     } catch {}
-    return "sessions";
+    return "ctf";
   });
 
   const handleSetSidebarTab = useCallback((tab: SidebarTab) => {
@@ -1259,30 +1281,16 @@ export function SettingsRoute() {
             />
           ) : undefined
         }
-        workspaceSessionListProps={{
-          workspaceActionsEnabled: false,
-          workspaceSessionGroups,
-          selectedWorkspaceId,
-          developerMode,
-          selectedSessionId: null,
-          connectingWorkspaceId: null,
-          workspaceConnectionStateById: {},
-          newTaskDisabled: !opencodeClient,
-          onSelectWorkspace: async (workspaceId) => {
-            setSelectedWorkspaceId(workspaceId);
-            return true;
-          },
-          onOpenSession: (_workspaceId, sessionId) => navigate(`/session/${sessionId}`),
-          onCreateTaskInWorkspace: () => navigate("/session"),
-          onOpenRenameWorkspace: () => {},
-          onShareWorkspace: () => {},
-          onRevealWorkspace: () => {},
-          onRecoverWorkspace: async () => true,
-          onTestWorkspaceConnection: async () => true,
-          onEditWorkspaceConnection: () => {},
-          onForgetWorkspace: () => {},
-          onOpenCreateWorkspace: handleOpenCreateWorkspace,
-        }}
+        ctfSidebar={
+          <CtfTaskSidebar
+            tasks={ctfTasks}
+            selectedTaskId={null}
+            onSelectTask={() => navigate("/session")}
+            onOpenImport={() => navigate("/session")}
+            onRefresh={loadCtfTasks}
+            loading={loadingCtfTasks}
+          />
+        }
         onClose={() => navigate("/session")}
         sidebarWidth={shellLayout.leftSidebarWidth}
         onSidebarResizeStart={shellLayout.startLeftSidebarResize}

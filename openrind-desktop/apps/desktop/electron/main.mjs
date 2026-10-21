@@ -2545,6 +2545,8 @@ async function handleDesktopInvoke(event, command, ...args) {
       throw new Error("Analysis, reports, and Harbor task generation are available in the w8-haloop web app.");
     case "ctfListTasks":
       return ctfService.listTasks();
+    case "ctfGetProviderInfo":
+      return ctfService.getProviderInfo();
     case "ctfImportTask":
       return ctfService.importTask(args[0]);
     case "ctfCheckImage":

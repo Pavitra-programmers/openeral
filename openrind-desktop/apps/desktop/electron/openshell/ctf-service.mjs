@@ -6,15 +6,79 @@ import http from "node:http";
 import { basename, dirname, join, resolve } from "node:path";
 
 import { DISTRO_NAME, toWslPath, wslRun, wslSpawn } from "./wsl.mjs";
+import { getCredential } from "./openrind-shell-credentials.mjs";
 import { buildHarborTaskFiles, createZipBuffer } from "./harbor-exporter.mjs";
 import { generateHarborTaskFromTrajectory } from "../../../../packages/ctf-runtime/bin/generate-harbor-task.mjs";
 import { getAllTasks, registerDynamicTask } from "../../../../packages/ctf-runtime/src/tasks.mjs";
 
 const DEFAULT_CTF_MODEL = "openai/gpt-4o";
 
-export function normalizeModelName(rawModel) {
+export async function getCtfApiKeyInfo() {
+  let storedAnthropicKey = "";
+  try {
+    storedAnthropicKey = (await getCredential("anthropicApiKey")) || "";
+  } catch {}
+
+  const candidate = (
+    storedAnthropicKey ||
+    process.env.OPENROUTER_API_KEY ||
+    process.env.ANTHROPIC_API_KEY ||
+    process.env.OPENAI_API_KEY ||
+    ""
+  ).trim();
+
+  const isAnthropic = candidate.startsWith("sk-ant-");
+  const isOpenRouter = candidate.startsWith("sk-or-") || Boolean(process.env.OPENROUTER_API_KEY);
+
+  let provider = "openrouter";
+  if (isAnthropic) {
+    provider = "anthropic";
+  } else if (isOpenRouter) {
+    provider = "openrouter";
+  } else if (candidate.startsWith("sk-")) {
+    provider = "openai";
+  }
+
+  return {
+    apiKey: candidate,
+    provider,
+    isAnthropic,
+    isOpenRouter,
+  };
+}
+
+export function normalizeModelName(rawModel, isAnthropic = false) {
   const m = (rawModel || "").trim();
   const lower = m.toLowerCase();
+
+  if (isAnthropic) {
+    if (lower.includes("3-7") || lower.includes("3.7")) {
+      return "claude-3-7-sonnet-20250219";
+    }
+    if (lower.includes("3-5-sonnet") || lower.includes("3.5-sonnet") || (lower.includes("sonnet") && !lower.includes("3-7"))) {
+      return "claude-3-5-sonnet-20241022";
+    }
+    if (lower.includes("haiku")) {
+      return "claude-3-5-haiku-20241022";
+    }
+    if (lower.includes("opus")) {
+      return "claude-3-opus-20240229";
+    }
+    return m || "claude-3-7-sonnet-20250219";
+  }
+
+  if (lower === "minimax" || lower.includes("minimax-m3.1") || lower.includes("minimax") || lower.includes("minmax")) {
+    return "minimax/minimax-m3.1-flash:free";
+  }
+  if (lower === "free" || lower.includes("openrouter/free") || lower.includes("router-free")) {
+    return "openrouter/free";
+  }
+  if (lower === "kimi" || lower.includes("moonshot") || lower.includes("kimi-k2")) {
+    return "moonshotai/kimi-k2.5";
+  }
+  if (lower === "qwen" || lower.includes("qwen") || lower.includes("quil") || lower.includes("qwen3-coder")) {
+    return "qwen/qwen3-coder-flash";
+  }
   if (
     lower.includes("claude-3-7") ||
     lower.includes("claude-3.7") ||
@@ -516,6 +580,140 @@ function extractPageRecon(html) {
   return parts.length > 0 ? `\n\n${parts.join("\n\n")}` : "";
 }
 
+async function callLlmInference({
+  apiKey,
+  isAnthropic,
+  model,
+  history,
+  signal,
+}) {
+  if (isAnthropic) {
+    let systemPrompt = "";
+    const anthropicMessages = [];
+
+    for (const m of history) {
+      if (m.role === "system") {
+        systemPrompt = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+      } else if (m.role === "user" || m.role === "assistant") {
+        const contentStr = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+        if (anthropicMessages.length > 0 && anthropicMessages[anthropicMessages.length - 1].role === m.role) {
+          anthropicMessages[anthropicMessages.length - 1].content += `\n\n${contentStr}`;
+        } else {
+          anthropicMessages.push({ role: m.role, content: contentStr });
+        }
+      }
+    }
+
+    if (anthropicMessages.length === 0 || anthropicMessages[0].role !== "user") {
+      anthropicMessages.unshift({ role: "user", content: "Solve the challenge." });
+    }
+
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      signal,
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: 1024,
+        system: systemPrompt,
+        messages: anthropicMessages,
+        temperature: 0,
+      }),
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data?.error?.message || `Anthropic API error ${res.status}`);
+    }
+    const text = data?.content?.filter((c) => c.type === "text").map((c) => c.text).join("\n") || "";
+    if (!text) throw new Error("Empty response from Anthropic API");
+    return text;
+  } else {
+    const rawBaseUrl = process.env.OPENROUTER_BASE_URL ||
+                       process.env.OPENAI_BASE_URL ||
+                       process.env.LLM_BASE_URL ||
+                       "https://openrouter.ai/api/v1";
+    const endpoint = rawBaseUrl.endsWith("/chat/completions")
+      ? rawBaseUrl
+      : `${rawBaseUrl.replace(/\/+$/, "")}/chat/completions`;
+
+    const tokenLimit = model.includes("claude") ? 1024 : 2048;
+
+    let res = await fetch(endpoint, {
+      method: "POST",
+      signal,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+        "HTTP-Referer": "https://openrind.com",
+        "X-Title": "Openrind Desktop",
+      },
+      body: JSON.stringify({
+        model,
+        messages: history,
+        temperature: 0,
+        max_tokens: tokenLimit,
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "ctf_browser_action",
+            strict: true,
+            schema: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                thought: { type: "string" },
+                tool: { type: "string", enum: ["browser", "submit"] },
+                action: { type: "string", enum: ["snapshot", "click", "fill", "press", "open", "eval", "get_title", "none"] },
+                selector: { type: "string" },
+                value: { type: "string" },
+                flag: { type: "string" },
+              },
+              required: ["thought", "tool", "action", "selector", "value", "flag"],
+            },
+          },
+        },
+      }),
+    });
+
+    let data = await res.json();
+    if (!data?.choices?.[0]?.message?.content && data?.error) {
+      const errMsg = String(data.error.message || "").toLowerCase();
+      if (errMsg.includes("schema") || errMsg.includes("format") || errMsg.includes("response_format")) {
+        res = await fetch(endpoint, {
+          method: "POST",
+          signal,
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+            "HTTP-Referer": "https://openrind.com",
+            "X-Title": "Openrind Desktop",
+          },
+          body: JSON.stringify({
+            model,
+            messages: history,
+            temperature: 0,
+            max_tokens: tokenLimit,
+          }),
+        });
+        data = await res.json();
+      }
+    }
+
+    if (!res.ok && !data?.choices?.[0]?.message?.content) {
+      throw new Error(data?.error?.message || `API error ${res.status}`);
+    }
+
+    const rawContent = data?.choices?.[0]?.message?.content;
+    if (!rawContent) throw new Error(data?.error?.message || "No model response content");
+    return rawContent;
+  }
+}
+
 export function createCtfService() {
   let customTasks = [];
   let loadedCustom = false;
@@ -668,6 +866,15 @@ export function createCtfService() {
       if (!task) return false;
       const imageName = task.image || BENCHMARK_IMAGES[task.id] || `openrind-ctf-${task.id}:local`;
       return checkDockerImage(imageName);
+    },
+
+    async getProviderInfo() {
+      const info = await getCtfApiKeyInfo();
+      return {
+        provider: info.provider,
+        hasKey: Boolean(info.apiKey),
+        keyMasked: info.apiKey ? (info.apiKey.slice(0, 7) + "..." + info.apiKey.slice(-4)) : null,
+      };
     },
 
     async importTask(input) {
@@ -917,23 +1124,15 @@ export function createCtfService() {
           );
         }
 
-        const effectiveModel = normalizeModelName(model);
-        onStatus?.({ phase: "running", message: `Executing CTF agent (${effectiveModel})...` });
-
-        const apiKey = process.env.OPENROUTER_API_KEY ||
-                       process.env.OPENAI_API_KEY ||
-                       process.env.ANTHROPIC_API_KEY ||
-                       "";
+        const keyInfo = await getCtfApiKeyInfo();
+        const apiKey = keyInfo.apiKey;
         if (!apiKey) {
-          throw new Error("Missing OPENROUTER_API_KEY. Please set the OPENROUTER_API_KEY environment variable before running the CTF agent.");
+          throw new Error("Missing API key. Please configure ANTHROPIC_API_KEY or OPENROUTER_API_KEY in Settings → Environment.");
         }
-        const rawBaseUrl = process.env.OPENROUTER_BASE_URL ||
-                           process.env.OPENAI_BASE_URL ||
-                           process.env.LLM_BASE_URL ||
-                           "https://openrouter.ai/api/v1";
-        const completionsEndpoint = rawBaseUrl.endsWith("/chat/completions")
-          ? rawBaseUrl
-          : `${rawBaseUrl.replace(/\/+$/, "")}/chat/completions`;
+
+        const effectiveModel = normalizeModelName(model, keyInfo.isAnthropic);
+        onStatus?.({ phase: "running", message: `Executing CTF agent (${effectiveModel} via ${keyInfo.provider})...` });
+
         const siteUrl = `http://127.0.0.1:${hostPort}`;
         const history = [
           {
@@ -1018,73 +1217,27 @@ Return only valid JSON matching the schema. Keep thoughts concise (1-2 sentences
               ? AbortSignal.any([activeRunAbort.signal, AbortSignal.timeout(35_000)])
               : AbortSignal.timeout(35_000);
 
-            const tokenLimit = effectiveModel.includes("claude") ? 1024 : 2048;
-
-            let llmRes = await fetch(completionsEndpoint, {
-              method: "POST",
+            const rawContent = await callLlmInference({
+              apiKey,
+              isAnthropic: keyInfo.isAnthropic,
+              model: effectiveModel,
+              history,
               signal: requestSignal,
-              headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${apiKey}`,
-                "HTTP-Referer": "https://openrind.com",
-                "X-Title": "Openrind Desktop",
-              },
-              body: JSON.stringify({
-                model: effectiveModel,
-                messages: history,
-                temperature: 0,
-                max_tokens: tokenLimit,
-                response_format: {
-                  type: "json_schema",
-                  json_schema: {
-                    name: "ctf_browser_action",
-                    strict: true,
-                    schema: {
-                      type: "object",
-                      additionalProperties: false,
-                      properties: {
-                        thought: { type: "string" },
-                        tool: { type: "string", enum: ["browser", "submit"] },
-                        action: { type: "string", enum: ["snapshot", "click", "fill", "press", "open", "eval", "get_title", "none"] },
-                        selector: { type: "string" },
-                        value: { type: "string" },
-                        flag: { type: "string" },
-                      },
-                      required: ["thought", "tool", "action", "selector", "value", "flag"],
-                    },
-                  },
-                },
-              }),
             });
 
-            let llmData = await llmRes.json();
-            if (!llmData?.choices?.[0]?.message?.content && llmData?.error) {
-              const errMsg = String(llmData.error.message || "").toLowerCase();
-              if (errMsg.includes("schema") || errMsg.includes("format") || errMsg.includes("response_format")) {
-                llmRes = await fetch(completionsEndpoint, {
-                  method: "POST",
-                  signal: requestSignal,
-                  headers: {
-                    "Content-Type": "application/json",
-                    Authorization: `Bearer ${apiKey}`,
-                    "HTTP-Referer": "https://openrind.com",
-                    "X-Title": "Openrind Desktop",
-                  },
-                  body: JSON.stringify({
-                    model: effectiveModel,
-                    messages: history,
-                    temperature: 0,
-                    max_tokens: tokenLimit,
-                  }),
-                });
-                llmData = await llmRes.json();
+            const cleanContent = rawContent.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+            let parsedAction;
+            try {
+              parsedAction = JSON.parse(cleanContent);
+            } catch {
+              const jsonMatch = cleanContent.match(/\{[\s\S]*\}/);
+              if (jsonMatch) {
+                parsedAction = JSON.parse(jsonMatch[0]);
+              } else {
+                throw new Error("Failed to parse valid action JSON from model output");
               }
             }
-
-            const rawContent = llmData?.choices?.[0]?.message?.content;
-            if (!rawContent) throw new Error(llmData?.error?.message || "No model response content");
-            const cleanContent = rawContent.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
-            modelAction = JSON.parse(cleanContent);
+            modelAction = parsedAction;
           } catch (err) {
             if (activeRunAbort?.signal?.aborted) break;
             const turnDuration = Date.now() - turnStart;

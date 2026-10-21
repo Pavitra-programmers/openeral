@@ -4,11 +4,23 @@ import { Check, Copy, Loader2, Play, Square } from "lucide-react";
 
 import type { CtfTask } from "./ctf-task-sidebar";
 
-const PRESET_MODELS = [
-  { id: "openai/gpt-4o", label: "GPT-4o" },
+const OPENROUTER_PRESETS = [
+  { id: "minimax/minimax-m3.1-flash:free", label: "MiniMax M3.1 (Free)" },
+  { id: "openrouter/free", label: "OpenRouter (Free)" },
+  { id: "moonshotai/kimi-k2.5", label: "Kimi K2.5 (Near-Free)" },
+  { id: "qwen/qwen3-coder-flash", label: "Qwen Coder Flash (Near-Free)" },
+  { id: "deepseek/deepseek-chat", label: "DeepSeek V3 (Near-Free)" },
   { id: "openai/gpt-4o-mini", label: "GPT-4o Mini" },
+  { id: "openai/gpt-4o", label: "GPT-4o" },
   { id: "anthropic/claude-sonnet-4.5", label: "Claude Sonnet" },
-  { id: "deepseek/deepseek-chat", label: "DeepSeek V3" },
+  { id: "custom", label: "Custom..." },
+];
+
+const ANTHROPIC_PRESETS = [
+  { id: "claude-3-7-sonnet-20250219", label: "Claude 3.7 Sonnet" },
+  { id: "claude-3-5-sonnet-20241022", label: "Claude 3.5 Sonnet" },
+  { id: "claude-3-5-haiku-20241022", label: "Claude 3.5 Haiku" },
+  { id: "claude-3-opus-20240229", label: "Claude 3 Opus" },
   { id: "custom", label: "Custom..." },
 ];
 
@@ -35,7 +47,8 @@ export type CtfSurfaceProps = {
 export function CtfSurface(props: CtfSurfaceProps) {
   const { task } = props;
 
-  const [selectedModelPreset, setSelectedModelPreset] = useState("openai/gpt-4o");
+  const [providerType, setProviderType] = useState<"anthropic" | "openrouter">("openrouter");
+  const [selectedModelPreset, setSelectedModelPreset] = useState("deepseek/deepseek-chat");
   const [customModelText, setCustomModelText] = useState("");
   const [maxSteps, setMaxSteps] = useState(50);
 
@@ -101,6 +114,28 @@ export function CtfSurface(props: CtfSurfaceProps) {
     };
 
     void loadTrace();
+
+    const checkProvider = async () => {
+      try {
+        const invoke = (window as any).__OPENRIND_DESKTOP_ELECTRON__?.invokeDesktop;
+        if (!invoke) return;
+        const info = await invoke("ctfGetProviderInfo");
+        if (info?.provider === "anthropic") {
+          setProviderType("anthropic");
+          setSelectedModelPreset((prev) => {
+            if (prev.startsWith("claude-")) return prev;
+            return "claude-3-7-sonnet-20250219";
+          });
+        } else {
+          setProviderType("openrouter");
+          setSelectedModelPreset((prev) => {
+            if (prev.startsWith("claude-")) return "deepseek/deepseek-chat";
+            return prev;
+          });
+        }
+      } catch {}
+    };
+    void checkProvider();
   }, [task?.id]);
 
   useEffect(() => {
@@ -225,7 +260,7 @@ export function CtfSurface(props: CtfSurfaceProps) {
               onChange={(e) => setSelectedModelPreset(e.target.value)}
               disabled={isRunning}
             >
-              {PRESET_MODELS.map((m) => (
+              {(providerType === "anthropic" ? ANTHROPIC_PRESETS : OPENROUTER_PRESETS).map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.label}
                 </option>
