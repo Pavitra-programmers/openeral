@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import { useState } from "react";
-import { Folder, FolderOpen, Loader2, Shield, X } from "lucide-react";
+import { Loader2, X } from "lucide-react";
 
 import {
   inputClass,
@@ -43,8 +43,8 @@ export function ImportTaskModal(props: ImportTaskModalProps) {
       if (res && !res.canceled && res.path) {
         setFolderPath(res.path);
         if (!name) {
-          const folderName = res.path.split(/[\\/]/).pop() || "";
-          setName(folderName);
+          const parts = res.path.replace(/[\\/]+$/, "").split(/[\\/]/);
+          setName(parts[parts.length - 1] || "");
         }
       }
     } catch (err: any) {
@@ -59,7 +59,7 @@ export function ImportTaskModal(props: ImportTaskModalProps) {
     }
     setError(null);
     setBusy(true);
-    setStatusMessage("Importing challenge configuration...");
+    setStatusMessage("Importing configuration...");
 
     try {
       const invoke = (window as any).__OPENRIND_DESKTOP_ELECTRON__?.invokeDesktop;
@@ -74,9 +74,8 @@ export function ImportTaskModal(props: ImportTaskModalProps) {
         description: description || undefined,
       });
 
-      setStatusMessage("Building Dockerfile for environment...");
+      setStatusMessage("Building Docker environment...");
 
-      // Listen for build status
       const unsubscribe = (window as any).__OPENRIND_DESKTOP_ELECTRON__?.ctf?.onStatus?.(
         (data: any) => {
           if (data?.message) setStatusMessage(data.message);
@@ -92,26 +91,21 @@ export function ImportTaskModal(props: ImportTaskModalProps) {
       props.onSuccess(imported);
       props.onClose();
     } catch (err: any) {
-      setError(err?.message || "Failed to import task.");
+      setError(err?.message || "Failed to import challenge.");
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <div className={modalOverlayClass}>
-      <div className={`${modalShellClass} max-w-[560px]`}>
+    <div className={modalOverlayClass} onClick={props.onClose}>
+      <div className={`${modalShellClass} max-w-140`} onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className={modalHeaderClass}>
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-7/10 text-indigo-11">
-              <Shield size={20} />
-            </div>
-            <div>
-              <h2 className={modalTitleClass}>Import CTF Challenge</h2>
-              <div className={modalSubtitleClass}>
-                Load a challenge folder, auto-build its Docker environment, and register for CTF agent solving.
-              </div>
+          <div>
+            <h2 className={modalTitleClass}>Import CTF Challenge</h2>
+            <div className={modalSubtitleClass}>
+              Load a local challenge directory and build its Docker environment.
             </div>
           </div>
           <button
@@ -138,7 +132,7 @@ export function ImportTaskModal(props: ImportTaskModalProps) {
             <div className="flex gap-2">
               <input
                 className={`${inputClass} flex-1 font-mono text-[12px]`}
-                placeholder="C:\Users\...\ctf-challenge"
+                placeholder="Path to challenge directory..."
                 value={folderPath}
                 onChange={(e) => setFolderPath(e.target.value)}
                 disabled={busy}
@@ -147,14 +141,10 @@ export function ImportTaskModal(props: ImportTaskModalProps) {
                 type="button"
                 onClick={handleBrowseFolder}
                 disabled={busy}
-                className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-dls-border bg-dls-hover px-3.5 text-[13px] font-medium text-dls-text transition-colors hover:bg-gray-4 disabled:opacity-50"
+                className="inline-flex shrink-0 items-center rounded-xl border border-dls-border bg-dls-hover px-3.5 text-[13px] font-medium text-dls-text hover:bg-gray-4 transition-colors disabled:opacity-50"
               >
-                <FolderOpen size={15} />
-                <span>Browse</span>
+                Browse...
               </button>
-            </div>
-            <div className="mt-1 text-[11px] text-dls-secondary">
-              Select a folder containing challenge files, <code>challenge.json</code>, or <code>DESCRIPTION.md</code>.
             </div>
           </div>
 
@@ -164,7 +154,7 @@ export function ImportTaskModal(props: ImportTaskModalProps) {
               <label className={`mb-1.5 block ${inputLabelClass}`}>Challenge Name</label>
               <input
                 className={inputClass}
-                placeholder="my-challenge"
+                placeholder="Name or identifier"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 disabled={busy}
@@ -204,7 +194,7 @@ export function ImportTaskModal(props: ImportTaskModalProps) {
               <label className={`mb-1.5 block ${inputLabelClass}`}>Expected Flag (Optional)</label>
               <input
                 className={inputClass}
-                placeholder="CTF{flag_here}"
+                placeholder="Flag string..."
                 value={flag}
                 onChange={(e) => setFlag(e.target.value)}
                 disabled={busy}
@@ -214,11 +204,11 @@ export function ImportTaskModal(props: ImportTaskModalProps) {
 
           {/* Description */}
           <div>
-            <label className={`mb-1.5 block ${inputLabelClass}`}>Prompt / Description</label>
+            <label className={`mb-1.5 block ${inputLabelClass}`}>Description</label>
             <textarea
               rows={3}
               className={`${inputClass} resize-none`}
-              placeholder="All materials needed to solve the challenge are on this website..."
+              placeholder="Challenge instructions or task description..."
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               disabled={busy}
@@ -226,8 +216,8 @@ export function ImportTaskModal(props: ImportTaskModalProps) {
           </div>
 
           {busy && statusMessage ? (
-            <div className="flex items-center gap-2 rounded-xl bg-indigo-7/10 p-3 text-[12px] text-indigo-11">
-              <Loader2 size={15} className="animate-spin shrink-0" />
+            <div className="flex items-center gap-2 rounded-xl bg-dls-hover p-3 text-[12px] text-gray-11 border border-dls-border">
+              <Loader2 size={13} className="animate-spin shrink-0 text-gray-10" />
               <span className="truncate">{statusMessage}</span>
             </div>
           ) : null}
@@ -249,8 +239,8 @@ export function ImportTaskModal(props: ImportTaskModalProps) {
             disabled={busy || !folderPath}
             className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-9 px-4 py-2 text-[13px] font-medium text-white shadow-sm hover:bg-indigo-10 disabled:opacity-50"
           >
-            {busy ? <Loader2 size={14} className="animate-spin" /> : null}
-            <span>{busy ? "Building & Importing..." : "Import & Build"}</span>
+            {busy ? <Loader2 size={13} className="animate-spin" /> : null}
+            <span>{busy ? "Building..." : "Import & Build"}</span>
           </button>
         </div>
       </div>

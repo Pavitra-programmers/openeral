@@ -220,11 +220,21 @@ try {
   await run('docker', ['network', 'create', network]); networkCreated = true;
   const bridge = await run('docker', ['network', 'inspect', '--format', '{{(index .IPAM.Config 0).Gateway}}', network]);
   staticPodContainer = `openrind-browser-pod-${tag}`;
-  await run('docker', ['run', '-d', '--name', staticPodContainer, '--network', network,
-    '-p', `${bridge}:9222:9222`,
-    '--network-alias', 'openrind-browser-pod',
-    '--add-host', `host.openshell.internal:${bridge}`,
-    podImage]);
+  await run('docker', ['rm', '-f', staticPodContainer]).catch(() => {});
+  try {
+    await run('docker', ['run', '-d', '--name', staticPodContainer, '--network', network,
+      '-p', `${bridge}:9222:9222`,
+      '--network-alias', 'openrind-browser-pod',
+      '--add-host', `host.openshell.internal:${bridge}`,
+      podImage]);
+  } catch {
+    await run('docker', ['rm', '-f', staticPodContainer]).catch(() => {});
+    await run('docker', ['run', '-d', '--name', staticPodContainer, '--network', network,
+      '-p', '9222:9222',
+      '--network-alias', 'openrind-browser-pod',
+      '--add-host', `host.openshell.internal:${bridge}`,
+      podImage]);
+  }
   const podIp = await run('docker', ['inspect', '--format',
     `{{(index .NetworkSettings.Networks "${network}").IPAddress}}`, staticPodContainer]);
   endpoint = 'http://127.0.0.1:19770';

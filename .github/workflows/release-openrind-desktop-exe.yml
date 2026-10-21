@@ -32,8 +32,7 @@ on:
     branches:
       - nemo
       - browser-pods
-      - run/ctf-agent
-      - fix/openshell-feedbacks
+
     paths:
       - openrind-desktop/apps/app/**
       - openrind-desktop/apps/desktop/**

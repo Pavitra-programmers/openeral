@@ -2547,6 +2547,8 @@ async function handleDesktopInvoke(event, command, ...args) {
       return ctfService.listTasks();
     case "ctfImportTask":
       return ctfService.importTask(args[0]);
+    case "ctfCheckImage":
+      return ctfService.checkImage(args[0]);
     case "ctfBuildImage":
       return ctfService.buildImage(args[0], (data) => {
         event.sender.send("openrind-desktop:ctf:status", data);
@@ -2573,6 +2575,10 @@ async function handleDesktopInvoke(event, command, ...args) {
       const outPath = result.filePath.endsWith(".zip") ? result.filePath : `${result.filePath}.zip`;
       return ctfService.exportHarbor(taskId, outPath);
     }
+    case "ctfGetActiveDirectory":
+      return ctfService.getActiveDirectory();
+    case "ctfSetActiveDirectory":
+      return ctfService.setActiveDirectory(args[0]);
     case "ctfSelectFolder": {
       const result = await dialog.showOpenDialog(activeWindowFromEvent(event), {
         title: "Select CTF Challenge Folder",

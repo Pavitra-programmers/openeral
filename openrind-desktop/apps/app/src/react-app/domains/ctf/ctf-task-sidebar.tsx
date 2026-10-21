@@ -1,15 +1,6 @@
 /** @jsxImportSource react */
-import { useMemo, useState } from "react";
-import {
-  CheckCircle2,
-  FolderPlus,
-  Layers,
-  Plus,
-  RefreshCw,
-  Search,
-  Shield,
-  Sparkles,
-} from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Check, FolderOpen, Loader2, Plus, RefreshCw, X } from "lucide-react";
 
 export type CtfTask = {
   id: string;
@@ -23,6 +14,7 @@ export type CtfTask = {
   hasTrace?: boolean;
   solved?: boolean;
   isCustom?: boolean;
+  folderPath?: string;
   traceSummary?: {
     stepsCount: number;
     model: string | null;
@@ -41,43 +33,105 @@ export type CtfTaskSidebarProps = {
 
 export function CtfTaskSidebar(props: CtfTaskSidebarProps) {
   const [search, setSearch] = useState("");
-  const [selectedCategory, setSelectedCategory] = useState<string>("all");
+  const [activeDir, setActiveDir] = useState<string | null>(null);
+  const [changingDir, setChangingDir] = useState(false);
 
-  const categories = useMemo(() => {
-    const set = new Set<string>();
-    for (const t of props.tasks) {
-      if (t.category) set.add(t.category.toLowerCase());
+  // Fetch current active directory on mount
+  useEffect(() => {
+    const loadDir = async () => {
+      try {
+        const invoke = (window as any).__OPENRIND_DESKTOP_ELECTRON__?.invokeDesktop;
+        if (!invoke) return;
+        const res = await invoke("ctfGetActiveDirectory");
+        if (res?.path) setActiveDir(res.path);
+        else setActiveDir(null);
+      } catch {}
+    };
+    void loadDir();
+  }, []);
+
+  const handleChangeDirectory = async () => {
+    try {
+      setChangingDir(true);
+      const invoke = (window as any).__OPENRIND_DESKTOP_ELECTRON__?.invokeDesktop;
+      if (!invoke) return;
+      const folderRes = await invoke("ctfSelectFolder");
+      if (folderRes && !folderRes.canceled && folderRes.path) {
+        await invoke("ctfSetActiveDirectory", folderRes.path);
+        setActiveDir(folderRes.path);
+        props.onRefresh();
+      }
+    } catch {} finally {
+      setChangingDir(false);
     }
-    return ["all", ...Array.from(set)];
-  }, [props.tasks]);
+  };
+
+  const handleResetDirectory = async () => {
+    try {
+      const invoke = (window as any).__OPENRIND_DESKTOP_ELECTRON__?.invokeDesktop;
+      if (!invoke) return;
+      await invoke("ctfSetActiveDirectory", null);
+      setActiveDir(null);
+      props.onRefresh();
+    } catch {}
+  };
 
   const filteredTasks = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    if (!needle) return props.tasks;
     return props.tasks.filter((t) => {
-      const matchSearch =
-        !search ||
-        t.title.toLowerCase().includes(search.toLowerCase()) ||
-        t.id.toLowerCase().includes(search.toLowerCase()) ||
-        t.description.toLowerCase().includes(search.toLowerCase());
-      const matchCat =
-        selectedCategory === "all" ||
-        (t.category && t.category.toLowerCase() === selectedCategory);
-      return matchSearch && matchCat;
+      return (
+        t.title.toLowerCase().includes(needle) ||
+        t.id.toLowerCase().includes(needle) ||
+        (t.category && t.category.toLowerCase().includes(needle))
+      );
     });
-  }, [props.tasks, search, selectedCategory]);
+  }, [props.tasks, search]);
+
+  const dirDisplayName = useMemo(() => {
+    if (!activeDir) return "Default";
+    const parts = activeDir.replace(/[\\/]+$/, "").split(/[\\/]/);
+    return parts[parts.length - 1] || activeDir;
+  }, [activeDir]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-dls-sidebar">
-      {/* Header */}
-      <div className="flex shrink-0 items-center justify-between border-b border-dls-border px-3.5 py-3">
-        <div className="flex items-center gap-2">
-          <div className="flex h-6 w-6 items-center justify-center rounded-lg bg-indigo-7/10 text-indigo-11">
-            <Shield size={14} />
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-dls-sidebar text-dls-text">
+      {/* Workspace Directory Selector */}
+      <div className="border-b border-dls-border px-3 py-2 bg-dls-hover/30">
+        <div className="flex items-center justify-between text-[11px]">
+          <span className="text-gray-10 font-normal">Directory:</span>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={handleChangeDirectory}
+              disabled={changingDir}
+              className="text-gray-11 hover:text-gray-12 underline transition-colors"
+              title={activeDir || "Default built-in tasks"}
+            >
+              {dirDisplayName}
+            </button>
+            {activeDir ? (
+              <button
+                type="button"
+                onClick={handleResetDirectory}
+                className="text-gray-9 hover:text-gray-11 transition-colors ml-1"
+                title="Reset to default directory"
+              >
+                Reset
+              </button>
+            ) : null}
           </div>
-          <span className="text-[13px] font-semibold text-dls-text">
-            CTF Challenges
+        </div>
+      </div>
+
+      {/* Header */}
+      <div className="flex shrink-0 items-center justify-between px-3 py-2.5 border-b border-dls-border">
+        <div className="flex items-center gap-2">
+          <span className="text-[13px] font-medium text-gray-12">
+            Challenges
           </span>
-          <span className="rounded-full bg-gray-3 px-1.5 py-0.5 text-[11px] font-medium text-gray-11">
-            {props.tasks.length}
+          <span className="text-[11px] text-gray-10">
+            ({props.tasks.length})
           </span>
         </div>
 
@@ -86,64 +140,37 @@ export function CtfTaskSidebar(props: CtfTaskSidebarProps) {
             type="button"
             onClick={props.onRefresh}
             disabled={props.loading}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-dls-secondary transition-colors hover:bg-dls-hover hover:text-dls-text disabled:opacity-50"
-            title="Refresh challenges"
+            className="flex h-6 w-6 items-center justify-center rounded text-gray-10 transition-colors hover:bg-gray-2 hover:text-gray-12 disabled:opacity-50"
+            title="Refresh challenge list"
           >
-            <RefreshCw size={13} className={props.loading ? "animate-spin" : ""} />
+            <RefreshCw size={12} className={props.loading ? "animate-spin" : ""} />
           </button>
           <button
             type="button"
             onClick={props.onOpenImport}
-            className="inline-flex h-7 items-center gap-1 rounded-md bg-indigo-7/15 px-2 text-[12px] font-medium text-indigo-11 transition-colors hover:bg-indigo-7/25"
-            title="Import CTF challenge folder"
+            className="rounded px-2 py-0.5 text-[11px] font-medium text-gray-11 hover:bg-gray-2 hover:text-gray-12 transition-colors"
           >
-            <FolderPlus size={13} />
-            <span>Import</span>
+            + Import
           </button>
         </div>
       </div>
 
-      {/* Search & Category filter */}
-      <div className="shrink-0 space-y-2 border-b border-dls-border p-2.5">
-        <div className="relative">
-          <Search
-            size={13}
-            className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-10"
-          />
-          <input
-            type="text"
-            placeholder="Search challenges..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full rounded-lg border border-dls-border bg-dls-surface py-1.5 pl-8 pr-2.5 text-[12px] text-dls-text placeholder:text-gray-10 focus:outline-none focus:ring-1 focus:ring-indigo-7"
-          />
-        </div>
-
-        {categories.length > 2 ? (
-          <div className="flex flex-wrap gap-1">
-            {categories.map((cat) => (
-              <button
-                key={cat}
-                type="button"
-                onClick={() => setSelectedCategory(cat)}
-                className={`rounded-full px-2 py-0.5 text-[11px] font-medium uppercase transition-colors ${
-                  selectedCategory === cat
-                    ? "bg-gray-4 text-gray-12"
-                    : "text-gray-10 hover:bg-gray-2 hover:text-gray-12"
-                }`}
-              >
-                {cat}
-              </button>
-            ))}
-          </div>
-        ) : null}
+      {/* Search Input */}
+      <div className="px-2.5 py-2 border-b border-dls-border">
+        <input
+          type="text"
+          placeholder="Filter..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="w-full rounded-md border border-dls-border bg-dls-surface px-2.5 py-1 text-[12px] text-dls-text placeholder:text-gray-9 focus:outline-none focus:border-gray-8"
+        />
       </div>
 
-      {/* Challenge list */}
-      <div className="min-h-0 flex-1 overflow-y-auto p-1.5 space-y-1">
+      {/* Challenge List */}
+      <div className="min-h-0 flex-1 overflow-y-auto p-1 space-y-0.5">
         {filteredTasks.length === 0 ? (
-          <div className="px-3 py-8 text-center text-[12px] text-dls-secondary">
-            No CTF challenges found.
+          <div className="px-3 py-6 text-center text-[11px] text-gray-10">
+            No challenges found.
           </div>
         ) : (
           filteredTasks.map((t) => {
@@ -153,47 +180,34 @@ export function CtfTaskSidebar(props: CtfTaskSidebarProps) {
                 key={t.id}
                 type="button"
                 onClick={() => props.onSelectTask(t)}
-                className={`w-full rounded-xl p-2.5 text-left transition-all ${
+                className={`w-full rounded-lg px-2.5 py-2 text-left transition-colors ${
                   isSelected
-                    ? "bg-indigo-7/10 border border-indigo-7/30 shadow-sm"
-                    : "border border-transparent hover:bg-dls-hover hover:border-dls-border"
+                    ? "bg-gray-3 text-gray-12 font-medium"
+                    : "text-gray-10 hover:bg-gray-1/70 hover:text-gray-11 font-normal"
                 }`}
               >
-                <div className="flex items-start justify-between gap-1.5">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5">
-                      <span className="truncate text-[13px] font-medium text-dls-text">
-                        {t.title}
-                      </span>
-                      {t.isCustom ? (
-                        <span className="rounded bg-sky-7/15 px-1 py-0.2 text-[10px] font-medium text-sky-11 uppercase">
-                          Custom
-                        </span>
-                      ) : null}
-                    </div>
-                    <div className="mt-0.5 truncate text-[11px] text-dls-secondary font-mono">
-                      {t.id} · Port {t.backendPort}
-                    </div>
-                  </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate text-[13px] leading-snug">
+                    {t.title}
+                  </span>
+                  <span className="shrink-0 text-[10px] text-gray-9 uppercase tracking-wider">
+                    {t.category || "web"}
+                  </span>
+                </div>
 
-                  <div className="flex shrink-0 flex-col items-end gap-1">
-                    <span className="rounded bg-gray-3/80 px-1.5 py-0.5 text-[10px] font-medium uppercase text-gray-11">
-                      {t.category || "web"}
-                    </span>
-                    {t.solved ? (
-                      <span
-                        className="inline-flex items-center gap-1 text-[10px] font-medium text-emerald-11"
-                        title="Solved"
-                      >
-                        <CheckCircle2 size={11} />
-                        Solved
-                      </span>
-                    ) : t.hasTrace ? (
-                      <span className="text-[10px] text-dls-secondary">
-                        Trace ready
-                      </span>
-                    ) : null}
-                  </div>
+                <div className="mt-1 flex items-center gap-1.5 text-[11px] text-gray-9">
+                  <span
+                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                      t.solved
+                        ? "bg-emerald-9"
+                        : t.isCustom
+                          ? "bg-blue-9"
+                          : "bg-gray-7"
+                    }`}
+                  />
+                  <span className="truncate">
+                    {t.solved ? "Solved" : t.isCustom ? "Custom" : "Ready"}
+                  </span>
                 </div>
               </button>
             );
