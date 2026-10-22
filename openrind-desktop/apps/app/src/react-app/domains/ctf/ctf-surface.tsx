@@ -113,22 +113,8 @@ export function CtfSurface(props: CtfSurfaceProps) {
             setSolvedFlag(trace.judge?.submission || task.flag || "");
           }
         }
-
-        // For custom tasks, check if Docker image is ready; auto-build if not built
-        if (task.isCustom) {
-          const ready = await invoke("ctfCheckImage", task.id);
-          if (!ready) {
-            setIsBuilding(true);
-            setStatusMessage(`Building Docker image for ${task.title}...`);
-            await invoke("ctfBuildImage", task.id);
-            setStatusMessage(`Image ready for ${task.title}.`);
-            props.onRefreshTasks?.();
-          }
-        }
       } catch (err: any) {
         setStatusMessage(`Status: ${err?.message || String(err)}`);
-      } finally {
-        setIsBuilding(false);
       }
     };
 

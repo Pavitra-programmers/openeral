@@ -498,46 +498,45 @@ async function scanDirectoryForChallenges(rootDir, maxDepth = 4) {
       };
     }
 
-    // 2. Custom challenge detection
+    // 2. Strict Custom CTF Challenge Detection (Solution A)
+    // A directory is ONLY a CTF challenge if it has explicit CTF indicators:
     const hasChallJson = fileNames.has("challenge.json");
     const hasTaskToml = fileNames.has("task.toml");
-    const hasDockerfile = fileNames.has("Dockerfile") || fileNames.has("docker-compose.yml") || fileNames.has("compose.yaml");
     const hasFlag = fileNames.has("flag.txt") || fileNames.has("flag");
+
+    // Check for dedicated challenge subdirectories: chall/ or challenge/
+    const hasDedicatedChallSubdir = dirNames.has("chall") || dirNames.has("challenge");
+    let subHasFlag = false;
+    let subHasServerCode = false;
 
     const codeFiles = [
       "server.py", "app.py", "run.py", "main.py", "index.py", "api.py",
       "server.js", "app.js", "index.js", "main.js", "index.html",
-      "package.json", "requirements.txt",
     ];
-    const hasServerCode = codeFiles.some((f) => fileNames.has(f));
 
-    // Also inspect common CTF challenge subdirectories (chall, challenge, src, app, web, service)
-    const subfolderCandidates = ["chall", "challenge", "src", "app", "web", "service"];
-    let subHasServerCode = false;
-    let subHasDockerfile = false;
-    let subHasFlag = false;
-
-    for (const sub of subfolderCandidates) {
-      if (dirNames.has(sub)) {
-        try {
-          const subEntries = readdirSync(join(currentDir, sub), { withFileTypes: true });
-          const subFiles = new Set(subEntries.filter((e) => e.isFile()).map((e) => e.name));
-          if (codeFiles.some((f) => subFiles.has(f))) subHasServerCode = true;
-          if (subFiles.has("Dockerfile") || subFiles.has("docker-compose.yml")) subHasDockerfile = true;
-          if (subFiles.has("flag.txt") || subFiles.has("flag")) subHasFlag = true;
-        } catch {}
+    if (hasDedicatedChallSubdir) {
+      for (const sub of ["chall", "challenge"]) {
+        if (dirNames.has(sub)) {
+          try {
+            const subEntries = readdirSync(join(currentDir, sub), { withFileTypes: true });
+            const subFiles = new Set(subEntries.filter((e) => e.isFile()).map((e) => e.name));
+            if (subFiles.has("flag.txt") || subFiles.has("flag")) subHasFlag = true;
+            if (codeFiles.some((f) => subFiles.has(f))) subHasServerCode = true;
+          } catch {}
+        }
       }
     }
 
+    // Must have at least one strict CTF fingerprint:
+    // a. challenge.json or task.toml
+    // b. flag.txt in current folder or in chall/ / challenge/
+    // c. dedicated chall/ or challenge/ folder containing server code
     const isChallenge =
       hasChallJson ||
       hasTaskToml ||
-      hasDockerfile ||
-      subHasDockerfile ||
-      (hasFlag && (hasServerCode || subHasServerCode || dirNames.size > 0)) ||
-      (subHasFlag && (hasServerCode || subHasServerCode)) ||
-      hasServerCode ||
-      subHasServerCode;
+      hasFlag ||
+      subHasFlag ||
+      (hasDedicatedChallSubdir && subHasServerCode);
 
     if (!isChallenge) return null;
 
