@@ -590,7 +590,7 @@ async function scanDirectoryForChallenges(rootDir, maxDepth = 4) {
     } else if (!flag && fileNames.has("flag")) {
       try { flag = readFileSync(join(currentDir, "flag"), "utf8").trim(); } catch {}
     } else if (!flag) {
-      for (const sub of subfolderCandidates) {
+      for (const sub of ["chall", "challenge"]) {
         if (dirNames.has(sub) && existsSync(join(currentDir, sub, "flag.txt"))) {
           try { flag = readFileSync(join(currentDir, sub, "flag.txt"), "utf8").trim(); break; } catch {}
         }
