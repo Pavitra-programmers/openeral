@@ -56,10 +56,10 @@ export function scrubPiiText(text) {
  * Projects a TracePack / trajectory into SellTraces JSON and generates
  * the accompanying projection report.
  *
- * @param {object} options
- * @param {object} options.trajectory - The raw openrind-ctf-trajectory/v1 object.
- * @param {Array<object>} [options.agentEvents] - Raw agent events.
- * @param {Array<object>} [options.challengeEvents] - Raw challenge events.
+ * @param {object} [options={}]
+ * @param {object} [options.trajectory={}] - The raw openrind-ctf-trajectory/v1 object.
+ * @param {Array<object>} [options.agentEvents=[]] - Raw agent events.
+ * @param {Array<object>} [options.challengeEvents=[]] - Raw challenge events.
  * @param {boolean} [options.scrubPii=true] - Whether to scrub credentials from text.
  * @returns {{ sellTracesJson: object, projectionReport: object, piiFindings: Array<object> }}
  */

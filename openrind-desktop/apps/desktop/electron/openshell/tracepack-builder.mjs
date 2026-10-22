@@ -43,11 +43,11 @@ function stableSpanId(input) {
 /**
  * Builds a canonical TracePack file list from trajectory, agent events, and challenge events.
  *
- * @param {object} options
- * @param {object} options.trajectory - The raw openrind-ctf-trajectory/v1 object.
- * @param {Array<object>} [options.agentEvents] - Raw agent events (browser_setup, model_call, agent_step, etc.).
- * @param {Array<object>} [options.challengeEvents] - Raw challenge server events (site proxy, judge, etc.).
- * @param {Array<object>} [options.haloopSpans] - Optional Haloop model spans.
+ * @param {object} [options={}]
+ * @param {object} [options.trajectory={}] - The raw openrind-ctf-trajectory/v1 object.
+ * @param {Array<object>} [options.agentEvents=[]] - Raw agent events (browser_setup, model_call, agent_step, etc.).
+ * @param {Array<object>} [options.challengeEvents=[]] - Raw challenge server events (site proxy, judge, etc.).
+ * @param {Array<object>} [options.haloopSpans=[]] - Optional Haloop model spans.
  * @returns {{ files: Array<{ path: string, content: string | Buffer }>, manifest: object }}
  */
 export function buildTracePackFiles({
