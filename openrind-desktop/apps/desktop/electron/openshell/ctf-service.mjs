@@ -1340,7 +1340,7 @@ Return only valid JSON matching the schema. Keep thoughts concise (1-2 sentences
               break;
             } else {
               history.push({ role: "assistant", content: JSON.stringify(modelAction) });
-              history.push({ role: "user", content: `Judge response: ${submitRes.body}` });
+              history.push({ role: "user", content: `Judge response: ${observation}` });
             }
           } else {
             if (actionType === "open") {

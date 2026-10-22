@@ -136,7 +136,8 @@ export function registerDynamicTask(task) {
 export function getAllTasks() {
   const result = [];
   for (const [id, task] of Object.entries(TASKS)) {
-    result.push({ ...task, category: task.category || 'web' });
+    const raw = /** @type {any} */ (task);
+    result.push({ ...task, category: raw.category || 'web' });
   }
   for (const task of DYNAMIC_TASKS.values()) {
     result.push(task);
