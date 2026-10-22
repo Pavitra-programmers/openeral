@@ -1,6 +1,18 @@
 /** @jsxImportSource react */
 import { useEffect, useRef, useState } from "react";
-import { Check, Copy, Loader2, Play, Square } from "lucide-react";
+import {
+  AlertTriangle,
+  Anchor,
+  Archive,
+  Check,
+  ChevronDown,
+  Copy,
+  FileJson,
+  Loader2,
+  Play,
+  Square,
+  X,
+} from "lucide-react";
 
 import type { CtfTask } from "./ctf-task-sidebar";
 
@@ -62,6 +74,13 @@ export function CtfSurface(props: CtfSurfaceProps) {
   const [rawTrajectory, setRawTrajectory] = useState<any | null>(null);
   const [harborBusy, setHarborBusy] = useState(false);
   const [harborNotice, setHarborNotice] = useState<string | null>(null);
+
+  const [exportDropdownOpen, setExportDropdownOpen] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [sellTracesModalOpen, setSellTracesModalOpen] = useState(false);
+  const [sellTracesPreview, setSellTracesPreview] = useState<any | null>(null);
+  const [scrubPii, setScrubPii] = useState(true);
+  const exportMenuRef = useRef<HTMLDivElement | null>(null);
 
   const stepsEndRef = useRef<HTMLDivElement | null>(null);
 
@@ -203,6 +222,18 @@ export function CtfSurface(props: CtfSurfaceProps) {
     setStatusMessage("Stopped by user.");
   };
 
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
+        setExportDropdownOpen(false);
+      }
+    }
+    if (exportDropdownOpen) {
+      document.addEventListener("mousedown", handleClickOutside);
+      return () => document.removeEventListener("mousedown", handleClickOutside);
+    }
+  }, [exportDropdownOpen]);
+
   const handleExportHarbor = async () => {
     if (!task) return;
     setHarborBusy(true);
@@ -218,6 +249,60 @@ export function CtfSurface(props: CtfSurfaceProps) {
       alert(`Export failed: ${err?.message || String(err)}`);
     } finally {
       setHarborBusy(false);
+    }
+  };
+
+  const handleExportTracePack = async () => {
+    if (!task) return;
+    setExportDropdownOpen(false);
+    setExportBusy(true);
+    setHarborNotice(null);
+    try {
+      const invoke = (window as any).__OPENRIND_DESKTOP_ELECTRON__?.invokeDesktop;
+      if (!invoke) throw new Error("Desktop bridge unavailable");
+      const res = await invoke("ctfExportTracePack", { taskId: task.id });
+      if (res && !res.canceled && res.path) {
+        setHarborNotice(`Saved TracePack archive to ${res.path}`);
+      }
+    } catch (err: any) {
+      alert(`TracePack export failed: ${err?.message || String(err)}`);
+    } finally {
+      setExportBusy(false);
+    }
+  };
+
+  const handleOpenSellTracesModal = async () => {
+    if (!task) return;
+    setExportDropdownOpen(false);
+    setExportBusy(true);
+    try {
+      const invoke = (window as any).__OPENRIND_DESKTOP_ELECTRON__?.invokeDesktop;
+      if (!invoke) throw new Error("Desktop bridge unavailable");
+      const res = await invoke("ctfGetSellTracesPreview", { taskId: task.id });
+      setSellTracesPreview(res);
+      setSellTracesModalOpen(true);
+    } catch (err: any) {
+      alert(`Failed to prepare SellTraces projection: ${err?.message || String(err)}`);
+    } finally {
+      setExportBusy(false);
+    }
+  };
+
+  const handleExportSellTraces = async () => {
+    if (!task) return;
+    setExportBusy(true);
+    try {
+      const invoke = (window as any).__OPENRIND_DESKTOP_ELECTRON__?.invokeDesktop;
+      if (!invoke) throw new Error("Desktop bridge unavailable");
+      const res = await invoke("ctfExportSellTraces", { taskId: task.id, scrubPii });
+      if (res && !res.canceled && res.path) {
+        setSellTracesModalOpen(false);
+        setHarborNotice(`Saved SellTraces JSON to ${res.path} and report to ${res.reportPath}`);
+      }
+    } catch (err: any) {
+      alert(`SellTraces export failed: ${err?.message || String(err)}`);
+    } finally {
+      setExportBusy(false);
     }
   };
 
@@ -322,16 +407,70 @@ export function CtfSurface(props: CtfSurfaceProps) {
             </button>
           )}
 
-          {/* Export Harbor */}
-          <button
-            type="button"
-            onClick={handleExportHarbor}
-            disabled={harborBusy || (!isSolved && steps.length === 0)}
-            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-dls-border bg-dls-hover px-3 text-[12px] font-medium text-gray-11 transition-colors hover:bg-gray-3 disabled:opacity-40"
-          >
-            {harborBusy ? <Loader2 size={12} className="animate-spin" /> : null}
-            <span>Export Harbor</span>
-          </button>
+          {/* Unified Export Dropdown */}
+          <div className="relative" ref={exportMenuRef}>
+            <button
+              type="button"
+              onClick={() => setExportDropdownOpen((prev) => !prev)}
+              disabled={exportBusy || harborBusy || (!isSolved && steps.length === 0)}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-dls-border bg-dls-hover px-3 text-[12px] font-medium text-gray-11 transition-colors hover:bg-gray-3 hover:text-gray-12 disabled:opacity-40"
+            >
+              {exportBusy || harborBusy ? <Loader2 size={12} className="animate-spin" /> : null}
+              <span>Export</span>
+              <ChevronDown size={12} className="text-gray-10" />
+            </button>
+
+            {exportDropdownOpen ? (
+              <div className="absolute right-0 top-full mt-1.5 w-68 rounded-[18px] border border-dls-border bg-dls-surface p-1.5 shadow-[var(--dls-shell-shadow)] z-50 text-[12px] animate-in fade-in zoom-in-95 duration-100">
+                <button
+                  type="button"
+                  onClick={handleExportTracePack}
+                  className="w-full flex items-start gap-2.5 rounded-[12px] p-2 text-left hover:bg-dls-hover transition-colors text-dls-text"
+                >
+                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-dls-border bg-dls-hover text-indigo-11">
+                    <Archive size={14} />
+                  </div>
+                  <div>
+                    <div className="font-medium text-dls-text">TracePack (.zip)</div>
+                    <div className="text-[11px] text-dls-secondary leading-tight mt-0.5">Canonical lossless archive with OTLP and artifacts</div>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleOpenSellTracesModal}
+                  className="w-full flex items-start gap-2.5 rounded-[12px] p-2 text-left hover:bg-dls-hover transition-colors text-dls-text mt-0.5"
+                >
+                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-dls-border bg-dls-hover text-amber-11">
+                    <FileJson size={14} />
+                  </div>
+                  <div>
+                    <div className="font-medium text-dls-text">SellTraces JSON (.json)</div>
+                    <div className="text-[11px] text-dls-secondary leading-tight mt-0.5">Normalized conversation projection with audit report</div>
+                  </div>
+                </button>
+
+                <div className="my-1 border-t border-dls-border/60" />
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExportDropdownOpen(false);
+                    void handleExportHarbor();
+                  }}
+                  className="w-full flex items-start gap-2.5 rounded-[12px] p-2 text-left hover:bg-dls-hover transition-colors text-dls-text"
+                >
+                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-dls-border bg-dls-hover text-emerald-11">
+                    <Anchor size={14} />
+                  </div>
+                  <div>
+                    <div className="font-medium text-dls-text">Harbor Task (.zip)</div>
+                    <div className="text-[11px] text-dls-secondary leading-tight mt-0.5">Benchmark evaluation task package</div>
+                  </div>
+                </button>
+              </div>
+            ) : null}
+          </div>
         </div>
       </header>
 
@@ -497,6 +636,98 @@ export function CtfSurface(props: CtfSurfaceProps) {
           </div>
         )}
       </div>
+
+      {/* SellTraces Export & Projection Modal */}
+      {sellTracesModalOpen && sellTracesPreview ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 animate-in fade-in duration-150">
+          <div className="flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-[24px] border border-dls-border bg-dls-surface shadow-[var(--dls-shell-shadow)] text-dls-text">
+            <div className="flex items-center justify-between border-b border-dls-border px-6 py-4.5">
+              <div>
+                <h3 className="text-[16px] font-semibold tracking-[-0.2px] text-dls-text">Export SellTraces Projection</h3>
+                <p className="text-[12px] text-dls-secondary mt-0.5">Normalized conversation view with companion projection audit report.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSellTracesModalOpen(false)}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-full text-dls-secondary hover:bg-dls-hover hover:text-dls-text transition-colors"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4 overflow-y-auto text-xs">
+              <div className="rounded-[18px] border border-dls-border bg-dls-hover/40 p-4 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-medium text-dls-text text-[13px]">Capture Integrity</span>
+                  <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-[0.14em] ${
+                    sellTracesPreview.report?.capture_complete
+                      ? "bg-emerald-9/15 text-emerald-11 border border-emerald-9/30"
+                      : "bg-amber-9/15 text-amber-11 border border-amber-9/30"
+                  }`}>
+                    {sellTracesPreview.report?.capture_complete ? "Sealed Capture" : "Incomplete Capture"}
+                  </span>
+                </div>
+                <div className="text-dls-secondary text-[12px]">
+                  Task: <span className="text-dls-text font-medium">{task.title || task.id}</span> · Messages: <span className="font-mono text-dls-text">{sellTracesPreview.preview?.messages?.length ?? 0}</span>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="text-[12px] font-medium text-dls-text">Projection Contract:</div>
+                <ul className="space-y-1.5 text-dls-secondary text-[12px] list-disc list-inside rounded-[18px] border border-dls-border bg-dls-surface p-3.5 leading-relaxed">
+                  <li>Assistant JSON preserved verbatim as message content without synthesizing fake tool calls.</li>
+                  <li>Browser CDP operations and DOM snapshots omitted from conversation view (retained in TracePack).</li>
+                  <li>Companion <code className="text-indigo-11 font-mono text-[11px]">*-projection-report.json</code> written alongside export.</li>
+                </ul>
+              </div>
+
+              {sellTracesPreview.piiFindings && sellTracesPreview.piiFindings.length > 0 ? (
+                <div className="rounded-[18px] border border-amber-9/30 bg-amber-9/10 p-3.5 text-[12px] text-amber-12 space-y-1">
+                  <div className="font-medium flex items-center gap-1.5">
+                    <AlertTriangle size={14} className="text-amber-11 shrink-0" />
+                    <span>Sensitive Credentials Found:</span>
+                  </div>
+                  <div className="text-[11px] text-amber-11/90 font-mono">
+                    {sellTracesPreview.piiFindings.map((f: any) => `${f.type}: ${f.count}`).join(", ")}
+                  </div>
+                </div>
+              ) : null}
+
+              <label className="flex items-start gap-2.5 cursor-pointer pt-1 select-none">
+                <input
+                  type="checkbox"
+                  checked={scrubPii}
+                  onChange={(e) => setScrubPii(e.target.checked)}
+                  className="mt-0.5 rounded border-dls-border text-dls-accent focus:ring-0"
+                />
+                <div>
+                  <div className="text-[12px] font-medium text-dls-text">Redact credentials and secrets</div>
+                  <div className="text-[11px] text-dls-secondary">Masks API keys and bearer tokens in exported messages</div>
+                </div>
+              </label>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 border-t border-dls-border px-6 py-4 bg-dls-surface">
+              <button
+                type="button"
+                onClick={() => setSellTracesModalOpen(false)}
+                className="inline-flex items-center justify-center rounded-full px-4 py-2 text-[13px] font-medium border border-dls-border bg-dls-surface text-dls-text hover:bg-dls-hover transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleExportSellTraces}
+                disabled={exportBusy}
+                className="inline-flex items-center justify-center gap-1.5 rounded-full px-4 py-2 text-[13px] font-medium bg-dls-accent text-white hover:bg-[var(--dls-accent-hover)] transition-colors shadow-sm disabled:opacity-50"
+              >
+                {exportBusy ? <Loader2 size={13} className="animate-spin" /> : null}
+                <span>Export Projection & Report</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

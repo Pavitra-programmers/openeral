@@ -2577,6 +2577,34 @@ async function handleDesktopInvoke(event, command, ...args) {
       const outPath = result.filePath.endsWith(".zip") ? result.filePath : `${result.filePath}.zip`;
       return ctfService.exportHarbor(taskId, outPath);
     }
+    case "ctfExportTracePack": {
+      const { taskId } = args[0] || {};
+      const filename = `${taskId || "challenge"}-tracepack.zip`;
+      const result = await dialog.showSaveDialog(activeWindowFromEvent(event), {
+        title: "Export Lossless TracePack Archive",
+        defaultPath: path.join(app.getPath("downloads"), filename),
+        filters: [{ name: "ZIP Archives", extensions: ["zip"] }],
+      });
+      if (result.canceled || !result.filePath) return { canceled: true };
+      const outPath = result.filePath.endsWith(".zip") ? result.filePath : `${result.filePath}.zip`;
+      return ctfService.exportTracePack(taskId, outPath);
+    }
+    case "ctfGetSellTracesPreview": {
+      const { taskId } = args[0] || {};
+      return ctfService.getSellTracesPreview(taskId);
+    }
+    case "ctfExportSellTraces": {
+      const { taskId, scrubPii } = args[0] || {};
+      const filename = `${taskId || "challenge"}-selltraces.json`;
+      const result = await dialog.showSaveDialog(activeWindowFromEvent(event), {
+        title: "Export SellTraces Normalized JSON",
+        defaultPath: path.join(app.getPath("downloads"), filename),
+        filters: [{ name: "JSON Files", extensions: ["json"] }],
+      });
+      if (result.canceled || !result.filePath) return { canceled: true };
+      const outPath = result.filePath.endsWith(".json") ? result.filePath : `${result.filePath}.json`;
+      return ctfService.exportSellTraces(taskId, outPath, { scrubPii });
+    }
     case "ctfGetActiveDirectory":
       return ctfService.getActiveDirectory();
     case "ctfSetActiveDirectory":

@@ -89,7 +89,7 @@ export function CtfTaskSidebar(props: CtfTaskSidebarProps) {
   }, [props.tasks, search]);
 
   const dirDisplayName = useMemo(() => {
-    if (!activeDir) return "Default";
+    if (!activeDir) return null;
     const parts = activeDir.replace(/[\\/]+$/, "").split(/[\\/]/);
     return parts[parts.length - 1] || activeDir;
   }, [activeDir]);
@@ -101,25 +101,37 @@ export function CtfTaskSidebar(props: CtfTaskSidebarProps) {
         <div className="flex items-center justify-between text-[11px]">
           <span className="text-gray-10 font-normal">Directory:</span>
           <div className="flex items-center gap-1.5">
-            <button
-              type="button"
-              onClick={handleChangeDirectory}
-              disabled={changingDir}
-              className="text-gray-11 hover:text-gray-12 underline transition-colors"
-              title={activeDir || "Default built-in tasks"}
-            >
-              {dirDisplayName}
-            </button>
             {activeDir ? (
+              <>
+                <button
+                  type="button"
+                  onClick={handleChangeDirectory}
+                  disabled={changingDir}
+                  className="font-medium text-gray-12 hover:underline truncate max-w-[130px] transition-colors"
+                  title={activeDir}
+                >
+                  {dirDisplayName}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleChangeDirectory}
+                  disabled={changingDir}
+                  className="text-[10px] text-gray-9 hover:text-gray-11 transition-colors ml-0.5"
+                  title="Change challenge directory"
+                >
+                  Change
+                </button>
+              </>
+            ) : (
               <button
                 type="button"
-                onClick={handleResetDirectory}
-                className="text-gray-9 hover:text-gray-11 transition-colors ml-1"
-                title="Reset to default directory"
+                onClick={handleChangeDirectory}
+                disabled={changingDir}
+                className="font-medium text-indigo-11 hover:text-indigo-12 underline transition-colors"
               >
-                Reset
+                Select Folder
               </button>
-            ) : null}
+            )}
           </div>
         </div>
       </div>
@@ -168,9 +180,29 @@ export function CtfTaskSidebar(props: CtfTaskSidebarProps) {
 
       {/* Challenge List */}
       <div className="min-h-0 flex-1 overflow-y-auto p-1 space-y-0.5">
-        {filteredTasks.length === 0 ? (
-          <div className="px-3 py-6 text-center text-[11px] text-gray-10">
-            No challenges found.
+        {!activeDir ? (
+          <div className="flex flex-col items-center justify-center p-6 text-center text-dls-secondary space-y-3 mt-4">
+            <FolderOpen size={24} className="text-gray-8" />
+            <div className="space-y-1">
+              <div className="text-[12px] font-medium text-dls-text">No folder selected</div>
+              <div className="text-[11px] text-gray-10 leading-relaxed">
+                Select a folder containing your CTF challenges to begin.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={handleChangeDirectory}
+              disabled={changingDir}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-dls-border bg-dls-surface px-3 py-1.5 text-[11px] font-medium text-dls-text hover:bg-dls-hover transition-colors shadow-sm"
+            >
+              <FolderOpen size={13} className="text-indigo-11" />
+              <span>Select Folder</span>
+            </button>
+          </div>
+        ) : filteredTasks.length === 0 ? (
+          <div className="px-3 py-8 text-center text-[11px] text-gray-10 space-y-1">
+            <div className="font-medium text-gray-12">No challenges found</div>
+            <div>No valid challenge folders found in {dirDisplayName}.</div>
           </div>
         ) : (
           filteredTasks.map((t) => {

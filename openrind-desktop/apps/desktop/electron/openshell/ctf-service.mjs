@@ -8,6 +8,8 @@ import { basename, dirname, join, resolve } from "node:path";
 import { DISTRO_NAME, toWslPath, wslRun, wslSpawn } from "./wsl.mjs";
 import { getCredential } from "./openrind-shell-credentials.mjs";
 import { buildHarborTaskFiles, createZipBuffer } from "./harbor-exporter.mjs";
+import { createTracePackZip } from "./tracepack-builder.mjs";
+import { projectToSellTraces } from "./selltraces-projector.mjs";
 import { generateHarborTaskFromTrajectory } from "../../../../packages/ctf-runtime/bin/generate-harbor-task.mjs";
 import { getAllTasks, registerDynamicTask } from "../../../../packages/ctf-runtime/src/tasks.mjs";
 
@@ -395,12 +397,20 @@ async function executeEvalInContext(expr, hostPort, cookieJar, currentPageBody) 
 }
 
 async function scanDirectoryForChallenges(rootDir, maxDepth = 4) {
+  if (!rootDir || !existsSync(rootDir)) return [];
   const discovered = [];
+  const seenIds = new Set();
+  const allKnownTasks = getAllTasks();
+  const knownTaskMap = new Map(allKnownTasks.map((t) => [t.id, t]));
 
-  // Check for ctf_archive.json or challenges.json in rootDir
+  // 1. Check for ctf_archive.json or challenges.json in rootDir
   const archiveJsonPath = join(rootDir, "ctf_archive.json");
   const challsJsonPath = join(rootDir, "challenges.json");
-  const indexFile = existsSync(archiveJsonPath) ? archiveJsonPath : (existsSync(challsJsonPath) ? challsJsonPath : null);
+  const indexFile = existsSync(archiveJsonPath)
+    ? archiveJsonPath
+    : existsSync(challsJsonPath)
+      ? challsJsonPath
+      : null;
 
   if (indexFile) {
     try {
@@ -410,22 +420,26 @@ async function scanDirectoryForChallenges(rootDir, maxDepth = 4) {
         const taskFolder = join(rootDir, item.path || "");
         if (existsSync(taskFolder)) {
           const id = (item.challenge || key || "").toLowerCase().replace(/[^a-z0-9_-]/g, "-");
-          discovered.push({
-            id,
-            title: item.name || `${item.event || "CTF"}: ${item.challenge || key}`,
-            description: item.description || `Challenge ${id}`,
-            category: item.category || "web",
-            folderPath: taskFolder,
-            backendPort: Number(item.internal_port || item.backendPort || 8080),
-            sitePath: "/",
-            image: `openrind-ctf-${id}:local`,
-            flag: item.flag || "",
-            isCustom: true,
-            browserRules: [
-              { method: "GET", path: "/**" },
-              { method: "POST", path: "/**" },
-            ],
-          });
+          if (!seenIds.has(id)) {
+            seenIds.add(id);
+            const known = knownTaskMap.get(id);
+            discovered.push({
+              id,
+              title: item.name || known?.title || `${item.event || "CTF"}: ${item.challenge || key}`,
+              description: item.description || known?.description || `Challenge ${id}`,
+              category: item.category || known?.category || "web",
+              folderPath: taskFolder,
+              backendPort: Number(item.internal_port || item.backendPort || known?.backendPort || 8080),
+              sitePath: known?.sitePath || "/",
+              image: known?.image || BENCHMARK_IMAGES[id] || `openrind-ctf-${id}:local`,
+              flag: item.flag || known?.flag || "",
+              isCustom: true,
+              browserRules: known?.browserRules || [
+                { method: "GET", path: "/**" },
+                { method: "POST", path: "/**" },
+              ],
+            });
+          }
         }
       }
       if (discovered.length > 0) return discovered;
@@ -433,106 +447,184 @@ async function scanDirectoryForChallenges(rootDir, maxDepth = 4) {
   }
 
   function checkDir(currentDir) {
-    let fileNames;
+    let entries;
     try {
-      fileNames = new Set(
-        readdirSync(currentDir).filter((f) => {
-          try {
-            return statSync(join(currentDir, f)).isFile();
-          } catch {
-            return false;
-          }
-        })
-      );
+      entries = readdirSync(currentDir, { withFileTypes: true });
     } catch {
       return null;
     }
 
-    const hasChallJson = fileNames.has("challenge.json");
-    const hasTaskToml = fileNames.has("task.toml");
-    const hasDesc = fileNames.has("DESCRIPTION.md") || fileNames.has("instruction.md") || fileNames.has("README.md");
-    const hasServer = fileNames.has("server.py") || fileNames.has("app.py") || fileNames.has("run.py") || fileNames.has("main.py") || fileNames.has("index.html") || fileNames.has("package.json");
-    const hasDockerfile = fileNames.has("Dockerfile") || fileNames.has("docker-compose.yml") || fileNames.has("compose.yaml");
+    const fileNames = new Set(entries.filter((e) => e.isFile()).map((e) => e.name));
+    const dirNames = new Set(entries.filter((e) => e.isDirectory()).map((e) => e.name));
 
-    if (hasChallJson || hasTaskToml || (hasDesc && (hasServer || hasDockerfile)) || (hasDockerfile && hasServer)) {
-      let title = basename(currentDir);
-      let desc = "";
-      let flag = "";
-      let port = 8080;
-      let category = "web";
+    const folderBase = basename(currentDir);
+    const id = folderBase.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
 
-      if (hasChallJson) {
-        try {
-          const cdata = JSON.parse(readFileSync(join(currentDir, "challenge.json"), "utf8"));
-          title = cdata.name || title;
-          desc = cdata.description || desc;
-          flag = cdata.flag || flag;
-          port = Number(cdata.internal_port || cdata.backendPort || port);
-          category = cdata.category || category;
-        } catch {}
-      } else if (hasTaskToml) {
-        try {
-          const toml = readFileSync(join(currentDir, "task.toml"), "utf8");
-          const nameM = toml.match(/name\s*=\s*["']([^"']+)["']/);
-          if (nameM) title = nameM[1].split("/").pop();
-          const descM = toml.match(/description\s*=\s*["']([^"']+)["']/);
-          if (descM) desc = descM[1];
-          const portM = toml.match(/web_service_port\s*=\s*(\d+)/);
-          if (portM) port = Number(portM[1]);
-        } catch {}
+    // 1. Direct match with a known benchmark challenge (e.g. client-secrets, cookie-clicker, flag-command)
+    const known = knownTaskMap.get(id);
+    if (known) {
+      let flag = known.flag || "";
+      if (fileNames.has("flag.txt")) {
+        try { flag = readFileSync(join(currentDir, "flag.txt"), "utf8").trim(); } catch {}
+      } else if (dirNames.has("chall") && existsSync(join(currentDir, "chall", "flag.txt"))) {
+        try { flag = readFileSync(join(currentDir, "chall", "flag.txt"), "utf8").trim(); } catch {}
+      } else if (dirNames.has("challenge") && existsSync(join(currentDir, "challenge", "flag.txt"))) {
+        try { flag = readFileSync(join(currentDir, "challenge", "flag.txt"), "utf8").trim(); } catch {}
       }
 
-      if (!desc && fileNames.has("DESCRIPTION.md")) {
+      let desc = known.description || "";
+      if (fileNames.has("DESCRIPTION.md")) {
         try { desc = readFileSync(join(currentDir, "DESCRIPTION.md"), "utf8").trim(); } catch {}
-      } else if (!desc && fileNames.has("instruction.md")) {
-        try { desc = readFileSync(join(currentDir, "instruction.md"), "utf8").trim(); } catch {}
-      } else if (!desc && fileNames.has("README.md")) {
+      } else if (fileNames.has("README.md")) {
         try { desc = readFileSync(join(currentDir, "README.md"), "utf8").trim(); } catch {}
       }
 
-      if (fileNames.has("REHOST.md")) {
-        try {
-          const rehost = readFileSync(join(currentDir, "REHOST.md"), "utf8");
-          const flagMatch = rehost.match(/Flag:\s*([^\r\n]+)/i);
-          if (flagMatch && !flag) flag = flagMatch[1].trim();
-          const portMatch = rehost.match(/Port:\s*(\d+)/i);
-          if (portMatch) port = Number(portMatch[1]);
-        } catch {}
-      }
-
-      if (!flag && fileNames.has("flag.txt")) {
-        try { flag = readFileSync(join(currentDir, "flag.txt"), "utf8").trim(); } catch {}
-      }
-
-      const id = basename(currentDir).toLowerCase().replace(/[^a-z0-9_-]/g, "-");
       return {
-        id,
-        title: title || id,
-        description: desc || `Challenge in ${basename(currentDir)}`,
-        category,
-        backendPort: port,
-        sitePath: "/",
-        image: `openrind-ctf-${id}:local`,
-        flag,
+        ...known,
+        id: known.id,
+        title: known.title || id,
+        description: desc || known.description || `Challenge ${id}`,
+        category: known.category || "web",
+        backendPort: known.backendPort || 8080,
+        sitePath: known.sitePath || "/",
+        image: known.image || BENCHMARK_IMAGES[known.id] || `openrind-ctf-${known.id}:local`,
+        flag: flag || known.flag || "",
         folderPath: currentDir,
         isCustom: true,
-        browserRules: [
+        browserRules: known.browserRules || [
           { method: "GET", path: "/**" },
           { method: "POST", path: "/**" },
         ],
       };
     }
-    return null;
+
+    // 2. Custom challenge detection
+    const hasChallJson = fileNames.has("challenge.json");
+    const hasTaskToml = fileNames.has("task.toml");
+    const hasDockerfile = fileNames.has("Dockerfile") || fileNames.has("docker-compose.yml") || fileNames.has("compose.yaml");
+    const hasFlag = fileNames.has("flag.txt") || fileNames.has("flag");
+
+    const codeFiles = [
+      "server.py", "app.py", "run.py", "main.py", "index.py", "api.py",
+      "server.js", "app.js", "index.js", "main.js", "index.html",
+      "package.json", "requirements.txt",
+    ];
+    const hasServerCode = codeFiles.some((f) => fileNames.has(f));
+
+    // Also inspect common CTF challenge subdirectories (chall, challenge, src, app, web, service)
+    const subfolderCandidates = ["chall", "challenge", "src", "app", "web", "service"];
+    let subHasServerCode = false;
+    let subHasDockerfile = false;
+    let subHasFlag = false;
+
+    for (const sub of subfolderCandidates) {
+      if (dirNames.has(sub)) {
+        try {
+          const subEntries = readdirSync(join(currentDir, sub), { withFileTypes: true });
+          const subFiles = new Set(subEntries.filter((e) => e.isFile()).map((e) => e.name));
+          if (codeFiles.some((f) => subFiles.has(f))) subHasServerCode = true;
+          if (subFiles.has("Dockerfile") || subFiles.has("docker-compose.yml")) subHasDockerfile = true;
+          if (subFiles.has("flag.txt") || subFiles.has("flag")) subHasFlag = true;
+        } catch {}
+      }
+    }
+
+    const isChallenge =
+      hasChallJson ||
+      hasTaskToml ||
+      hasDockerfile ||
+      subHasDockerfile ||
+      (hasFlag && (hasServerCode || subHasServerCode || dirNames.size > 0)) ||
+      (subHasFlag && (hasServerCode || subHasServerCode)) ||
+      hasServerCode ||
+      subHasServerCode;
+
+    if (!isChallenge) return null;
+
+    let title = folderBase.split(/[-_]/).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+    let desc = "";
+    let flag = "";
+    let port = 8080;
+    let category = "web";
+
+    if (hasChallJson) {
+      try {
+        const cdata = JSON.parse(readFileSync(join(currentDir, "challenge.json"), "utf8"));
+        title = cdata.name || title;
+        desc = cdata.description || desc;
+        flag = cdata.flag || flag;
+        port = Number(cdata.internal_port || cdata.backendPort || port);
+        category = cdata.category || category;
+      } catch {}
+    } else if (hasTaskToml) {
+      try {
+        const toml = readFileSync(join(currentDir, "task.toml"), "utf8");
+        const nameM = toml.match(/name\s*=\s*["']([^"']+)["']/);
+        if (nameM) title = nameM[1].split("/").pop();
+        const descM = toml.match(/description\s*=\s*["']([^"']+)["']/);
+        if (descM) desc = descM[1];
+        const portM = toml.match(/web_service_port\s*=\s*(\d+)/);
+        if (portM) port = Number(portM[1]);
+      } catch {}
+    }
+
+    if (!desc && fileNames.has("DESCRIPTION.md")) {
+      try { desc = readFileSync(join(currentDir, "DESCRIPTION.md"), "utf8").trim(); } catch {}
+    } else if (!desc && fileNames.has("instruction.md")) {
+      try { desc = readFileSync(join(currentDir, "instruction.md"), "utf8").trim(); } catch {}
+    } else if (!desc && fileNames.has("README.md")) {
+      try { desc = readFileSync(join(currentDir, "README.md"), "utf8").trim(); } catch {}
+    }
+
+    if (fileNames.has("REHOST.md")) {
+      try {
+        const rehost = readFileSync(join(currentDir, "REHOST.md"), "utf8");
+        const flagMatch = rehost.match(/Flag:\s*([^\r\n]+)/i);
+        if (flagMatch && !flag) flag = flagMatch[1].trim();
+        const portMatch = rehost.match(/Port:\s*(\d+)/i);
+        if (portMatch) port = Number(portMatch[1]);
+      } catch {}
+    }
+
+    if (!flag && fileNames.has("flag.txt")) {
+      try { flag = readFileSync(join(currentDir, "flag.txt"), "utf8").trim(); } catch {}
+    } else if (!flag && fileNames.has("flag")) {
+      try { flag = readFileSync(join(currentDir, "flag"), "utf8").trim(); } catch {}
+    } else if (!flag) {
+      for (const sub of subfolderCandidates) {
+        if (dirNames.has(sub) && existsSync(join(currentDir, sub, "flag.txt"))) {
+          try { flag = readFileSync(join(currentDir, sub, "flag.txt"), "utf8").trim(); break; } catch {}
+        }
+      }
+    }
+
+    return {
+      id,
+      title: title || id,
+      description: desc || `Challenge in ${folderBase}`,
+      category,
+      backendPort: port,
+      sitePath: "/",
+      image: `openrind-ctf-${id}:local`,
+      flag,
+      folderPath: currentDir,
+      isCustom: true,
+      browserRules: [
+        { method: "GET", path: "/**" },
+        { method: "POST", path: "/**" },
+      ],
+    };
   }
 
-  // 1. Check if rootDir itself is a challenge folder
+  // Check if rootDir itself is a single challenge
   const rootChall = checkDir(rootDir);
   if (rootChall) {
     discovered.push(rootChall);
+    seenIds.add(rootChall.id);
     return discovered;
   }
 
-  // 2. Recursively check subdirectories
+  // Walk subdirectories
   function walk(currentDir, currentDepth) {
     if (currentDepth > maxDepth) return;
     let entries = [];
@@ -543,11 +635,20 @@ async function scanDirectoryForChallenges(rootDir, maxDepth = 4) {
     }
 
     for (const ent of entries) {
-      if (ent.isDirectory() && !ent.name.startsWith(".") && ent.name !== "node_modules" && ent.name !== "__pycache__" && ent.name !== "ctf-traces") {
+      if (
+        ent.isDirectory() &&
+        !ent.name.startsWith(".") &&
+        ent.name !== "node_modules" &&
+        ent.name !== "__pycache__" &&
+        ent.name !== "ctf-traces"
+      ) {
         const full = join(currentDir, ent.name);
         const chall = checkDir(full);
         if (chall) {
-          discovered.push(chall);
+          if (!seenIds.has(chall.id)) {
+            seenIds.add(chall.id);
+            discovered.push(chall);
+          }
         } else {
           walk(full, currentDepth + 1);
         }
@@ -766,6 +867,8 @@ export function createCtfService() {
     if (activeDirectory && existsSync(activeDirectory)) {
       const activeFile = join(activeDirectory, "ctf-traces", `${taskId}-trajectory.json`);
       if (existsSync(activeFile)) return activeFile;
+      // When a custom workspace is active, do not fall back to pre-solved repository benchmark traces.
+      return null;
     }
     const repoFile = join(getRepoTracesDir(), `${taskId}-trajectory.json`);
     if (existsSync(repoFile)) return repoFile;
@@ -778,9 +881,10 @@ export function createCtfService() {
   return {
     async getActiveDirectory() {
       await ensureCustomTasksLoaded();
+      const valid = Boolean(activeDirectory && existsSync(activeDirectory));
       return {
-        path: activeDirectory,
-        display: activeDirectory ? basename(activeDirectory) : "Default Workspace",
+        path: valid ? activeDirectory : null,
+        display: valid ? basename(activeDirectory) : null,
       };
     },
 
@@ -808,13 +912,16 @@ export function createCtfService() {
     async listTasks() {
       await ensureCustomTasksLoaded();
 
-      // If activeDirectory is set, show only tasks from that directory
-      let targetTasks = [];
-      if (activeDirectory) {
-        targetTasks = customTasks;
-      } else {
-        targetTasks = getAllTasks().filter((t) => !t.isCustom && BENCHMARK_IMAGES[t.id]);
+      if (!activeDirectory || !existsSync(activeDirectory)) {
+        return [];
       }
+
+      const discovered = await scanDirectoryForChallenges(activeDirectory);
+      customTasks = discovered;
+      for (const t of discovered) {
+        registerDynamicTask(t);
+      }
+      const targetTasks = customTasks;
 
       const results = [];
 
@@ -864,8 +971,19 @@ export function createCtfService() {
       const all = activeDirectory ? customTasks : getAllTasks();
       const task = all.find((t) => t.id === taskId);
       if (!task) return false;
-      const imageName = task.image || BENCHMARK_IMAGES[task.id] || `openrind-ctf-${task.id}:local`;
-      return checkDockerImage(imageName);
+      const candidates = [
+        task.image,
+        BENCHMARK_IMAGES[task.id],
+        `openrind-ctf-${task.id}:e2e`,
+        `openrind-ctf-${task.id}:local`,
+      ].filter(Boolean);
+      for (const img of candidates) {
+        if (await checkDockerImage(img)) {
+          task.image = img;
+          return true;
+        }
+      }
+      return false;
     },
 
     async getProviderInfo() {
@@ -927,6 +1045,21 @@ export function createCtfService() {
         } catch {}
       }
 
+      // Check if flag.txt exists
+      if (!resolvedFlag) {
+        const flagPath = join(folderPath, "flag.txt");
+        if (existsSync(flagPath)) {
+          try { resolvedFlag = (await readFile(flagPath, "utf8")).trim(); } catch {}
+        } else {
+          for (const sub of ["chall", "challenge", "src", "app"]) {
+            const subFlag = join(folderPath, sub, "flag.txt");
+            if (existsSync(subFlag)) {
+              try { resolvedFlag = (await readFile(subFlag, "utf8")).trim(); break; } catch {}
+            }
+          }
+        }
+      }
+
       const imageName = `openrind-ctf-${id}:local`;
       const newTask = {
         id,
@@ -964,18 +1097,43 @@ export function createCtfService() {
       }
 
       const dockerfilePath = join(folder, "Dockerfile");
-      if (!existsSync(dockerfilePath)) {
+      let needGenerateDockerfile = !existsSync(dockerfilePath);
+      if (existsSync(dockerfilePath)) {
+        try {
+          const existing = readFileSync(dockerfilePath, "utf8");
+          // If the Dockerfile is missing flask for a python app, or missing flag copy, regenerate
+          if (existing.includes("python") && !existing.includes("flask") && !existing.includes("openrind-python-base")) {
+            needGenerateDockerfile = true;
+          }
+        } catch {}
+      }
+
+      if (needGenerateDockerfile) {
         let runCmd = `python -m http.server ${task.backendPort || 8080}`;
         if (existsSync(join(folder, "server.py"))) runCmd = `python server.py`;
         else if (existsSync(join(folder, "app.py"))) runCmd = `python app.py`;
         else if (existsSync(join(folder, "run.py"))) runCmd = `python run.py`;
         else if (existsSync(join(folder, "main.py"))) runCmd = `python main.py`;
+        else if (existsSync(join(folder, "chall", "server.py"))) runCmd = `python chall/server.py`;
+        else if (existsSync(join(folder, "chall", "run.py"))) runCmd = `python chall/run.py`;
+        else if (existsSync(join(folder, "chall", "app.py"))) runCmd = `python chall/app.py`;
+        else if (existsSync(join(folder, "challenge", "run.py"))) runCmd = `python challenge/run.py`;
+        else if (existsSync(join(folder, "challenge", "server.py"))) runCmd = `python challenge/server.py`;
+        else if (existsSync(join(folder, "challenge", "application", "main.py"))) runCmd = `python challenge/run.py`;
 
         const fallbackDockerfile = [
           "FROM python:3.11-slim",
           "WORKDIR /app",
           "COPY . /app",
-          "RUN if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi",
+          "RUN pip install --no-cache-dir flask requests && \\",
+          "    if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; \\",
+          "    elif [ -f chall/requirements.txt ]; then pip install --no-cache-dir -r chall/requirements.txt; \\",
+          "    elif [ -f challenge/requirements.txt ]; then pip install --no-cache-dir -r challenge/requirements.txt; \\",
+          "    fi && \\",
+          "    if [ -f flag.txt ]; then cp flag.txt /flag.txt; \\",
+          "    elif [ -f chall/flag.txt ]; then cp chall/flag.txt /flag.txt; \\",
+          "    elif [ -f challenge/flag.txt ]; then cp challenge/flag.txt /flag.txt; \\",
+          "    fi",
           `EXPOSE ${task.backendPort || 8080}`,
           `CMD [${runCmd.split(" ").map((s) => `"${s}"`).join(", ")}]`,
           "",
@@ -1028,7 +1186,22 @@ export function createCtfService() {
         return { solved: false, stopped: true };
       }
 
-      const imageName = task.image || BENCHMARK_IMAGES[task.id] || `openrind-ctf-${task.id}:local`;
+      // Resolve candidate image
+      let effectiveImage = task.image;
+      const candidates = [
+        task.image,
+        BENCHMARK_IMAGES[task.id],
+        `openrind-ctf-${task.id}:e2e`,
+        `openrind-ctf-${task.id}:local`,
+      ].filter(Boolean);
+      for (const img of candidates) {
+        if (await checkDockerImage(img)) {
+          effectiveImage = img;
+          task.image = img;
+          break;
+        }
+      }
+      const imageName = effectiveImage || `openrind-ctf-${task.id}:local`;
       const containerName = `openrind-ctf-${task.id}-${Date.now()}`;
       const judgeToken = randomBytes(32).toString("base64url");
       const hostPort = 19401;
@@ -1049,18 +1222,8 @@ export function createCtfService() {
       onStatus?.({ phase: "starting", message: `Starting container on port ${hostPort}...` });
 
       let runRes;
-      if (task.isCustom || !BENCHMARK_IMAGES[task.id]) {
-        // Custom challenge container: map container backendPort to hostPort
-        runRes = await runDocker([
-          "run",
-          "-d",
-          "--name",
-          containerName,
-          "-p",
-          `${hostPort}:${task.backendPort || 8080}`,
-          imageName,
-        ]);
-      } else {
+      const isBenchmarkImage = imageName.includes(":e2e") || (BENCHMARK_IMAGES[task.id] && imageName === BENCHMARK_IMAGES[task.id]);
+      if (isBenchmarkImage) {
         // Benchmark challenge container: run with challenge.mjs reverse proxy & judge
         runRes = await runDocker([
           "run",
@@ -1081,6 +1244,17 @@ export function createCtfService() {
           "--host",
           "0.0.0.0",
         ]);
+      } else {
+        // Custom challenge container: map container backendPort to hostPort
+        runRes = await runDocker([
+          "run",
+          "-d",
+          "--name",
+          containerName,
+          "-p",
+          `${hostPort}:${task.backendPort || 8080}`,
+          imageName,
+        ]);
       }
 
       if (runRes.exitCode !== 0) {
@@ -1091,6 +1265,71 @@ export function createCtfService() {
       let solved = false;
       let finalFlag = "";
       const cookieJar = new Map();
+
+      const saveTraces = async (wasSolved, flag, wasStopped = false) => {
+        const trajectory = {
+          format: "openrind-ctf-trajectory/v1",
+          task: {
+            id: task.id,
+            title: task.title,
+            description: task.description,
+            sitePath: task.sitePath,
+          },
+          model,
+          startedAt: new Date().toISOString(),
+          solved: wasSolved,
+          stopped: wasStopped,
+          judge: {
+            accepted: wasSolved,
+            submittedAt: new Date().toISOString(),
+            submission: flag,
+          },
+          steps,
+        };
+
+        try {
+          const trajectoryJson = JSON.stringify(trajectory, null, 2);
+          const agentEventsLines = steps.map((s) => JSON.stringify({
+            kind: "agent_step",
+            number: s.number,
+            at: new Date().toISOString(),
+            thought: s.thought,
+            tool: s.tool,
+            action: s.action,
+            observation: s.observation,
+            durationMs: s.durationMs,
+          })).join("\n") + "\n";
+
+          const challengeEventsLines = JSON.stringify({
+            kind: "judge",
+            at: new Date().toISOString(),
+            actor: task.id,
+            submission: flag,
+            correct: wasSolved,
+          }) + "\n";
+
+          // 1. If activeDirectory is set, save in activeDirectory/ctf-traces/
+          const targetDir = activeDirectory && existsSync(activeDirectory)
+            ? join(activeDirectory, "ctf-traces")
+            : (task.folderPath ? join(dirname(task.folderPath), "ctf-traces") : null);
+
+          if (targetDir) {
+            await mkdir(targetDir, { recursive: true });
+            await writeFile(join(targetDir, `${task.id}-trajectory.json`), trajectoryJson, "utf8");
+            await writeFile(join(targetDir, `${task.id}-agent-events.jsonl`), agentEventsLines, "utf8");
+            await writeFile(join(targetDir, `${task.id}-challenge-events.jsonl`), challengeEventsLines, "utf8");
+          }
+
+          // 2. Also save to user appdata traces
+          const userDir = await getUserCtfDir();
+          const tracesDir = join(userDir, "traces");
+          await mkdir(tracesDir, { recursive: true });
+          await writeFile(join(tracesDir, `${task.id}-trajectory.json`), trajectoryJson, "utf8");
+        } catch (err) {
+          console.error("Failed to save trajectory:", err);
+        }
+        return trajectory;
+      };
 
       try {
         // Health Check
@@ -1303,10 +1542,32 @@ Return only valid JSON matching the schema. Keep thoughts concise (1-2 sentences
 
           if (tool === "submit") {
             let correct = false;
-            if ((task.isCustom || !BENCHMARK_IMAGES[task.id]) && task.flag) {
-              correct = flagToSubmit.trim() === String(task.flag).trim();
-              observation = JSON.stringify({ correct, submission: flagToSubmit });
-            } else {
+
+            // 1. Resolve expected flag from task definition or challenge folder
+            let expectedFlag = String(task.flag || "").trim();
+            if (!expectedFlag) {
+              const candidatePaths = [
+                task.folderPath && join(task.folderPath, "flag.txt"),
+                task.folderPath && join(task.folderPath, "chall", "flag.txt"),
+                task.folderPath && join(task.folderPath, "challenge", "flag.txt"),
+                activeDirectory && join(activeDirectory, task.id, "flag.txt"),
+                activeDirectory && join(activeDirectory, task.id, "chall", "flag.txt"),
+                activeDirectory && join(activeDirectory, task.id, "challenge", "flag.txt"),
+              ].filter(Boolean);
+
+              for (const cp of candidatePaths) {
+                if (existsSync(cp)) {
+                  try {
+                    expectedFlag = readFileSync(cp, "utf8").trim();
+                    if (expectedFlag) break;
+                  } catch {}
+                }
+              }
+            }
+
+            // 2. Try the challenge reverse proxy judge endpoint (/v1/submit) if available
+            let judgeResponded = false;
+            try {
               const submitRes = await requestHttpWithCookies(`http://127.0.0.1:${hostPort}/v1/submit`, {
                 method: "POST",
                 headers: {
@@ -1314,12 +1575,36 @@ Return only valid JSON matching the schema. Keep thoughts concise (1-2 sentences
                   Authorization: `Bearer ${judgeToken}`,
                 },
                 body: { flag: flagToSubmit },
+                timeout: 3000,
               }, cookieJar);
 
-              let judgeJson = {};
-              try { judgeJson = JSON.parse(submitRes.body); } catch {}
-              correct = Boolean(judgeJson.correct === true);
-              observation = submitRes.body;
+              if (submitRes && submitRes.status === 200) {
+                let judgeJson = {};
+                try { judgeJson = JSON.parse(submitRes.body); } catch {}
+                if (typeof judgeJson.correct === "boolean") {
+                  correct = judgeJson.correct;
+                  observation = submitRes.body;
+                  judgeResponded = true;
+                }
+              }
+            } catch {}
+
+            // 3. Fallback: if /v1/submit is not mounted (raw app container), judge directly against expected flag
+            if (!judgeResponded) {
+              if (expectedFlag) {
+                correct = flagToSubmit.trim() === expectedFlag;
+                observation = JSON.stringify({
+                  correct,
+                  submission: flagToSubmit,
+                  judge: "openrind-verifier",
+                });
+              } else {
+                observation = JSON.stringify({
+                  correct: false,
+                  error: "NO_EXPECTED_FLAG",
+                  submission: flagToSubmit,
+                });
+              }
             }
 
             const turnDuration = Date.now() - turnStart;
@@ -1452,9 +1737,10 @@ Return only valid JSON matching the schema. Keep thoughts concise (1-2 sentences
         }
 
         if (activeRunAbort?.signal?.aborted) {
+          const traj = await saveTraces(false, finalFlag, true);
           onStatus?.({ phase: "stopped", message: "Execution stopped by user." });
-          onComplete?.({ solved: false, stopped: true });
-          return { solved: false, stopped: true };
+          onComplete?.({ solved: false, stopped: true, trajectory: traj });
+          return { solved: false, stopped: true, trajectory: traj };
         }
       } finally {
         activeRunAbort = null;
@@ -1462,46 +1748,7 @@ Return only valid JSON matching the schema. Keep thoughts concise (1-2 sentences
         await runDocker(["rm", "-f", containerName], { timeout: 10_000 });
       }
 
-      const trajectory = {
-        format: "openrind-ctf-trajectory/v1",
-        task: {
-          id: task.id,
-          title: task.title,
-          description: task.description,
-          sitePath: task.sitePath,
-        },
-        model,
-        startedAt: new Date().toISOString(),
-        solved,
-        judge: {
-          accepted: solved,
-          submittedAt: new Date().toISOString(),
-          submission: finalFlag,
-        },
-        steps,
-      };
-
-      try {
-        const trajectoryJson = JSON.stringify(trajectory, null, 2);
-
-        // 1. If activeDirectory is set, save in activeDirectory/ctf-traces/<taskId>-trajectory.json
-        if (activeDirectory && existsSync(activeDirectory)) {
-          const dirTraces = join(activeDirectory, "ctf-traces");
-          await mkdir(dirTraces, { recursive: true });
-          await writeFile(join(dirTraces, `${task.id}-trajectory.json`), trajectoryJson, "utf8");
-        }
-
-        // 2. Also save to user appdata and repo traces
-        const userDir = await getUserCtfDir();
-        const tracesDir = join(userDir, "traces");
-        await mkdir(tracesDir, { recursive: true });
-        await writeFile(join(tracesDir, `${task.id}-trajectory.json`), trajectoryJson, "utf8");
-
-        const repoTraces = join(getRepoTracesDir());
-        if (existsSync(repoTraces)) {
-          await writeFile(join(repoTraces, `${task.id}-trajectory.json`), trajectoryJson, "utf8");
-        }
-      } catch {}
+      const trajectory = await saveTraces(solved, finalFlag, false);
 
       onStatus?.({
         phase: "completed",
@@ -1540,6 +1787,85 @@ Return only valid JSON matching the schema. Keep thoughts concise (1-2 sentences
       if (!trace) throw new Error(`No trajectory found for task ${taskId}. Please run the agent first.`);
 
       return generateHarborTaskFromTrajectory({ trajectory: trace, outPath });
+    },
+
+    async loadTraceBundle(taskId) {
+      const trajPath = await findTraceFile(taskId);
+      if (!trajPath) return null;
+      const dir = dirname(trajPath);
+      let trajectory = null;
+      try {
+        trajectory = JSON.parse(await readFile(trajPath, "utf8"));
+      } catch {
+        return null;
+      }
+      const agentEventsPath = join(dir, `${taskId}-agent-events.jsonl`);
+      const challengeEventsPath = join(dir, `${taskId}-challenge-events.jsonl`);
+      let agentEvents = [];
+      if (existsSync(agentEventsPath)) {
+        try {
+          const raw = await readFile(agentEventsPath, "utf8");
+          agentEvents = raw.split("\n").filter(Boolean).map(l => JSON.parse(l));
+        } catch {}
+      }
+      let challengeEvents = [];
+      if (existsSync(challengeEventsPath)) {
+        try {
+          const raw = await readFile(challengeEventsPath, "utf8");
+          challengeEvents = raw.split("\n").filter(Boolean).map(l => JSON.parse(l));
+        } catch {}
+      }
+      return { trajectory, agentEvents, challengeEvents };
+    },
+
+    async exportTracePack(taskId, outPath) {
+      await ensureCustomTasksLoaded();
+      const bundle = await this.loadTraceBundle(taskId);
+      if (!bundle || !bundle.trajectory) {
+        throw new Error(`No trajectory found for task ${taskId}. Please run the agent first.`);
+      }
+      const { buffer, manifest } = createTracePackZip(bundle);
+      await writeFile(outPath, buffer);
+      return { canceled: false, path: outPath, manifest };
+    },
+
+    async getSellTracesPreview(taskId) {
+      await ensureCustomTasksLoaded();
+      const bundle = await this.loadTraceBundle(taskId);
+      if (!bundle || !bundle.trajectory) {
+        throw new Error(`No trajectory found for task ${taskId}. Please run the agent first.`);
+      }
+      const { sellTracesJson, projectionReport, piiFindings } = projectToSellTraces({
+        ...bundle,
+        scrubPii: true,
+      });
+      return {
+        preview: sellTracesJson,
+        report: projectionReport,
+        piiFindings,
+      };
+    },
+
+    async exportSellTraces(taskId, outPath, { scrubPii = true } = {}) {
+      await ensureCustomTasksLoaded();
+      const bundle = await this.loadTraceBundle(taskId);
+      if (!bundle || !bundle.trajectory) {
+        throw new Error(`No trajectory found for task ${taskId}. Please run the agent first.`);
+      }
+      const { sellTracesJson, projectionReport } = projectToSellTraces({
+        ...bundle,
+        scrubPii,
+      });
+      await writeFile(outPath, JSON.stringify(sellTracesJson, null, 2), "utf8");
+      const reportPath = outPath.endsWith(".json")
+        ? outPath.slice(0, -5) + "-projection-report.json"
+        : `${outPath}-projection-report.json`;
+      await writeFile(reportPath, JSON.stringify(projectionReport, null, 2), "utf8");
+      return {
+        canceled: false,
+        path: outPath,
+        reportPath,
+      };
     },
   };
 }

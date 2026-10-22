@@ -27,11 +27,9 @@ import { AdvancedView } from "../domains/settings/pages/advanced-view";
 import { AppearanceView } from "../domains/settings/pages/appearance-view";
 import { DebugView } from "../domains/settings/pages/debug-view";
 import { EnvironmentView } from "../domains/settings/pages/environment-view";
-import { HaloopView } from "../domains/settings/pages/haloop-view";
 import { SandboxPanel } from "../domains/session/sidebar/sandbox-panel";
 import { useSandboxRows } from "../domains/session/sidebar/use-sandbox-rows";
 import type { SidebarTab } from "../domains/session/sidebar/sidebar-tabs";
-import { GatewayBillingPanel } from "../domains/settings/pages/gateway-billing-panel";
 import { ExtensionsView } from "../domains/settings/pages/extensions-view";
 import { McpView } from "../domains/settings/pages/mcp-view";
 import { SandboxView } from "../domains/settings/pages/sandbox-view";
@@ -240,6 +238,9 @@ function parseSettingsPath(pathname: string): {
   }
 
   const [head, tail] = trimmed.split("/");
+  if (head === "haloop" || head === "billing") {
+    return { tab: "sandbox", redirectPath: "/settings/sandbox" };
+  }
   switch (head) {
     case "general":
     case "skills":
@@ -247,8 +248,6 @@ function parseSettingsPath(pathname: string): {
     case "appearance":
     case "environment":
     case "sandbox":
-    case "haloop":
-    case "billing":
     case "debug":
       return { tab: head, redirectPath: null };
     case "extensions":
@@ -287,7 +286,7 @@ export function SettingsRoute() {
   const route = parseSettingsPath(location.pathname);
   const openshellState = useOpenShellState({
     active: route.tab === "sandbox",
-    haloopActive: route.tab === "haloop",
+    haloopActive: false,
   });
 
   const [loading, setLoading] = useState(true);
@@ -1215,31 +1214,6 @@ export function SettingsRoute() {
             onSetCredential={(key, value) => openshellState.setCredential(key, value)}
             onClearCredential={(key) => openshellState.clearCredential(key)}
           />
-        );
-      case "haloop":
-        return (
-          <HaloopView
-            status={openshellState.haloopStatus}
-            captureStatus={openshellState.haloopAnalysisStatus}
-            onDownloadTraces={() => openshellState.downloadHaloopTraces()}
-            busy={openshellState.actionBusy}
-            onStatusMessage={setConfigActionStatus}
-            onRefresh={async () => {
-              await Promise.all([
-                openshellState.refreshHaloopStatus(),
-                openshellState.refreshHaloopAnalysisStatus(),
-              ]);
-            }}
-            onRestart={() => openshellState.restartHaloop()}
-            onRestoreIncumbent={() => openshellState.restoreHaloopIncumbent()}
-            onRotateToken={() => openshellState.rotateHaloopToken()}
-          />
-        );
-      case "billing":
-        return (
-          <div className="space-y-6">
-            <GatewayBillingPanel />
-          </div>
         );
       case "debug":
         return <DebugView {...debugViewProps} />;
