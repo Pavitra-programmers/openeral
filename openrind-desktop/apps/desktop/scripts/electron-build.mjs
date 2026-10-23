@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { readdirSync } from "node:fs";
+import { copyFileSync, readdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -39,6 +39,15 @@ function run(command, args, cwd, env) {
 }
 
 run(nodeCmd, [resolve(__dirname, "prepare-sidecar.mjs"), "--force", "--outdir", electronSidecarDir], desktopRoot);
+// Ensure CTF and Harbor generation scripts are bundled directly in electron/openshell
+copyFileSync(
+  resolve(repoRoot, "packages/ctf-runtime/bin/generate-harbor-task.mjs"),
+  resolve(electronRoot, "openshell/generate-harbor-task.mjs"),
+);
+copyFileSync(
+  resolve(repoRoot, "packages/ctf-runtime/src/tasks.mjs"),
+  resolve(electronRoot, "openshell/ctf-tasks.mjs"),
+);
 // OPENRIND_DESKTOP_ELECTRON_BUILD tells Vite to emit relative asset paths so
 // index.html resolves /assets/* correctly when loaded via file:// from
 // inside the packaged .app bundle.

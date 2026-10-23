@@ -10,8 +10,8 @@ import { getCredential } from "./openrind-shell-credentials.mjs";
 import { buildHarborTaskFiles, createZipBuffer } from "./harbor-exporter.mjs";
 import { createTracePackZip } from "./tracepack-builder.mjs";
 import { projectToSellTraces } from "./selltraces-projector.mjs";
-import { generateHarborTaskFromTrajectory } from "../../../../packages/ctf-runtime/bin/generate-harbor-task.mjs";
-import { getAllTasks, registerDynamicTask } from "../../../../packages/ctf-runtime/src/tasks.mjs";
+import { generateHarborTaskFromTrajectory } from "./generate-harbor-task.mjs";
+import { getAllTasks, registerDynamicTask } from "./ctf-tasks.mjs";
 
 const DEFAULT_CTF_MODEL = "openai/gpt-4o";
 
@@ -234,7 +234,7 @@ function requestHttpWithCookies(urlStr, options = {}, cookieJar) {
   });
 }
 
-async function executeEvalInContext(expr, hostPort, cookieJar, currentPageBody) {
+async function executeEvalInContext(expr, hostPort, cookieJar, currentPageBody, onFetch = null) {
   let loggedOutput = null;
   let lastFetchResponse = null;
 
@@ -257,6 +257,12 @@ async function executeEvalInContext(expr, hostPort, cookieJar, currentPageBody) 
     if (!headers["Content-Type"] && opts.body) headers["Content-Type"] = "application/json";
     const res = await requestHttpWithCookies(fullUrl, { method, headers, body: opts.body }, cookieJar);
     lastFetchResponse = res.body;
+    let reqPath = url;
+    if (url.startsWith("http")) {
+      try { reqPath = new URL(url).pathname + new URL(url).search; } catch {}
+    }
+    if (!reqPath.startsWith("/")) reqPath = `/${reqPath}`;
+    onFetch?.(method, reqPath, res.status);
     return {
       status: res.status,
       ok: res.status >= 200 && res.status < 300,
@@ -804,14 +810,74 @@ async function callLlmInference({
       }
     }
 
-    if (!res.ok && !data?.choices?.[0]?.message?.content) {
+    if (!res.ok && !data?.choices?.[0]?.message?.content && !data?.choices?.[0]?.message?.reasoning) {
       throw new Error(data?.error?.message || `API error ${res.status}`);
     }
 
-    const rawContent = data?.choices?.[0]?.message?.content;
+    const choice = data?.choices?.[0];
+    const rawContent = choice?.message?.content ??
+                       choice?.message?.reasoning ??
+                       choice?.message?.reasoning_content ??
+                       choice?.text;
     if (!rawContent) throw new Error(data?.error?.message || "No model response content");
-    return rawContent;
+    return typeof rawContent === "string" ? rawContent : JSON.stringify(rawContent);
   }
+}
+
+/**
+ * Robust JSON extraction helper handling reasoning models, markdown blocks, and surrounding text.
+ */
+export function extractActionJson(rawContent) {
+  if (!rawContent || typeof rawContent !== "string") {
+    throw new Error("No model response content");
+  }
+  let text = rawContent.trim();
+  // 1. Remove <think>...</think> blocks if present
+  text = text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+
+  // 2. Look for ```json ... ``` or ``` ... ``` code blocks
+  const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (codeBlockMatch) {
+    const blockContent = codeBlockMatch[1].trim();
+    try {
+      return JSON.parse(blockContent);
+    } catch {}
+  }
+
+  // 3. Try parsing clean text directly
+  const clean = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  try {
+    return JSON.parse(clean);
+  } catch {}
+
+  // 4. Balanced curly-brace search for JSON object
+  let depth = 0;
+  let start = -1;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === "{") {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (text[i] === "}") {
+      depth--;
+      if (depth === 0 && start !== -1) {
+        const candidate = text.slice(start, i + 1);
+        try {
+          const parsed = JSON.parse(candidate);
+          if (parsed && typeof parsed === "object" && (parsed.tool || parsed.thought || parsed.action)) {
+            return parsed;
+          }
+        } catch {}
+      }
+    }
+  }
+
+  // 5. Fallback regex match
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    return JSON.parse(jsonMatch[0]);
+  }
+
+  throw new Error("Failed to parse valid action JSON from model output");
 }
 
 export function createCtfService() {
@@ -1260,12 +1326,26 @@ export function createCtfService() {
         throw new Error(`Failed to start container:\n${runRes.stderr || runRes.stdout}`);
       }
 
+      const runStart = Date.now();
       const steps = [];
+      const challengeEvents = [];
       let solved = false;
       let finalFlag = "";
       const cookieJar = new Map();
 
+      const recordSiteEvent = (method, path, status = 200) => {
+        challengeEvents.push({
+          kind: "site",
+          at: new Date().toISOString(),
+          actor: task.id,
+          method: method || "GET",
+          path: path || "/",
+          status: status || 200,
+        });
+      };
+
       const saveTraces = async (wasSolved, flag, wasStopped = false) => {
+        const finishedAt = new Date().toISOString();
         const trajectory = {
           format: "openrind-ctf-trajectory/v1",
           task: {
@@ -1275,12 +1355,12 @@ export function createCtfService() {
             sitePath: task.sitePath,
           },
           model,
-          startedAt: new Date().toISOString(),
+          startedAt: new Date(runStart).toISOString(),
           solved: wasSolved,
           stopped: wasStopped,
           judge: {
             accepted: wasSolved,
-            submittedAt: new Date().toISOString(),
+            submittedAt: finishedAt,
             submission: flag,
           },
           steps,
@@ -1291,7 +1371,7 @@ export function createCtfService() {
           const agentEventsLines = steps.map((s) => JSON.stringify({
             kind: "agent_step",
             number: s.number,
-            at: new Date().toISOString(),
+            at: s.at || new Date().toISOString(),
             thought: s.thought,
             tool: s.tool,
             action: s.action,
@@ -1299,13 +1379,15 @@ export function createCtfService() {
             durationMs: s.durationMs,
           })).join("\n") + "\n";
 
-          const challengeEventsLines = JSON.stringify({
-            kind: "judge",
-            at: new Date().toISOString(),
-            actor: task.id,
-            submission: flag,
-            correct: wasSolved,
-          }) + "\n";
+          const challengeEventsLines = (challengeEvents.length > 0 ? challengeEvents : [
+            {
+              kind: "judge",
+              at: finishedAt,
+              actor: task.id,
+              submission: flag,
+              correct: wasSolved,
+            }
+          ]).map((e) => JSON.stringify(e)).join("\n") + "\n";
 
           // 1. If activeDirectory is set, save in activeDirectory/ctf-traces/
           const targetDir = activeDirectory && existsSync(activeDirectory)
@@ -1420,6 +1502,7 @@ Return only valid JSON matching the schema. Keep thoughts concise (1-2 sentences
         try {
           const initRes = await requestHttpWithCookies(currentUrl, {}, cookieJar);
           currentPageBody = initRes.body;
+          recordSiteEvent("GET", task.sitePath || "/", initRes.status);
         } catch {}
 
         const recon = extractPageRecon(currentPageBody);
@@ -1449,67 +1532,75 @@ Return only valid JSON matching the schema. Keep thoughts concise (1-2 sentences
             history.splice(2, 2);
           }
 
-          let modelAction;
-          try {
-            const requestSignal = activeRunAbort
-              ? AbortSignal.any([activeRunAbort.signal, AbortSignal.timeout(35_000)])
-              : AbortSignal.timeout(35_000);
+          let modelAction = null;
+          const MAX_INFERENCE_ATTEMPTS = 3;
 
-            const rawContent = await callLlmInference({
-              apiKey,
-              isAnthropic: keyInfo.isAnthropic,
-              model: effectiveModel,
-              history,
-              signal: requestSignal,
-            });
-
-            const cleanContent = rawContent.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
-            let parsedAction;
+          for (let attempt = 1; attempt <= MAX_INFERENCE_ATTEMPTS; attempt++) {
+            if (activeRunAbort?.signal?.aborted) break;
             try {
-              parsedAction = JSON.parse(cleanContent);
-            } catch {
-              const jsonMatch = cleanContent.match(/\{[\s\S]*\}/);
-              if (jsonMatch) {
-                parsedAction = JSON.parse(jsonMatch[0]);
+              const requestSignal = activeRunAbort
+                ? AbortSignal.any([activeRunAbort.signal, AbortSignal.timeout(90_000)])
+                : AbortSignal.timeout(90_000);
+
+              const rawContent = await callLlmInference({
+                apiKey,
+                isAnthropic: keyInfo.isAnthropic,
+                model: effectiveModel,
+                history,
+                signal: requestSignal,
+              });
+
+              modelAction = extractActionJson(rawContent);
+              if (modelAction && typeof modelAction === "object") {
+                break;
+              }
+            } catch (err) {
+              if (activeRunAbort?.signal?.aborted) break;
+              const errMsg = String(err.message || "");
+              if (errMsg.includes("available credits") || errMsg.includes("requires more credits") || errMsg.includes("in_flight_budget")) {
+                const creditNotice = `OpenRouter credit budget limit reached for ${effectiveModel}. Please add credits at openrouter.ai/settings/credits or use a lightweight model like GPT-4o Mini or DeepSeek V3.`;
+                const errStep = {
+                  number: turn,
+                  at: new Date(turnStart).toISOString(),
+                  thought: creditNotice,
+                  tool: "error",
+                  action: {},
+                  observation: creditNotice,
+                  durationMs: Date.now() - turnStart,
+                };
+                steps.push(errStep);
+                onStep?.(errStep);
+                return await saveTraces(false, finalFlag, false);
+              }
+
+              if (attempt < MAX_INFERENCE_ATTEMPTS) {
+                history.push({
+                  role: "user",
+                  content: `Your previous response could not be parsed (${errMsg}). Please respond with ONLY a valid, compact JSON object matching the required schema: {"thought": "...", "tool": "browser", "action": "open", "selector": "", "value": "...", "flag": ""}.`,
+                });
+                await new Promise((r) => setTimeout(r, 1000));
               } else {
-                throw new Error("Failed to parse valid action JSON from model output");
+                const turnDuration = Date.now() - turnStart;
+                const errStep = {
+                  number: turn,
+                  at: new Date(turnStart).toISOString(),
+                  thought: `Inference warning: ${errMsg}`,
+                  tool: "retry",
+                  action: {},
+                  observation: `Inference error: ${errMsg}. Retrying next turn...`,
+                  durationMs: turnDuration,
+                };
+                steps.push(errStep);
+                onStep?.(errStep);
+                history.push({
+                  role: "user",
+                  content: `Inference error: ${errMsg}. Please respond with valid JSON matching the schema.`,
+                });
               }
             }
-            modelAction = parsedAction;
-          } catch (err) {
-            if (activeRunAbort?.signal?.aborted) break;
-            const turnDuration = Date.now() - turnStart;
-            const errMsg = String(err.message || "");
-            if (errMsg.includes("available credits") || errMsg.includes("requires more credits") || errMsg.includes("in_flight_budget")) {
-              const creditNotice = `OpenRouter credit budget limit reached for ${effectiveModel}. Please add credits at openrouter.ai/settings/credits or use a lightweight model like GPT-4o Mini or DeepSeek V3.`;
-              const errStep = {
-                number: turn,
-                thought: creditNotice,
-                tool: "error",
-                action: {},
-                observation: creditNotice,
-                durationMs: turnDuration,
-              };
-              steps.push(errStep);
-              onStep?.(errStep);
-              break;
-            }
-            const errStep = {
-              number: turn,
-              thought: `Inference warning: ${err.message}`,
-              tool: "retry",
-              action: {},
-              observation: `Inference error: ${err.message}. Retrying next turn...`,
-              durationMs: turnDuration,
-            };
-            steps.push(errStep);
-            onStep?.(errStep);
-            history.push({
-              role: "user",
-              content: `Your previous response could not be parsed (${err.message}). Please respond with a valid, compact JSON object matching the required schema. Keep thoughts concise (1-2 sentences).`,
-            });
-            continue;
           }
+
+          if (!modelAction) continue;
 
           if (activeRunAbort?.signal?.aborted) break;
 
@@ -1609,6 +1700,7 @@ Return only valid JSON matching the schema. Keep thoughts concise (1-2 sentences
             const turnDuration = Date.now() - turnStart;
             const step = {
               number: turn,
+              at: new Date(turnStart).toISOString(),
               thought,
               tool: "submit",
               action: { flag: flagToSubmit },
@@ -1617,6 +1709,14 @@ Return only valid JSON matching the schema. Keep thoughts concise (1-2 sentences
             };
             steps.push(step);
             onStep?.(step);
+
+            challengeEvents.push({
+              kind: "judge",
+              at: new Date().toISOString(),
+              actor: task.id,
+              submission: flagToSubmit,
+              correct,
+            });
 
             if (correct) {
               solved = true;
@@ -1631,6 +1731,7 @@ Return only valid JSON matching the schema. Keep thoughts concise (1-2 sentences
               let target = targetPath.startsWith("/") ? targetPath : `/${targetPath}`;
               try {
                 const pageRes = await requestHttpWithCookies(`http://127.0.0.1:${hostPort}${target}`, {}, cookieJar);
+                recordSiteEvent("GET", target, pageRes.status);
                 if (pageRes.status === 200 && typeof pageRes.body === "string" && pageRes.body.includes("<")) {
                   currentPageBody = pageRes.body;
                   currentUrl = `http://127.0.0.1:${hostPort}${target}`;
@@ -1640,7 +1741,13 @@ Return only valid JSON matching the schema. Keep thoughts concise (1-2 sentences
                 observation = `Connection failed: ${err.message}`;
               }
             } else if (actionType === "eval") {
-              observation = await executeEvalInContext(targetPath, hostPort, cookieJar, currentPageBody);
+              observation = await executeEvalInContext(
+                targetPath,
+                hostPort,
+                cookieJar,
+                currentPageBody,
+                (method, path, status) => recordSiteEvent(method, path, status)
+              );
             } else if (actionType === "fill") {
               const inputVal = targetPath;
               let handled = false;
@@ -1663,6 +1770,7 @@ Return only valid JSON matching the schema. Keep thoughts concise (1-2 sentences
                       body: `${paramName}=${encodeURIComponent(inputVal)}`,
                     }, cookieJar);
                   }
+                  recordSiteEvent(formMethod, targetUrl, formRes.status);
                   observation = `HTTP ${formRes.status} OK\n${formRes.body.slice(0, 16000)}`;
                   if (formRes.body.includes("<")) {
                     currentPageBody = formRes.body;
@@ -1690,6 +1798,7 @@ Return only valid JSON matching the schema. Keep thoughts concise (1-2 sentences
                 const navTarget = href.startsWith("/") ? href : `/${href}`;
                 try {
                   const navRes = await requestHttpWithCookies(`http://127.0.0.1:${hostPort}${navTarget}`, {}, cookieJar);
+                  recordSiteEvent("GET", navTarget, navRes.status);
                   observation = `Navigated to ${navTarget}:\n${navRes.body.slice(0, 16000)}`;
                   if (navRes.body.includes("<")) {
                     currentPageBody = navRes.body;
@@ -1715,6 +1824,7 @@ Return only valid JSON matching the schema. Keep thoughts concise (1-2 sentences
             const turnDuration = Date.now() - turnStart;
             const step = {
               number: turn,
+              at: new Date(turnStart).toISOString(),
               thought,
               tool: "browser",
               action: {
