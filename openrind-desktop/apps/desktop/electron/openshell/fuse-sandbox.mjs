@@ -141,12 +141,6 @@ credentials:
     required: false
     auth_style: bearer
     header_name: Authorization
-  - name: openrouter_key
-    description: Optional OpenRouter API key for Haloop routing
-    env_vars: [OPENROUTER_API_KEY]
-    required: false
-    auth_style: bearer
-    header_name: x-w8-haloop-openrouter-key
   - name: admin_token
     description: Scoped BYOH admin token for Haloop reward rollouts
     env_vars: [ADMIN_TOKEN, W8_BYOH_ADMIN_TOKEN]
