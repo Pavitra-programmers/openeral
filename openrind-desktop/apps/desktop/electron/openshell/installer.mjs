@@ -251,18 +251,47 @@ async function phaseDistro({ onProgress, signal, rootfsPath }) {
 async function phaseDocker({ onProgress, signal }) {
   onProgress?.({
     phase: "docker",
-    message: "Installing Docker Engine inside the distro...",
+    message: "Verifying Docker Engine inside the distro...",
     percent: 50,
   });
+
+  // Fast path: if Docker is already installed and running, skip apt entirely
+  const probe = await wslRun(
+    [
+      "-d",
+      DISTRO_NAME,
+      "--",
+      "sh",
+      "-c",
+      "command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 && dpkg -s libz3-4 >/dev/null 2>&1",
+    ],
+    { timeout: 10_000, signal },
+  ).catch(() => ({ exitCode: -1 }));
+  if (probe.exitCode === 0) {
+    onProgress?.({
+      phase: "docker",
+      message: "Docker Engine already installed and running.",
+      percent: 65,
+    });
+    return;
+  }
+
   // One bash -c script keeps us to a single wsl.exe round-trip and avoids
   // partial-state failures between apt commands.
   const script = [
     "set -e",
     "export DEBIAN_FRONTEND=noninteractive",
+    "if command -v docker >/dev/null 2>&1; then",
+    "  service docker start || systemctl enable --now docker || true",
+    "fi",
+    "if ! dpkg -s libz3-4 >/dev/null 2>&1; then",
+    "  apt-get update && apt-get install -y libz3-4",
+    "fi",
+    "if docker info >/dev/null 2>&1; then exit 0; fi",
     "apt-get update",
-    "apt-get install -y ca-certificates curl gnupg",
+    "apt-get install -y ca-certificates curl gnupg libz3-4",
     "install -m 0755 -d /etc/apt/keyrings",
-    "curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg",
+    "curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg",
     "chmod a+r /etc/apt/keyrings/docker.gpg",
     'echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list',
     "apt-get update",
@@ -801,57 +830,9 @@ async function phaseImages({ onProgress, signal, rootfsPath }) {
     }
   }
 
-  const candidates = [
-    "ghcr.io/pavitra-programmers/openeral/sandbox:fuse",
-    "ghcr.io/pavitra-programmers/openrind-shell/sandbox:fuse",
-    "ghcr.io/openrind/openrind-shell/sandbox:fuse",
-  ];
-
-  for (const remoteCandidate of candidates) {
-    onProgress?.({
-      phase: "images",
-      message: `Pulling published sandbox image (${remoteCandidate})...`,
-      percent: 50,
-    });
-
-    const pull = await wslRun(
-      [
-        "-d",
-        DISTRO_NAME,
-        "--",
-        "docker",
-        "pull",
-        remoteCandidate,
-      ],
-      { timeout: 10 * 60_000, signal },
-    ).catch(() => ({ exitCode: -1, stdout: "", stderr: "" }));
-
-    if (pull.exitCode === 0) {
-      await wslRun(
-        [
-          "-d",
-          DISTRO_NAME,
-          "--",
-          "docker",
-          "tag",
-          remoteCandidate,
-          "openrind-shell-fuse:local",
-        ],
-        { timeout: 15_000, signal },
-      ).catch(() => {});
-
-      onProgress?.({
-        phase: "images",
-        message: "Sandbox image ready.",
-        percent: 100,
-      });
-      return;
-    }
-  }
-
   onProgress?.({
     phase: "images",
-    message: "Sandbox image setup complete.",
+    message: "Sandbox image pull deferred to sandbox provisioning.",
     percent: 100,
   });
 }

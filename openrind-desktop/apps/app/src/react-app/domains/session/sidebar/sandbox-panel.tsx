@@ -232,6 +232,7 @@ export function SandboxPanel(props: SandboxPanelProps) {
   };
 
   const renderAgentSection = (agentId: "claude" | "openclaw" | "openhands", title: string, color: string, sectionRows: SandboxListRow[]) => {
+    if (sectionRows.length === 0) return null;
     const isExpanded = expandedAgents[agentId];
     return (
       <div className="space-y-1 pb-3">

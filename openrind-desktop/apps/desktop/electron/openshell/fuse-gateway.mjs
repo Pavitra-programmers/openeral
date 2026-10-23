@@ -68,6 +68,32 @@ function runtimeId(runtime) {
 
 // Packaged Windows builds carry the patched binaries inside the imported rootfs.
 async function resolveDistroRuntime(run = wslRun) {
+  // Ensure runtime directory and binaries exist; auto-heal from /usr/bin if needed
+  await run(
+    [
+      "-d",
+      DISTRO_NAME,
+      "--user",
+      "root",
+      "--",
+      "sh",
+      "-c",
+      `if [ ! -x ${shellQuote(`${RUNTIME_DIR}/openshell`)} ] && command -v openshell >/dev/null 2>&1; then ` +
+        `mkdir -p ${shellQuote(RUNTIME_DIR)} && ` +
+        `(cp -p "$(which openshell)" ${shellQuote(`${RUNTIME_DIR}/openshell`)} 2>/dev/null || ln -sf "$(which openshell)" ${shellQuote(`${RUNTIME_DIR}/openshell`)}); ` +
+        `if command -v openshell-gateway >/dev/null 2>&1; then ` +
+          `(cp -p "$(which openshell-gateway)" ${shellQuote(`${RUNTIME_DIR}/openshell-gateway`)} 2>/dev/null || ln -sf "$(which openshell-gateway)" ${shellQuote(`${RUNTIME_DIR}/openshell-gateway`)}); ` +
+        `fi; ` +
+        `if [ ! -f ${shellQuote(`${RUNTIME_DIR}/openshell-sandbox`)} ]; then ` +
+          `ln -sf ${shellQuote(`${RUNTIME_DIR}/openshell`)} ${shellQuote(`${RUNTIME_DIR}/openshell-sandbox`)}; ` +
+        `fi; ` +
+        `printf 'bundled-fuse-v1' > ${shellQuote(`${RUNTIME_DIR}/source-id`)} && ` +
+        `chmod 0755 ${shellQuote(RUNTIME_DIR)}/* 2>/dev/null || true; ` +
+      `fi`,
+    ],
+    { timeout: 15_000 },
+  ).catch(() => {});
+
   const result = await run(
     ["-d", DISTRO_NAME, "--", "sh", "-c", RUNTIME_NAMES.map((name) =>
       `test -x ${shellQuote(`${RUNTIME_DIR}/${name}`)}`).join(" && ") +
@@ -136,7 +162,6 @@ Environment=HOME=/home/banker
 ExecStart=${RUNTIME_DIR}/openshell-gateway --config ${STATE_DIR}/gateway.toml --db-url sqlite:${STATE_DIR}/gateway.db?mode=rwc
 Restart=always
 RestartSec=3
-UMask=0077
 
 [Install]
 WantedBy=multi-user.target
@@ -148,10 +173,9 @@ async function gatewayInfo(runtime, endpoint) {
     shellQuote(toWslPath(runtime.cli)),
     "--gateway-endpoint",
     shellQuote(endpoint),
-    "gateway",
-    "info",
+    "status",
   ].join(" ");
-  return wslRun(
+  const result = await wslRun(
     ["-d", DISTRO_NAME, "--", "bash", "-lc", `timeout 8 ${command}`],
     { timeout: 12_000 },
   ).catch((error) => ({
@@ -159,6 +183,23 @@ async function gatewayInfo(runtime, endpoint) {
     stdout: "",
     stderr: error instanceof Error ? error.message : String(error),
   }));
+
+  const clean = `${result.stdout}\n${result.stderr}`.replace(
+    /\x1b\[[0-9;]*[a-zA-Z]/g,
+    "",
+  );
+  if (
+    result.exitCode === 0 &&
+    (/Status:\s*(?:Connected|Ready|ok)/i.test(clean) ||
+      /Connected|Ready/i.test(clean))
+  ) {
+    return { exitCode: 0, stdout: result.stdout, stderr: result.stderr };
+  }
+  return {
+    exitCode: -1,
+    stdout: result.stdout,
+    stderr: result.stderr || clean.trim() || "Gateway on 18770 is not connected",
+  };
 }
 
 async function provisionManagedGateway(runtime) {
@@ -170,16 +211,21 @@ async function provisionManagedGateway(runtime) {
   const script = [
     "set -euo pipefail",
     "umask 077",
+    "if ! dpkg -s libz3-4 >/dev/null 2>&1; then",
+    "  (apt-get update && apt-get install -y libz3-4) || true",
+    "fi",
     `install -d -m 0755 -o root -g root ${shellQuote(RUNTIME_DIR)}`,
     `install -d -m 0700 -o banker -g banker ${shellQuote(STATE_DIR)} ${shellQuote(`${STATE_DIR}/jwt`)}`,
     "changed=0",
-    `if [ ! -f ${shellQuote(`${RUNTIME_DIR}/openshell`)} ] || ! cmp -s ${shellQuote(source.openshell)} ${shellQuote(`${RUNTIME_DIR}/openshell`)}; then install -m 0755 -o root -g root ${shellQuote(source.openshell)} ${shellQuote(`${RUNTIME_DIR}/openshell`)}; changed=1; fi`,
-    `if [ ! -f ${shellQuote(`${RUNTIME_DIR}/openshell-gateway`)} ] || ! cmp -s ${shellQuote(source["openshell-gateway"])} ${shellQuote(`${RUNTIME_DIR}/openshell-gateway`)}; then install -m 0755 -o root -g root ${shellQuote(source["openshell-gateway"])} ${shellQuote(`${RUNTIME_DIR}/openshell-gateway`)}; changed=1; fi`,
-    `if [ ! -f ${shellQuote(`${RUNTIME_DIR}/openshell-sandbox`)} ] || ! cmp -s ${shellQuote(source["openshell-sandbox"])} ${shellQuote(`${RUNTIME_DIR}/openshell-sandbox`)}; then install -m 0755 -o root -g root ${shellQuote(source["openshell-sandbox"])} ${shellQuote(`${RUNTIME_DIR}/openshell-sandbox`)}; changed=1; fi`,
-    `if [ ! -f ${shellQuote(`${RUNTIME_DIR}/source-id`)} ] || ! grep -Fqx ${shellQuote(sourceId)} ${shellQuote(`${RUNTIME_DIR}/source-id`)}; then`,
-    `  printf '%s' ${shellQuote(sourceId)} > ${shellQuote(`${RUNTIME_DIR}/source-id`)}`,
-    "  changed=1",
-    "fi",
+    `if [ -f ${shellQuote(source.openshell)} ] && [ ${shellQuote(source.openshell)} != ${shellQuote(`${RUNTIME_DIR}/openshell`)} ]; then`,
+    `  if [ ! -f ${shellQuote(`${RUNTIME_DIR}/source-id`)} ] || ! grep -Fqx ${shellQuote(sourceId)} ${shellQuote(`${RUNTIME_DIR}/source-id`)}; then`,
+    `    install -m 0755 -o root -g root ${shellQuote(source.openshell)} ${shellQuote(`${RUNTIME_DIR}/openshell`)}`,
+    `    install -m 0755 -o root -g root ${shellQuote(source["openshell-gateway"])} ${shellQuote(`${RUNTIME_DIR}/openshell-gateway`)}`,
+    `    install -m 0755 -o root -g root ${shellQuote(source["openshell-sandbox"])} ${shellQuote(`${RUNTIME_DIR}/openshell-sandbox`)}`,
+    `    printf '%s' ${shellQuote(sourceId)} > ${shellQuote(`${RUNTIME_DIR}/source-id`)}`,
+    `    changed=1`,
+    `  fi`,
+    `fi`,
     `if [ ! -s ${shellQuote(`${STATE_DIR}/jwt/signing.pem`)} ]; then`,
     `  openssl genpkey -algorithm ED25519 -out ${shellQuote(`${STATE_DIR}/jwt/signing.pem`)}`,
     `  openssl pkey -in ${shellQuote(`${STATE_DIR}/jwt/signing.pem`)} -pubout -out ${shellQuote(`${STATE_DIR}/jwt/public.pem`)}`,
@@ -187,19 +233,25 @@ async function provisionManagedGateway(runtime) {
     "fi",
     `printf '%s' ${shellQuote(gatewayToml(runtime))} > ${shellQuote(configPath)}`,
     `printf '%s' ${shellQuote(systemdUnit())} > ${shellQuote(SERVICE_PATH)}`,
-    `chown -R banker:banker ${shellQuote(STATE_DIR)}`,
-    `chmod 777 ${shellQuote(STATE_DIR)}`,
+    `chown -R banker:banker /home/banker/.local ${shellQuote(STATE_DIR)}`,
+    `chmod 777 /home/banker/.local /home/banker/.local/state ${shellQuote(STATE_DIR)}`,
+    `chmod 666 ${shellQuote(`${STATE_DIR}/gateway.db`)}* 2>/dev/null || true`,
     `chmod 600 ${shellQuote(configPath)} ${shellQuote(`${STATE_DIR}/jwt/signing.pem`)}`,
+    `:> ${shellQuote(`${STATE_DIR}/gateway.log`)}`,
     "service docker start 2>/dev/null || systemctl start docker 2>/dev/null || true",
     "chmod 666 /var/run/docker.sock 2>/dev/null || true",
     "systemctl daemon-reload 2>/dev/null || true",
     `systemctl enable ${shellQuote(SERVICE_NAME)} 2>/dev/null || true`,
     `if [ "$changed" -eq 1 ]; then systemctl restart ${shellQuote(SERVICE_NAME)} 2>/dev/null || true; else systemctl start ${shellQuote(SERVICE_NAME)} 2>/dev/null || true; fi`,
-    `if ! pgrep -f openshell-gateway >/dev/null 2>&1; then`,
-    `  (nohup ${RUNTIME_DIR}/openshell-gateway --config ${STATE_DIR}/gateway.toml --db-url sqlite:${STATE_DIR}/gateway.db?mode=rwc >${STATE_DIR}/gateway.log 2>&1 &)`,
+    `if ! (exec 3<>/dev/tcp/127.0.0.1/18770) 2>/dev/null; then`,
+    `  su - banker -c 'nohup ${RUNTIME_DIR}/openshell-gateway --config ${STATE_DIR}/gateway.toml --db-url sqlite:${STATE_DIR}/gateway.db?mode=rwc >${STATE_DIR}/gateway.log 2>&1 &'`,
     `  disown -a 2>/dev/null || true`,
     `fi`,
-    "sleep 2",
+    "sleep 1",
+    `if [ -f ${shellQuote(`${STATE_DIR}/haloop-anthropic.yaml`)} ]; then`,
+    `  ${RUNTIME_DIR}/openshell --gateway-endpoint http://127.0.0.1:18770 provider profile import --file ${shellQuote(`${STATE_DIR}/haloop-anthropic.yaml`)} 2>/dev/null || true`,
+    `fi`,
+    "sleep 1",
   ].join("\n");
 
   const result = await wslRun(
@@ -241,14 +293,11 @@ export async function ensureManagedFuseGateway({ onProgress } = {}) {
     startupPromise = (async () => {
       await ensureDistroRunning();
       let runtime;
-      if (process.resourcesPath && !process.env.OPENRIND_DESKTOP_FUSE_RUNTIME_DIR) {
+      try {
+        runtime = resolveManagedFuseRuntime();
+      } catch (error) {
+        if (process.env.OPENRIND_DESKTOP_FUSE_RUNTIME_DIR) throw error;
         runtime = await resolveDistroRuntime();
-      } else {
-        try { runtime = resolveManagedFuseRuntime(); }
-        catch (error) {
-          if (process.env.OPENRIND_DESKTOP_FUSE_RUNTIME_DIR) throw error;
-          runtime = await resolveDistroRuntime();
-        }
       }
       const endpoint = resolvedEndpoint();
       activateRuntime(runtime, endpoint);
@@ -262,7 +311,7 @@ export async function ensureManagedFuseGateway({ onProgress } = {}) {
           ["-d", DISTRO_NAME, "--", "sh", "-c", `cat ${RUNTIME_DIR}/source-id 2>/dev/null || true`],
           { timeout: 5000 }
         ).catch(() => null);
-        if (checkInstall && checkInstall.exitCode === 0 && (checkInstall.stdout.trim() === sourceId || checkInstall.stdout.trim().length > 0)) {
+        if (checkInstall && checkInstall.exitCode === 0 && checkInstall.stdout.trim() === sourceId) {
           upToDate = true;
         }
       }
