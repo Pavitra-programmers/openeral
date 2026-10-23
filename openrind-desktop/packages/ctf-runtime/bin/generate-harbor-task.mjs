@@ -703,8 +703,12 @@ export async function buildHarborTaskFilesFromCtf(ctfTrajectory) {
 
 /**
  * Main export function: reads trajectory and writes a complete Harbor archive or directory.
+ * @param {Object} options
+ * @param {any} options.trajectory
+ * @param {string} [options.outPath]
+ * @param {string} [options.outDir]
  */
-export async function generateHarborTaskFromTrajectory({ trajectory, outPath, outDir }) {
+export async function generateHarborTaskFromTrajectory({ trajectory, outPath = undefined, outDir = undefined }) {
   if (!trajectory || typeof trajectory !== "object") {
     throw new Error("Invalid trajectory data.");
   }

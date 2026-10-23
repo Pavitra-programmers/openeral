@@ -1896,7 +1896,7 @@ Return only valid JSON matching the schema. Keep thoughts concise (1-2 sentences
       const trace = await this.getTrace(taskId);
       if (!trace) throw new Error(`No trajectory found for task ${taskId}. Please run the agent first.`);
 
-      return generateHarborTaskFromTrajectory({ trajectory: trace, outPath });
+      return generateHarborTaskFromTrajectory({ trajectory: trace, outPath, outDir: undefined });
     },
 
     async loadTraceBundle(taskId) {
