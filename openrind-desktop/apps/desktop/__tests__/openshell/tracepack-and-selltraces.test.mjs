@@ -69,6 +69,8 @@ test("TracePack builder creates canonical lossless archive structure", () => {
   assert.ok(filePaths.includes("tracepack/otlp/traces.json"));
   assert.ok(filePaths.includes("tracepack/otlp/logs.json"));
   assert.ok(filePaths.includes("tracepack/artifacts/manifest.json"));
+  assert.ok(filePaths.includes("tracepack/provenance/environment.json"));
+  assert.ok(filePaths.includes("tracepack/receipts/run.json"));
 
   // Verify conversation.jsonl format
   const convFile = files.find((f) => f.path === "tracepack/conversation.jsonl");
@@ -115,11 +117,14 @@ test("SellTraces projector maintains invariant: no synthesized tool_calls", () =
     scrubPii: true,
   });
 
-  assert.equal(sellTracesJson.source, "openrind-ctf");
+  assert.equal(sellTracesJson.source, "local_trace_index");
   assert.equal(sellTracesJson.sourceId, "flag-command");
   assert.equal(sellTracesJson.model, "openai/gpt-4o");
-  assert.equal(sellTracesJson.metadata.outcome, "solved");
+  assert.ok(sellTracesJson.originalHash);
+  assert.ok(sellTracesJson.environment);
+  assert.ok(Array.isArray(sellTracesJson.toolsAvailable));
   assert.ok(Array.isArray(sellTracesJson.messages));
+  assert.ok(sellTracesJson.messages[0].tokenCount > 0);
 
   // Assistant messages must NOT be converted to fake provider tool_call blocks
   const assistantMsgs = sellTracesJson.messages.filter((m) => m.role === "assistant");

@@ -308,6 +308,12 @@ export function buildTracePackFiles({
       title: task.title || taskId,
       category: task.category || "web",
     },
+    profiles: [
+      "model-context/v1",
+      "agent-execution/v1",
+      "browser-ctf/v1",
+      "task-verification/v1",
+    ],
     model: trajectory.model || "unknown",
     capture: {
       complete: isSealed,
@@ -355,6 +361,38 @@ export function buildTracePackFiles({
   files.push({
     path: "tracepack/artifacts/manifest.json",
     content: JSON.stringify(artifactsMap, null, 2),
+  });
+
+  files.push({
+    path: "tracepack/provenance/environment.json",
+    content: JSON.stringify(
+      {
+        platform: process.platform,
+        arch: process.arch,
+        node_version: process.version,
+        runtime: "electron-main",
+        captured_at: new Date().toISOString(),
+        task_id: taskId,
+      },
+      null,
+      2
+    ),
+  });
+
+  files.push({
+    path: "tracepack/receipts/run.json",
+    content: JSON.stringify(
+      {
+        run_id: traceId,
+        trace_id: traceId,
+        status: isSealed ? "sealed_complete" : "incomplete",
+        sealed_at: new Date().toISOString(),
+        event_count: eventLines.length,
+        artifact_count: Object.keys(artifactsMap).length,
+      },
+      null,
+      2
+    ),
   });
 
   return { files, manifest };

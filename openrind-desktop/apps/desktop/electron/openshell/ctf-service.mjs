@@ -1723,6 +1723,7 @@ Return only valid JSON matching the schema. Keep thoughts concise (1-2 sentences
                 value: targetPath,
               },
               observation,
+              rawObservation: currentPageBody || observation,
               durationMs: turnDuration,
             };
             steps.push(step);

@@ -74,6 +74,8 @@ export function projectToSellTraces({
   const startedAt = trajectory.startedAt || new Date().toISOString();
   const traceId = trajectory.runId || trajectory.id || `${taskId}-${startedAt}`;
   const isComplete = Boolean(trajectory.solved || trajectory.judge || trajectory.challengeEventExport?.complete);
+  const sessionHash = createHash("sha256").update(String(traceId)).digest("hex").slice(0, 12);
+  const sessionId = `${taskId}:${sessionHash}`;
 
   const messages = [];
   const piiFindingsMap = new Map();
@@ -89,19 +91,25 @@ export function projectToSellTraces({
 
   // 1. Initial System Message
   const systemText = `You are an Openrind CTF browser agent. Target: ${task.title || taskId}. ${task.description || ""}`;
+  const systemTokenCount = Math.max(1, Math.ceil(Buffer.byteLength(systemText, "utf8") / 4));
   messages.push({
     position: position++,
     role: "system",
     content: trackPii(systemText),
+    tokenCount: systemTokenCount,
+    createdAt: startedAt,
     timestamp: startedAt,
   });
 
   // 2. Initial User Message
   const userPrompt = `Solve the challenge: ${task.title || taskId}.`;
+  const userPromptTokens = Math.max(1, Math.ceil(Buffer.byteLength(userPrompt, "utf8") / 4));
   messages.push({
     position: position++,
     role: "user",
     content: trackPii(userPrompt),
+    tokenCount: userPromptTokens,
+    createdAt: startedAt,
     timestamp: startedAt,
   });
 
@@ -109,6 +117,7 @@ export function projectToSellTraces({
   // DO NOT invent tool_call structure. Keep assistant JSON action string as content.
   const steps = Array.isArray(trajectory.steps) ? trajectory.steps : [];
   let truncatedCount = 0;
+  const maxMessageLength = 16384;
 
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
@@ -123,38 +132,67 @@ export function projectToSellTraces({
       value: step.action?.value || "",
       flag: step.action?.flag || "",
     });
+    const assistantTokens = Math.max(1, Math.ceil(Buffer.byteLength(assistantContent, "utf8") / 4));
 
     messages.push({
       position: position++,
       role: "assistant",
       content: trackPii(assistantContent),
+      tokenCount: assistantTokens,
+      createdAt: stepTime,
       timestamp: stepTime,
     });
 
     // User observation message
-    let observationText = String(step.observation ?? "");
-    if (observationText.length > 8192) {
-      observationText = observationText.slice(0, 8192) + "\n...[TRUNCATED IN PROJECTION VIEW]";
+    let rawObs = String(step.rawObservation || step.observation || "");
+    let obsText = rawObs;
+    let isTruncated = false;
+
+    if (obsText.length > maxMessageLength) {
+      const omittedChars = obsText.length - maxMessageLength;
+      obsText = obsText.slice(0, maxMessageLength) + `\n[selltraces truncated ${omittedChars} characters]`;
+      isTruncated = true;
       truncatedCount++;
     }
+    const obsTokens = Math.max(1, Math.ceil(Buffer.byteLength(obsText, "utf8") / 4));
 
     messages.push({
       position: position++,
       role: "user",
-      content: trackPii(observationText),
+      content: trackPii(obsText),
+      tokenCount: obsTokens,
+      ...(isTruncated ? { truncated: true } : {}),
+      createdAt: stepTime,
       timestamp: stepTime,
     });
   }
 
+  // Compute content-level deduplication hash (originalHash)
+  const contentForHash = messages.map((m) => `${m.role}:${m.content}`).join("\n");
+  const originalHash = createHash("sha256").update(contentForHash, "utf8").digest("hex");
+
   // 4. Construct SellTraces Trace Envelope
-  const sellTracesJson = {
-    source: "openrind-ctf",
+  const traceItem = {
+    source: "local_trace_index",
     sourceId: taskId,
     conversationId: traceId,
-    sessionId: `${taskId}:${String(traceId).slice(0, 12)}`,
+    sessionId,
     createTime: startedAt,
+    createdAt: startedAt,
     model: trajectory.model || "unknown",
+    originalHash,
     messages,
+    toolsAvailable: [
+      { name: "browser", description: "Chromium automation tool (open, snapshot, click, fill, eval)" },
+      { name: "submit", description: "Submit verified flag to challenge judge" },
+    ],
+    environment: {
+      os: process.platform === "win32" ? "windows" : process.platform,
+      arch: process.arch,
+      shell: "bash",
+      sandbox: true,
+      taskCategory: task.category || "web",
+    },
     metadata: {
       task: {
         id: taskId,
@@ -174,6 +212,11 @@ export function projectToSellTraces({
           }
         : null,
     },
+  };
+
+  const sellTracesJson = {
+    ...traceItem,
+    traces: [traceItem],
   };
 
   // 5. Build Projection Report

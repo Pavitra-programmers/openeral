@@ -4,11 +4,15 @@ import {
   AlertTriangle,
   Anchor,
   Archive,
+  ArrowUpRight,
   Check,
+  CheckCircle2,
   ChevronDown,
   Copy,
   FileJson,
+  FileText,
   Loader2,
+  Lock,
   Play,
   Square,
   X,
@@ -117,8 +121,29 @@ export function CtfSurface(props: CtfSurfaceProps) {
         setStatusMessage(`Status: ${err?.message || String(err)}`);
       }
     };
-
     void loadTrace();
+
+    const checkAndBuildImage = async () => {
+      try {
+        const invoke = (window as any).__OPENRIND_DESKTOP_ELECTRON__?.invokeDesktop;
+        if (!invoke) return;
+        const ready = await invoke("ctfCheckImage", task.id);
+        if (!ready) {
+          setIsBuilding(true);
+          setStatusMessage(`Building Docker image for ${task.title}...`);
+          try {
+            await invoke("ctfBuildImage", task.id);
+            setStatusMessage(`Image ready for ${task.title}.`);
+            props.onRefreshTasks?.();
+          } catch (buildErr: any) {
+            setStatusMessage(`Image build failed: ${buildErr?.message || String(buildErr)}`);
+          } finally {
+            setIsBuilding(false);
+          }
+        }
+      } catch {}
+    };
+    void checkAndBuildImage();
 
     const checkProvider = async () => {
       try {
@@ -625,91 +650,152 @@ export function CtfSurface(props: CtfSurfaceProps) {
 
       {/* SellTraces Export & Projection Modal */}
       {sellTracesModalOpen && sellTracesPreview ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 animate-in fade-in duration-150">
-          <div className="flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-[24px] border border-dls-border bg-dls-surface shadow-[var(--dls-shell-shadow)] text-dls-text">
-            <div className="flex items-center justify-between border-b border-dls-border px-6 py-4.5">
-              <div>
-                <h3 className="text-[16px] font-semibold tracking-[-0.2px] text-dls-text">Export SellTraces Projection</h3>
-                <p className="text-[12px] text-dls-secondary mt-0.5">Normalized conversation view with companion projection audit report.</p>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md p-4 animate-in fade-in duration-150">
+          <div className="flex max-h-[90vh] w-full max-w-130 flex-col overflow-hidden rounded-[20px] border border-dls-border bg-dls-surface shadow-2xl text-dls-text">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-dls-border px-6 py-4">
+              <div className="flex items-center gap-3">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-dls-border bg-dls-hover text-indigo-11">
+                  <FileJson size={18} />
+                </div>
+                <div>
+                  <h3 className="text-[15px] font-semibold tracking-[-0.2px] text-dls-text">Export SellTraces Projection</h3>
+                  <p className="text-[12px] text-dls-secondary mt-0.5">Normalized conversation view with companion audit report</p>
+                </div>
               </div>
               <button
                 type="button"
                 onClick={() => setSellTracesModalOpen(false)}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-full text-dls-secondary hover:bg-dls-hover hover:text-dls-text transition-colors"
+                className="flex h-8 w-8 items-center justify-center rounded-lg text-dls-secondary hover:bg-dls-hover hover:text-dls-text transition-colors"
+                title="Close"
               >
                 <X size={16} />
               </button>
             </div>
 
+            {/* Modal Body */}
             <div className="p-6 space-y-4 overflow-y-auto text-xs">
-              <div className="rounded-[18px] border border-dls-border bg-dls-hover/40 p-4 space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="font-medium text-dls-text text-[13px]">Capture Integrity</span>
-                  <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-[0.14em] ${
-                    sellTracesPreview.report?.capture_complete
-                      ? "bg-emerald-9/15 text-emerald-11 border border-emerald-9/30"
-                      : "bg-amber-9/15 text-amber-11 border border-amber-9/30"
-                  }`}>
-                    {sellTracesPreview.report?.capture_complete ? "Sealed Capture" : "Incomplete Capture"}
-                  </span>
+              {/* Stat Grid Overview */}
+              <div className="grid grid-cols-3 gap-2.5 rounded-xl border border-dls-border bg-dls-hover/30 p-3 text-center">
+                <div className="space-y-0.5 border-r border-dls-border/60 pr-2">
+                  <div className="text-[10px] font-medium uppercase tracking-wider text-dls-secondary">Task</div>
+                  <div className="truncate text-[12px] font-medium text-dls-text" title={task.title || task.id}>
+                    {task.title || task.id}
+                  </div>
                 </div>
-                <div className="text-dls-secondary text-[12px]">
-                  Task: <span className="text-dls-text font-medium">{task.title || task.id}</span> · Messages: <span className="font-mono text-dls-text">{sellTracesPreview.preview?.messages?.length ?? 0}</span>
+                <div className="space-y-0.5 border-r border-dls-border/60 px-2">
+                  <div className="text-[10px] font-medium uppercase tracking-wider text-dls-secondary">Messages</div>
+                  <div className="font-mono text-[12px] font-medium text-dls-text">
+                    {sellTracesPreview.preview?.messages?.length ?? 0} turns
+                  </div>
+                </div>
+                <div className="space-y-0.5 pl-2">
+                  <div className="text-[10px] font-medium uppercase tracking-wider text-dls-secondary">Capture Status</div>
+                  <div className="flex items-center justify-center gap-1.5 text-[11px] font-medium text-emerald-11">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-9 animate-pulse" />
+                    <span>{sellTracesPreview.report?.capture_complete ? "Sealed" : "Partial"}</span>
+                  </div>
                 </div>
               </div>
 
-              <div className="space-y-1.5">
-                <div className="text-[12px] font-medium text-dls-text">Projection Contract:</div>
-                <ul className="space-y-1.5 text-dls-secondary text-[12px] list-disc list-inside rounded-[18px] border border-dls-border bg-dls-surface p-3.5 leading-relaxed">
-                  <li>Assistant JSON preserved verbatim as message content without synthesizing fake tool calls.</li>
-                  <li>Browser CDP operations and DOM snapshots omitted from conversation view (retained in TracePack).</li>
-                  <li>Companion <code className="text-indigo-11 font-mono text-[11px]">*-projection-report.json</code> written alongside export.</li>
-                </ul>
+              {/* Projection Contract */}
+              <div className="space-y-2">
+                <div className="text-[11px] font-medium uppercase tracking-wider text-dls-secondary">
+                  Projection Contract
+                </div>
+                <div className="divide-y divide-dls-border/60 rounded-xl border border-dls-border bg-dls-hover/20 text-[12px]">
+                  <div className="flex items-start gap-3 p-3">
+                    <CheckCircle2 size={15} className="mt-0.5 shrink-0 text-emerald-11" />
+                    <div className="space-y-0.5">
+                      <div className="font-medium text-dls-text">Preserve Message Integrity</div>
+                      <div className="text-[11px] text-dls-secondary leading-normal">
+                        Model action JSON is retained verbatim as assistant text. No fake provider tool calls are synthesized.
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-3 p-3">
+                    <ArrowUpRight size={15} className="mt-0.5 shrink-0 text-indigo-11" />
+                    <div className="space-y-0.5">
+                      <div className="font-medium text-dls-text">Execution Telemetry Omission</div>
+                      <div className="text-[11px] text-dls-secondary leading-normal">
+                        Low-level browser CDP clicks, keyboard fills, and DOM snapshots are omitted from the conversation view and preserved in TracePack.
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-3 p-3">
+                    <FileText size={15} className="mt-0.5 shrink-0 text-amber-11" />
+                    <div className="space-y-0.5">
+                      <div className="font-medium text-dls-text">Companion Audit Report</div>
+                      <div className="text-[11px] text-dls-secondary leading-normal">
+                        Generates an accompanying <span className="font-mono text-indigo-11">*-projection-report.json</span> detailing all schema transformations.
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
 
-              {sellTracesPreview.piiFindings && sellTracesPreview.piiFindings.length > 0 ? (
-                <div className="rounded-[18px] border border-amber-9/30 bg-amber-9/10 p-3.5 text-[12px] text-amber-12 space-y-1">
-                  <div className="font-medium flex items-center gap-1.5">
-                    <AlertTriangle size={14} className="text-amber-11 shrink-0" />
-                    <span>Sensitive Credentials Found:</span>
-                  </div>
-                  <div className="text-[11px] text-amber-11/90 font-mono">
-                    {sellTracesPreview.piiFindings.map((f: any) => `${f.type}: ${f.count}`).join(", ")}
-                  </div>
+              {/* Privacy & Redaction */}
+              <div className="space-y-2">
+                <div className="text-[11px] font-medium uppercase tracking-wider text-dls-secondary">
+                  Privacy & Security
                 </div>
-              ) : null}
+                <label className="flex items-start justify-between gap-3 rounded-xl border border-dls-border bg-dls-hover/30 p-3.5 cursor-pointer hover:bg-dls-hover/50 transition-colors select-none">
+                  <div className="flex items-start gap-3">
+                    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-dls-border bg-dls-hover text-indigo-11 mt-0.5">
+                      <Lock size={14} />
+                    </div>
+                    <div className="space-y-0.5">
+                      <div className="text-[12px] font-medium text-dls-text">Redact credentials and secrets</div>
+                      <div className="text-[11px] text-dls-secondary leading-normal">
+                        Automatically mask API keys, auth tokens, and passwords in the exported conversation
+                      </div>
+                    </div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={scrubPii}
+                    onChange={(e) => setScrubPii(e.target.checked)}
+                    className="mt-1 h-4 w-4 rounded border-dls-border text-indigo-9 focus:ring-0 cursor-pointer"
+                  />
+                </label>
 
-              <label className="flex items-start gap-2.5 cursor-pointer pt-1 select-none">
-                <input
-                  type="checkbox"
-                  checked={scrubPii}
-                  onChange={(e) => setScrubPii(e.target.checked)}
-                  className="mt-0.5 rounded border-dls-border text-dls-accent focus:ring-0"
-                />
-                <div>
-                  <div className="text-[12px] font-medium text-dls-text">Redact credentials and secrets</div>
-                  <div className="text-[11px] text-dls-secondary">Masks API keys and bearer tokens in exported messages</div>
-                </div>
-              </label>
+                {sellTracesPreview.piiFindings && sellTracesPreview.piiFindings.length > 0 ? (
+                  <div className="flex items-start gap-2.5 rounded-xl border border-amber-9/30 bg-amber-9/10 p-3 text-[11px] text-amber-12">
+                    <AlertTriangle size={15} className="shrink-0 text-amber-11 mt-0.5" />
+                    <div>
+                      <span className="font-medium">Detected Credentials: </span>
+                      <span>{sellTracesPreview.piiFindings.map((f: any) => `${f.type} (${f.count})`).join(", ")}</span>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
             </div>
 
-            <div className="flex items-center justify-end gap-3 border-t border-dls-border px-6 py-4 bg-dls-surface">
-              <button
-                type="button"
-                onClick={() => setSellTracesModalOpen(false)}
-                className="inline-flex items-center justify-center rounded-full px-4 py-2 text-[13px] font-medium border border-dls-border bg-dls-surface text-dls-text hover:bg-dls-hover transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleExportSellTraces}
-                disabled={exportBusy}
-                className="inline-flex items-center justify-center gap-1.5 rounded-full px-4 py-2 text-[13px] font-medium bg-dls-accent text-white hover:bg-[var(--dls-accent-hover)] transition-colors shadow-sm disabled:opacity-50"
-              >
-                {exportBusy ? <Loader2 size={13} className="animate-spin" /> : null}
-                <span>Export Projection & Report</span>
-              </button>
+            {/* Modal Footer */}
+            <div className="flex items-center justify-between border-t border-dls-border px-6 py-3.5 bg-dls-surface">
+              <div className="text-[11px] text-dls-secondary font-mono">
+                2 files will be exported
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSellTracesModalOpen(false)}
+                  className="h-8 rounded-lg border border-dls-border bg-dls-hover px-3.5 text-[12px] font-medium text-dls-text hover:bg-gray-3 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleExportSellTraces}
+                  disabled={exportBusy}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-indigo-9 px-4 text-[12px] font-medium text-white shadow-sm hover:bg-indigo-10 transition-colors disabled:opacity-50"
+                >
+                  {exportBusy ? <Loader2 size={12} className="animate-spin" /> : null}
+                  <span>Export Files</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
