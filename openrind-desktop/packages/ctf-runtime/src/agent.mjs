@@ -7,7 +7,7 @@ const ACTIONS = new Set(['snapshot', 'click', 'fill', 'press', 'open', 'eval', '
 const DEFAULT_MAX_AGENT_STEPS = 50;
 const MAX_HISTORY_CHARS = 120_000;
 const MAX_OBSERVATION_CHARS = 12_000;
-const MODEL_MAX_TOKENS = 16_384;
+const MODEL_MAX_TOKENS = 2048;
 const MODEL_TIMEOUT_MS = 240_000;
 const MODEL_MAX_ATTEMPTS = 2;
 
@@ -31,8 +31,20 @@ async function modelTransport(config) {
   if (config.modelMode === 'openrouter-fixture') {
     const key = (await readFile(config.keyPath, 'utf8')).trim();
     if (!key) throw new Error('INVALID_MODEL_CREDENTIAL');
-    return { endpoint: 'https://openrouter.ai/api/v1/chat/completions',
-      headers: [['Authorization', `Bearer ${key}`]] };
+    const baseUrl = process.env.OPENROUTER_BASE_URL ||
+                    process.env.OPENAI_BASE_URL ||
+                    'https://openrouter.ai/api/v1';
+    const endpoint = baseUrl.endsWith('/chat/completions')
+      ? baseUrl
+      : `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
+    return {
+      endpoint,
+      headers: [
+        ['Authorization', `Bearer ${key}`],
+        ['HTTP-Referer', 'https://openrind.com'],
+        ['X-Title', 'Openrind CTF'],
+      ],
+    };
   }
   if (config.modelMode === 'haloop') throw new Error('HALOOP_CTF_PROFILE_NOT_IMPLEMENTED');
   throw new Error('INVALID_MODEL_MODE');

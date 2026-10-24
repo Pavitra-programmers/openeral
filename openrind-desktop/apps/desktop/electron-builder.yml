@@ -128,6 +128,7 @@ win:
       to: openshell
       filter:
         - "*.tar.gz"
+        - "fuse-runtime/*"
   target:
     - nsis
 nsis:

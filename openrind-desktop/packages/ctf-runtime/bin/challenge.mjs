@@ -58,7 +58,8 @@ async function waitForApp() {
 
 await waitForApp();
 const server = createChallengeServer({ task, judgeToken: token, expectedFlag, upstreamPort, record });
-await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
+const host = args.get('--host') ?? '0.0.0.0';
+await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, host, resolve); });
 await record({ kind: 'challenge_ready', at: new Date().toISOString(), task: task.id, port, upstreamPort });
 const close = async () => {
   server.close();

@@ -75,6 +75,11 @@ declare global {
           }) => void,
         ) => () => void;
       };
+      ctf?: {
+        onStep?: (callback: (data: any) => void) => () => void;
+        onStatus?: (callback: (data: any) => void) => () => void;
+        onComplete?: (callback: (data: any) => void) => () => void;
+      };
       meta?: {
         initialDeepLinks?: string[];
         platform?: "darwin" | "linux" | "windows";

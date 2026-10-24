@@ -123,18 +123,124 @@ function normalizeSandboxRows(stdout) {
     .filter((row) => row.name);
 }
 
+const HALOOP_PROFILE_YAML = `id: haloop-anthropic
+display_name: Haloop Anthropic
+description: Required Openrind Shell inference through the host-managed Haloop edge
+category: agent
+inference_capable: true
+credentials:
+  - name: client_token
+    description: Scoped Haloop client token; this is not an upstream provider key
+    env_vars: [HALOOP_CLIENT_TOKEN, ANTHROPIC_API_KEY]
+    required: true
+    auth_style: header
+    header_name: x-api-key
+  - name: bearer_token
+    description: Scoped Haloop Bearer token for OpenAI-compatible completions
+    env_vars: [OPENAI_API_KEY, LLM_API_KEY]
+    required: false
+    auth_style: bearer
+    header_name: Authorization
+  - name: admin_token
+    description: Scoped BYOH admin token for Haloop reward rollouts
+    env_vars: [ADMIN_TOKEN, W8_BYOH_ADMIN_TOKEN]
+    required: false
+    auth_style: header
+    header_name: x-w8-haloop-admin-token
+discovery:
+  credentials: [client_token]
+endpoints:
+  - host: host.openshell.internal
+    port: 8787
+    protocol: rest
+    enforcement: enforce
+    rules:
+      - allow: { method: POST, path: "/v1/messages" }
+      - allow: { method: POST, path: "/v1/messages/count_tokens" }
+      - allow: { method: POST, path: "/v1/chat/completions" }
+      - allow: { method: POST, path: "/chat/completions" }
+  - host: host.openshell.internal
+    port: 8788
+    protocol: rest
+    enforcement: enforce
+    rules:
+      - allow: { method: POST, path: "/v1/messages" }
+      - allow: { method: POST, path: "/v1/messages/count_tokens" }
+      - allow: { method: POST, path: "/v1/chat/completions" }
+      - allow: { method: POST, path: "/chat/completions" }
+  - host: 136.112.93.84
+    port: 8787
+    protocol: rest
+    enforcement: enforce
+    rules:
+      - allow: { method: POST, path: "/v1/messages" }
+      - allow: { method: POST, path: "/v1/messages/count_tokens" }
+      - allow: { method: POST, path: "/v1/chat/completions" }
+      - allow: { method: POST, path: "/chat/completions" }
+      - allow: { method: GET, path: "/health" }
+      - allow: { method: GET, path: "/healthz" }
+  - host: 136.112.93.84
+    port: 8788
+    protocol: rest
+    enforcement: enforce
+    rules:
+      - allow: { method: POST, path: "/v1/messages" }
+      - allow: { method: POST, path: "/v1/messages/count_tokens" }
+      - allow: { method: POST, path: "/v1/chat/completions" }
+      - allow: { method: POST, path: "/chat/completions" }
+      - allow: { method: GET, path: "/health" }
+      - allow: { method: GET, path: "/healthz" }
+binaries: [/usr/bin/claude, /usr/local/bin/claude, /usr/local/bin/claude-real, /usr/local/bin/openrind-openclaw-agent, /usr/local/bin/openrind-openhands-agent]
+`;
+
+export async function ensureHaloopProfileImported() {
+  const profilePath = "/home/banker/.local/state/openrind-desktop/fuse-gateway/haloop-anthropic.yaml";
+  const script = `mkdir -p $(dirname ${shellQuote(profilePath)}) && cat > ${shellQuote(profilePath)}`;
+  await wslRun(
+    ["-d", DISTRO_NAME, "--", "sh", "-c", script],
+    { stdin: HALOOP_PROFILE_YAML, timeout: 10_000 },
+  ).catch(() => null);
+
+  await runFuseOpenShell(
+    ["provider", "profile", "import", "--file", profilePath],
+    { ensure: false, timeout: 15_000 },
+  ).catch(() => null);
+}
+
 function normalizeProviderRows(stdout) {
-  const parsed = parseJson(stdout, []);
-  const rows = Array.isArray(parsed)
-    ? parsed
-    : ["providers", "items", "data", "results"]
-        .map((key) => parsed?.[key])
-        .find(Array.isArray) ?? [];
-  return rows
-    .map((row) => ({
-      name: String(row?.name ?? ""),
-      type: String(row?.type ?? ""),
-    }))
+  const parsed = parseJson(stdout, null);
+  if (parsed !== null) {
+    const rows = Array.isArray(parsed)
+      ? parsed
+      : ["providers", "items", "data", "results"]
+          .map((key) => parsed?.[key])
+          .find(Array.isArray) ?? [];
+    return rows
+      .map((row) => ({
+        name: String(row?.name ?? ""),
+        type: String(row?.type ?? ""),
+      }))
+      .filter((row) => row.name);
+  }
+
+  const lines = String(stdout ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(
+      (line) =>
+        line &&
+        !/^NAME\s+TYPE/i.test(line) &&
+        !/No providers found/i.test(line),
+    );
+
+  return lines
+    .map((line) => {
+      const parts = line.split(/\s+/);
+      return {
+        name: parts[0] || "",
+        type: parts[1] || "",
+      };
+    })
     .filter((row) => row.name);
 }
 
@@ -147,10 +253,22 @@ async function ensureHaloopProvider(providerName, clientToken, onProgress) {
     LLM_API_KEY: clientToken,
     HALOOP_CLIENT_TOKEN: clientToken,
   });
-  const listed = await runFuseOpenShell(
+  let listed = await runFuseOpenShell(
     ["provider", "list", "-o", "json"],
     { ensure: false, env, timeout: 20_000 },
   );
+  if (
+    listed.exitCode !== 0 &&
+    /unexpected argument|unknown|unrecognized/i.test(
+      `${listed.stderr}\n${listed.stdout}`,
+    )
+  ) {
+    listed = await runFuseOpenShell(["provider", "list"], {
+      ensure: false,
+      env,
+      timeout: 20_000,
+    });
+  }
   if (listed.exitCode !== 0) {
     throw new Error(
       `OpenShell Haloop provider lookup failed: ${(listed.stderr || listed.stdout).trim() || `exit ${listed.exitCode}`}`,
@@ -194,11 +312,28 @@ async function ensureHaloopProvider(providerName, clientToken, onProgress) {
       ? "Refreshing the scoped Haloop credential..."
       : "Creating the required Haloop provider...",
   });
-  const configured = await runFuseOpenShell(command, {
+  let configured = await runFuseOpenShell(command, {
     ensure: false,
     env,
     timeout: 20_000,
   });
+  if (
+    configured.exitCode !== 0 &&
+    /unsupported provider type or profile/i.test(
+      `${configured.stderr}\n${configured.stdout}`,
+    )
+  ) {
+    onProgress?.({
+      phase: "provider",
+      message: "Registering the required Haloop provider profile in OpenShell…",
+    });
+    await ensureHaloopProfileImported();
+    configured = await runFuseOpenShell(command, {
+      ensure: false,
+      env,
+      timeout: 20_000,
+    });
+  }
   if (configured.exitCode !== 0) {
     throw new Error(
       `OpenShell Haloop provider configuration failed: ${(configured.stderr || configured.stdout).trim() || `exit ${configured.exitCode}`}`,

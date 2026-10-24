@@ -166,8 +166,8 @@ test("new, resumed, and pop-out sessions require Haloop before connecting", asyn
   );
 });
 
-test("Desktop settings expose required Haloop controls in a dedicated global tab", async () => {
-  const [credentialsPanel, environmentView, haloopView, settingsPage, locale, state, route, main] = await Promise.all([
+test("Desktop settings clean up legacy gateway and Haloop tabs", async () => {
+  const [credentialsPanel, environmentView, settingsPage, locale, route, main] = await Promise.all([
     source(
       "openrind-desktop/apps/app/src/react-app/domains/settings/pages/openrind-shell-credentials-panel.tsx",
     ),
@@ -175,15 +175,9 @@ test("Desktop settings expose required Haloop controls in a dedicated global tab
       "openrind-desktop/apps/app/src/react-app/domains/settings/pages/environment-view.tsx",
     ),
     source(
-      "openrind-desktop/apps/app/src/react-app/domains/settings/pages/haloop-view.tsx",
-    ),
-    source(
       "openrind-desktop/apps/app/src/react-app/domains/settings/shell/settings-page.tsx",
     ),
     source("openrind-desktop/apps/app/src/i18n/locales/en.ts"),
-    source(
-      "openrind-desktop/apps/app/src/react-app/domains/settings/state/openshell-state.ts",
-    ),
     source("openrind-desktop/apps/app/src/react-app/shell/settings-route.tsx"),
     source("openrind-desktop/apps/desktop/electron/main.mjs"),
   ]);
@@ -199,44 +193,14 @@ test("Desktop settings expose required Haloop controls in a dedicated global tab
   }
   assert.match(locale, /The required Haloop edge needs an upstream Anthropic API key/);
   assert.doesNotMatch(environmentView, /Haloop inference route|Restart Haloop|Rotate token/);
-  assert.match(settingsPage, /\["billing", "sandbox", "haloop", "appearance", "environment"\]/);
-  assert.match(route, /case "haloop":/);
-  assert.match(route, /<HaloopView/);
-  assert.match(haloopView, /Haloop inference route/);
-  assert.match(haloopView, /Active route:/);
-  assert.match(haloopView, /Trace collector health:/);
-  assert.match(state, /collectorHealth: string \| null/);
-  assert.match(haloopView, /Trusted Desktop spans:/);
-  assert.match(haloopView, /Trace capture is incomplete/);
-  assert.match(state, /incomplete: number/);
-  assert.match(haloopView, /Last connection error:/);
-  assert.match(haloopView, /Observability & Traces/);
-  assert.match(haloopView, /Open Web Dashboard/);
-  assert.doesNotMatch(haloopView, /Run analysis|Generate eval cases|Download report|Download Harbor dataset/);
-  assert.match(state, /openrindHaloopCaptureStatus/);
-  assert.match(route, /onDownloadTraces/);
-  assert.match(haloopView, /Restart Haloop/);
-  assert.match(state, /invoke<HaloopRuntimeStatus>\("openrindHaloopRestart"\)/);
-  assert.match(route, /onRestart=\{\(\) => openshellState\.restartHaloop\(\)\}/);
-  assert.match(haloopView, /Restore incumbent/);
-  assert.match(haloopView, /Route policy:/);
-  assert.match(haloopView, /Incumbent only/);
-  assert.match(
-    state,
-    /invoke<HaloopIncumbentRollbackResult>\(\s*"openrindHaloopRollbackIncumbent"/,
-  );
-  assert.match(
-    route,
-    /onRestoreIncumbent=\{\(\) => openshellState\.restoreHaloopIncumbent\(\)\}/,
-  );
-  assert.match(haloopView, /Rotate token/);
-  assert.match(haloopView, /external agent terminal must also be closed and relaunched/);
-  assert.match(state, /invoke<HaloopTokenRotationResult>\("openrindHaloopRotateToken"/);
-  assert.match(route, /onRotateToken=\{\(\) => openshellState\.rotateHaloopToken\(\)\}/);
-  assert.doesNotMatch(haloopView, /Disable Haloop|Use Haloop/);
-  assert.match(state, /invoke<HaloopRuntimeStatus>\("openrindHaloopStatus"\)/);
-  assert.match(route, /haloopActive: route\.tab === "haloop"/);
+  assert.match(settingsPage, /\["sandbox", "appearance", "environment"\]/);
+  assert.doesNotMatch(settingsPage, /"billing"|"haloop"/);
+  assert.doesNotMatch(route, /case "haloop":/);
+  assert.doesNotMatch(route, /case "billing":/);
+  assert.doesNotMatch(route, /<HaloopView/);
+  assert.doesNotMatch(route, /<GatewayBillingPanel/);
   assert.match(main, /case "openrindHaloopStatus":/);
+  assert.match(main, /case "openrindHaloopAnalysisStatus":/);
   assert.match(main, /case "openrindHaloopAnalysisStatus":/);
   assert.match(main, /case "openrindHaloopAnalysisStart":/);
   assert.match(main, /case "openrindHaloopAnalysisReport":/);

@@ -581,15 +581,34 @@ async function checkOrphans() {
 /** @returns {Promise<OpenShellComponent>} */
 async function checkOpenShellGateway() {
   try {
-    const json = await wslRun(
+    let json = await wslRun(
       ["-d", DISTRO_NAME, "--", "openshell", "status", "--json"],
       { timeout: 10_000, user: "banker" },
     );
+
+    // Auto-heal if "No gateway configured" is detected
+    const outputText = `${json.stdout}\n${json.stderr}`;
+    if (/No gateway configured/i.test(outputText) || /No gateways found/i.test(outputText)) {
+      await wslRun(
+        ["-d", DISTRO_NAME, "--", "/opt/openrind-desktop/fuse-runtime/openshell", "gateway", "add", "http://127.0.0.1:18770", "--local", "--name", "openshell"],
+        { timeout: 10_000, user: "banker" },
+      ).catch(() => {});
+      await wslRun(
+        ["-d", DISTRO_NAME, "--", "/opt/openrind-desktop/fuse-runtime/openshell", "gateway", "select", "openshell"],
+        { timeout: 10_000, user: "banker" },
+      ).catch(() => {});
+
+      json = await wslRun(
+        ["-d", DISTRO_NAME, "--", "openshell", "status", "--json"],
+        { timeout: 10_000, user: "banker" },
+      ).catch(() => json);
+    }
+
     if (json.exitCode === 0) {
       const parsed = parseJsonSafely(json.stdout);
       if (parsed !== null) {
         const gatewayState = parsed?.gateway?.state ?? parsed?.state ?? null;
-        if (gatewayState === "Ready" || gatewayState === "ok") {
+        if (gatewayState === "Ready" || gatewayState === "ok" || gatewayState === "Connected") {
           return {
             id: "openshell-gateway",
             label: "OpenShell gateway",
@@ -617,7 +636,7 @@ async function checkOpenShellGateway() {
     const errorBlob = `${json.stderr}\n${json.stdout}`;
     const flagDropped = /unexpected argument|unknown|unrecognized/i.test(errorBlob);
     if (flagDropped) {
-      const plain = await wslRun(
+      let plain = await wslRun(
         ["-d", DISTRO_NAME, "--", "openshell", "status"],
         { timeout: 10_000, user: "banker" },
       );

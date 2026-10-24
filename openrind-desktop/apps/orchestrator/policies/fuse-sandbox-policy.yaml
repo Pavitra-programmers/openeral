@@ -80,8 +80,28 @@ network_policies:
           - allow: { method: POST, path: "/v1/messages/count_tokens" }
           - allow: { method: POST, path: "/v1/chat/completions" }
           - allow: { method: POST, path: "/chat/completions" }
+      - host: host.openshell.internal
+        port: 8788
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow: { method: POST, path: "/v1/messages" }
+          - allow: { method: POST, path: "/v1/messages/count_tokens" }
+          - allow: { method: POST, path: "/v1/chat/completions" }
+          - allow: { method: POST, path: "/chat/completions" }
       - host: 136.112.93.84
         port: 8787
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow: { method: POST, path: "/v1/messages" }
+          - allow: { method: POST, path: "/v1/messages/count_tokens" }
+          - allow: { method: POST, path: "/v1/chat/completions" }
+          - allow: { method: POST, path: "/chat/completions" }
+          - allow: { method: GET, path: "/health" }
+          - allow: { method: GET, path: "/healthz" }
+      - host: 136.112.93.84
+        port: 8788
         protocol: rest
         enforcement: enforce
         rules:
@@ -127,8 +147,28 @@ network_policies:
           - allow: { method: POST, path: "/chat/completions" }
           - allow: { method: GET, path: "/health" }
           - allow: { method: GET, path: "/healthz" }
+      - host: 136.112.93.84
+        port: 8788
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow: { method: POST, path: "/v1/messages" }
+          - allow: { method: POST, path: "/v1/messages/count_tokens" }
+          - allow: { method: POST, path: "/v1/chat/completions" }
+          - allow: { method: POST, path: "/chat/completions" }
+          - allow: { method: GET, path: "/health" }
+          - allow: { method: GET, path: "/healthz" }
       - host: host.openshell.internal
         port: 8787
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow: { method: POST, path: "/v1/messages" }
+          - allow: { method: POST, path: "/v1/messages/count_tokens" }
+          - allow: { method: POST, path: "/v1/chat/completions" }
+          - allow: { method: POST, path: "/chat/completions" }
+      - host: host.openshell.internal
+        port: 8788
         protocol: rest
         enforcement: enforce
         rules:

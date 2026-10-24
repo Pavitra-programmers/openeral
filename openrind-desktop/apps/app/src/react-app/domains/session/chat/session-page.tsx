@@ -97,6 +97,8 @@ export type SessionPageProps = {
    *  Used by the Openrind Shell terminal flow to inject xterm.js without
    *  touching the chat-based surface code path. */
   sessionSurfaceOverride?: ReactNode;
+  /** Rendered in the primary sidebar tab (CTF Agent). */
+  ctfSidebar?: ReactNode;
   /** Optional extra sidebar section rendered below the workspace/session
    *  list — the Openrind Shell sandbox list. Kept as an opaque node so the chat
    *  page stays decoupled from the sandbox domain.
@@ -181,8 +183,8 @@ export function SessionPage(props: SessionPageProps) {
     defaultLeftWidth: DEFAULT_WORKSPACE_LEFT_SIDEBAR_WIDTH,
     expandedRightWidth: 280,
   });
-  // Default to sessions when the route does not drive the tab.
-  const sidebarTab: SidebarTab = props.sidebarTab ?? "sessions";
+  // Default to CTF when the route does not drive the tab.
+  const sidebarTab: SidebarTab = props.sidebarTab ?? "ctf";
   useReactRenderWatchdog("SessionPage", {
     selectedSessionId: props.selectedSessionId,
     selectedWorkspaceId: props.selectedWorkspaceId,
@@ -313,7 +315,10 @@ export function SessionPage(props: SessionPageProps) {
             />
           ) : null}
           <div className={`flex min-h-0 flex-1 ${sidebarTab === "sandboxes" ? "hidden" : ""}`}>
-            <WorkspaceSessionList
+            {props.ctfSidebar ? (
+              props.ctfSidebar
+            ) : (
+              <WorkspaceSessionList
               workspaceSessionGroups={props.sidebar.workspaceSessionGroups}
               selectedWorkspaceId={props.sidebar.selectedWorkspaceId}
               developerMode={props.sidebar.developerMode}
@@ -339,6 +344,7 @@ export function SessionPage(props: SessionPageProps) {
               onForgetWorkspace={props.sidebar.onForgetWorkspace}
               onOpenCreateWorkspace={props.sidebar.onOpenCreateWorkspace}
             />
+            )}
           </div>
           {/* Kept mounted while hidden so the sandbox poller, its retry/backoff
               and any open menu survive a tab switch. Remounting on every switch

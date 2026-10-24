@@ -16,7 +16,7 @@ import { t } from "../../../../i18n";
  * would read as a second surface.
  */
 
-export type SidebarTab = "sessions" | "sandboxes";
+export type SidebarTab = "ctf" | "sandboxes";
 
 export type SidebarTabsProps = {
   value: SidebarTab;
@@ -28,7 +28,7 @@ export type SidebarTabsProps = {
 
 export function SidebarTabs(props: SidebarTabsProps) {
   const tabs: Array<{ id: SidebarTab; label: string }> = [
-    { id: "sessions", label: t("sidebar.tab_sessions") },
+    { id: "ctf", label: "CTF Agent" },
     { id: "sandboxes", label: t("sidebar.tab_sandboxes") },
   ];
 

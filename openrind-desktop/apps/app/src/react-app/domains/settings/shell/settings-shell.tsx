@@ -4,7 +4,6 @@ import { X } from "lucide-react";
 
 import { t } from "../../../../i18n";
 import { SettingsPage, getSettingsTabLabel } from "./settings-page";
-import { WorkspaceSessionList } from "../../session/sidebar/workspace-session-list";
 import { SidebarTabs, type SidebarTab } from "../../session/sidebar/sidebar-tabs";
 
 type SettingsPageChromeProps = Omit<ComponentProps<typeof SettingsPage>, "children">;
@@ -13,7 +12,8 @@ export type SettingsShellProps = SettingsPageChromeProps & {
   selectedWorkspaceName: string;
   headerStatus?: string;
   busyHint?: string | null;
-  workspaceSessionListProps: ComponentProps<typeof WorkspaceSessionList>;
+  workspaceSessionListProps?: any;
+  ctfSidebar?: ReactNode;
   /** Full-height sandbox panel, shown behind the same segmented switcher the
    *  session route uses. Settings must not fall back to a different sidebar
    *  than the rest of the app. */
@@ -35,7 +35,7 @@ export type SettingsShellProps = SettingsPageChromeProps & {
 
 export function SettingsShell(props: SettingsShellProps) {
   const title = getSettingsTabLabel(props.activeTab);
-  const sidebarTab: SidebarTab = props.sidebarTab ?? "sessions";
+  const sidebarTab: SidebarTab = props.sidebarTab ?? "ctf";
 
   return (
     <div className="h-[100dvh] min-h-screen w-full overflow-hidden bg-[var(--dls-app-bg)] p-3 text-gray-12 md:p-4">
@@ -52,9 +52,11 @@ export function SettingsShell(props: SettingsShellProps) {
               sandboxWarningCount={props.sandboxWarningCount}
             />
           ) : null}
-          <div className={`flex min-h-0 flex-1 ${sidebarTab === "sandboxes" ? "hidden" : ""}`}>
-            <WorkspaceSessionList {...props.workspaceSessionListProps} />
-          </div>
+          {props.ctfSidebar ? (
+            <div className={`flex min-h-0 flex-1 ${sidebarTab === "sandboxes" ? "hidden" : ""}`}>
+              {props.ctfSidebar}
+            </div>
+          ) : null}
           {/* Kept mounted while hidden so the sandbox poller and its gateway
               warm-up backoff survive a tab switch. */}
           {props.sandboxSidebar ? (
