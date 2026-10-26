@@ -205,7 +205,20 @@ async function browser(session, action, siteUrl, { artifactsDir, stepNumber } = 
       const observation = JSON.stringify({ success: false, error: 'invalid_browser_expression', message: 'eval requires a non-empty expression of at most 8192 characters. No action ran.' });
       return { observation, rawObservation: observation, screenshotArtifact: null };
     }
-    args.push('eval', action.value);
+    const expr = action.value.trim();
+    // Wrap eval expression to await async Promises and intercept window.alert (e.g. for cookie clicker alerts and API fetches)
+    const wrappedExpr = `(async () => {
+      let __alert_msg = null;
+      const __orig_alert = typeof window !== 'undefined' ? window.alert : undefined;
+      if (typeof window !== 'undefined') window.alert = (m) => { __alert_msg = m; };
+      try {
+        const __res = await (eval(${JSON.stringify(expr)}));
+        return __alert_msg ?? __res;
+      } finally {
+        if (typeof window !== 'undefined' && __orig_alert) window.alert = __orig_alert;
+      }
+    })()`;
+    args.push('eval', wrappedExpr);
   }
   const result = await run('agent-browser', args, { timeoutMs: 90_000 });
   const rawObservation = `exit=${result.code}\n${clean(result.stdout)}${result.stderr ? `\n${clean(result.stderr)}` : ''}`;
