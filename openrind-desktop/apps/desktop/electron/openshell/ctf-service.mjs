@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import http from "node:http";
@@ -880,6 +880,51 @@ export function extractActionJson(rawContent) {
   throw new Error("Failed to parse valid action JSON from model output");
 }
 
+async function capturePageScreenshot(url, cookieJar, outputPath) {
+  try {
+    const electron = await import("electron");
+    const BrowserWindow = electron?.BrowserWindow || electron?.default?.BrowserWindow;
+    if (!BrowserWindow) return null;
+    const win = new BrowserWindow({
+      show: false,
+      width: 1280,
+      height: 800,
+      webPreferences: {
+        offscreen: true,
+      },
+    });
+    try {
+      if (cookieJar && cookieJar.size > 0 && win.webContents?.session?.cookies) {
+        for (const [name, value] of cookieJar.entries()) {
+          try {
+            await win.webContents.session.cookies.set({
+              url,
+              name,
+              value,
+            });
+          } catch {}
+        }
+      }
+      await win.loadURL(url, { timeout: 8000 }).catch(() => {});
+      const img = await win.webContents.capturePage();
+      const pngBuffer = img.toPNG();
+      if (pngBuffer && pngBuffer.length > 0) {
+        await writeFile(outputPath, pngBuffer);
+        return {
+          path: outputPath,
+          sha256: createHash("sha256").update(pngBuffer).digest("hex"),
+          size: pngBuffer.length,
+        };
+      }
+    } finally {
+      if (!win.isDestroyed()) win.destroy();
+    }
+  } catch (err) {
+    console.warn("[ctf-service] Screenshot capture failed:", err.message);
+  }
+  return null;
+}
+
 export function createCtfService() {
   let customTasks = [];
   let loadedCustom = false;
@@ -1332,6 +1377,10 @@ export function createCtfService() {
       let solved = false;
       let finalFlag = "";
       const cookieJar = new Map();
+
+      const targetDir = activeDirectory && existsSync(activeDirectory)
+        ? join(activeDirectory, "ctf-traces")
+        : (task.folderPath ? join(dirname(task.folderPath), "ctf-traces") : null);
 
       const recordSiteEvent = (method, path, status = 200) => {
         challengeEvents.push({
@@ -1822,6 +1871,15 @@ Return only valid JSON matching the schema. Keep thoughts concise (1-2 sentences
             }
 
             const turnDuration = Date.now() - turnStart;
+
+            let screenshotArtifact = null;
+            if (targetDir) {
+              const artifactsDir = join(targetDir, "artifacts");
+              await mkdir(artifactsDir, { recursive: true }).catch(() => {});
+              const ssPath = join(artifactsDir, `${task.id}-step-${turn}.png`);
+              screenshotArtifact = await capturePageScreenshot(currentUrl, cookieJar, ssPath);
+            }
+
             const step = {
               number: turn,
               at: new Date(turnStart).toISOString(),
@@ -1834,6 +1892,7 @@ Return only valid JSON matching the schema. Keep thoughts concise (1-2 sentences
               },
               observation,
               rawObservation: currentPageBody || observation,
+              ...(screenshotArtifact ? { screenshot: screenshotArtifact } : {}),
               durationMs: turnDuration,
             };
             steps.push(step);
