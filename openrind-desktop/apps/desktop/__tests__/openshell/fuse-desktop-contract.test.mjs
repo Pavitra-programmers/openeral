@@ -68,7 +68,7 @@ test("Desktop Haloop profiles require synchronous capture through a private coll
   assert.ok((runtime.match(/deny: false/g) ?? []).length >= 2);
   assert.match(runtime, /HALOOP_COLLECTOR_CONTAINER_NAME = "openrind-desktop-haloop-collector"/);
   assert.match(runtime, /HALOOP_NETWORK_NAME = "openrind-desktop-haloop"/);
-  assert.match(runtime, /W8_KEEP_RAW=0/);
+  assert.match(runtime, /W8_KEEP_RAW=1/);
   assert.match(runtime, /requireCollectorFromGateway/);
   assert.match(runtime, /HALOOP_ROUTE_POLICY = "incumbent-only"/);
   assert.match(runtime, /provider: "anthropic"/);

@@ -1061,7 +1061,7 @@ async function createCollectorContainer(run, analysisConfigHash) {
       "--env",
       "W8_DEFAULT_PROJECT=openrind-desktop",
       "--env",
-      "W8_KEEP_RAW=0",
+      "W8_KEEP_RAW=1",
       HALOOP_COLLECTOR_IMAGE,
     ),
     // Docker's CLI opens --env-file before it contacts the daemon. The

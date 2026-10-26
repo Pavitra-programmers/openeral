@@ -60,8 +60,15 @@ under the current run ID.
 
 The custom agent uses the unchanged `agent-browser` Kernel provider. It records
 model requests and failures, browser actions, observations, and judge results.
-Model requests go directly to OpenRouter in this developer test. The CTF agent
-does not use Haloop and does not emit OTLP evidence.
+Model requests go directly to OpenRouter in this developer test. 
+
+**Independent Trace Architecture:**
+The CTF agent **does not use w8-Haloop** and does not emit OTLP evidence over the gateway.
+Instead, it writes all run evidence directly as local JSON/JSONL files (`trajectory.json`,
+`events.jsonl`, `challenge-events.jsonl`) into a local `ctf-traces/` directory within
+the user-selected tasks folder (e.g. `<tasks-dir>/ctf-traces/`). Any browser screenshots
+or DOM artifacts captured for CTF evaluation are stored locally inside this folder.
+CTF trace capture is completely decoupled from the Openrind main app's Haloop gateway.
 
 ## Tests
 
