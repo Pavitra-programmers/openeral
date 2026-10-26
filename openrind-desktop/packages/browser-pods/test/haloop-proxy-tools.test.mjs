@@ -1,40 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-// Tool name mapping algorithm from sandboxes/openeral/haloop-agent-proxy.mjs
-function mapToolNameToClient(name, clientToolNames = []) {
-  if (!name) return name;
-  if (clientToolNames.includes(name)) return name;
-
-  // 1. Try prefixing with mcp__openrind_browser__
-  const mcpPrefixed = `mcp__openrind_browser__${name}`;
-  if (clientToolNames.includes(mcpPrefixed)) return mcpPrefixed;
-
-  // 2. Convert PascalCase / camelCase to snake_case and check with prefix
-  const snake = name.replace(/([A-Z])/g, '_$1').toLowerCase().replace(/^_/, '');
-  const mcpSnake = `mcp__openrind_browser__${snake}`;
-  if (clientToolNames.includes(mcpSnake)) return mcpSnake;
-  if (clientToolNames.includes(snake)) return snake;
-
-  // 3. Extract core action (e.g. "start" from "browser_start" or "BrowserStart")
-  const core = snake.replace(/^(?:mcp__)?(?:openrind_)?(?:browser_)?/, '');
-  const corePrefixed = `mcp__openrind_browser__browser_${core}`;
-  if (clientToolNames.includes(corePrefixed)) return corePrefixed;
-  const coreBrowser = `browser_${core}`;
-  if (clientToolNames.includes(coreBrowser)) return coreBrowser;
-
-  // 4. Try matching case-insensitively
-  const match = clientToolNames.find(t =>
-    t.toLowerCase() === name.toLowerCase() ||
-    t.toLowerCase() === mcpPrefixed.toLowerCase() ||
-    t.toLowerCase() === mcpSnake.toLowerCase() ||
-    t.toLowerCase() === corePrefixed.toLowerCase() ||
-    t.toLowerCase() === coreBrowser.toLowerCase()
-  );
-  if (match) return match;
-
-  return name;
-}
+import { mapToolNameToClient } from '../../../../sandboxes/openeral/haloop-agent-proxy.mjs';
 
 test('mapToolNameToClient returns original name if name already exists in client tools', () => {
   const tools = ['browser_navigate', 'browser_click', 'bash'];

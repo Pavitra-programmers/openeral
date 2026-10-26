@@ -26,6 +26,11 @@ delete/recreate persistence, and a real Claude Code write restored from PostgreS
 Performance gates, upstream acceptance, non-Docker drivers, same-UID hardening, and a
 supervisor-owned deadlock watchdog remain open; the runtime is therefore experimental.
 
+> **Architectural Boundary Note on Trace Capture:**
+> FUSE (`openeral-fused`) is strictly the POSIX filesystem layer for developer workspace files at `/sandbox/work`.
+> It is **NOT** a trace capture engine or audit ledger. File chunks in `_openeral.fs_chunks` are intentionally updated in place as files change, and `_openeral.fs_operations` is strictly an uncertain-commit deduplication table.
+> **Trace capture in Openrind does NOT happen in FUSE.** Trace capture for interactive agents (Claude Code, OpenClaw, OpenHands) is performed entirely by the **w8-Haloop gateway** on the inference path, while CTF benchmark traces are written directly as files into the task's local `ctf-traces/` folder. Code audits and dataset completeness analyzers must evaluate the w8-Haloop collector or CTF runner outputs, NOT the mutable workspace filesystem.
+
 ## 1. Decisions
 
 The implementation must preserve these decisions unless the product owner explicitly

@@ -561,7 +561,7 @@ test("managed lifecycle stages profiles through stdin and requires authenticated
   assert.doesNotMatch(commandText, /--publish 8787:8787/);
   assert.doesNotMatch(commandText, /8788:8788/);
   assert.match(commandText, new RegExp(`--network ${HALOOP_NETWORK_NAME}`));
-  assert.match(commandText, /W8_KEEP_RAW=0/);
+  assert.match(commandText, /W8_KEEP_RAW=1/);
   assert.match(commandText, /collector-data/);
   assert.match(commandText, /analysis\.env/);
   assert.match(commandText, /W8_REPORTS_DIR/);

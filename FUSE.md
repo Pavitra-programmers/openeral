@@ -14,6 +14,8 @@ FUSE-DESIGN.md wins.
 
 ## Executive Verdict
 
+> **Scope Note:** FUSE is exclusively a POSIX filesystem implementation for `/sandbox/work`. It is NOT an audit log or trace recorder. Model context and execution traces are recorded out-of-band by the `w8-haloop` gateway. FUSE chunk overwrites reflect standard mutable filesystem semantics and must not be analyzed as trace collection data loss.
+
 The historical and currently published `:just-bash` runtime is a scoped replication
 system, not a live filesystem. Claude Code uses the kernel filesystem under `/sandbox`;
 a detached Node daemon copies only `.claude`, `.claude.json`, `.openrind-shell`, and

@@ -222,6 +222,23 @@ check capture counters before claiming a trace exists. Desktop cleanup closes
 agents and revokes scoped providers before it removes a sandbox. Use that managed
 cleanup for Desktop-owned resources.
 
+## Trace Architecture: Dual Capture Paths
+
+To avoid architectural confusion, Openrind maintains two distinct, independent trace
+capture paths based on the execution context:
+
+### 1. Managed Sandbox Agents (Claude Code, OpenClaw, OpenHands)
+- **Engine:** Traces are captured live via the **w8-Haloop gateway** and its private collector (`openrind-desktop-haloop-collector`).
+- **Data Flow:** `Agent process` -> `haloop-agent-proxy.mjs` (in-sandbox compatibility proxy) -> `OpenShell egress` -> `w8-Haloop gateway (host.openshell.internal:8787)` -> `Haloop Collector (port 8788)` -> `.traces.jsonl`.
+- **Scope & Gaps:** All model context, tool inputs/outputs, streaming tokens, and execution traces for interactive coding agents are captured here. Gaps in model request/response fidelity or token counts are resolved exclusively at the `haloop-agent-proxy.mjs` and `w8-haloop` gateway layers.
+- **Filesystem Role:** The PostgreSQL FUSE mount (`/sandbox/work`) serves strictly as standard POSIX filesystem storage for project workspace files. It is not an append-only trace database or audit recorder.
+
+### 2. Standalone CTF Agent (`openrind-desktop/packages/ctf-runtime/src`)
+- **Engine:** Completely independent of the w8-Haloop gateway. It does **not** use `w8-haloop` (in `agent.mjs`, `modelMode: 'haloop'` throws `HALOOP_CTF_PROFILE_NOT_IMPLEMENTED`).
+- **Data Flow:** The CTF runner talks directly to upstream model endpoints (e.g., OpenRouter via curl) and directly drives `agent-browser` in Chromium.
+- **Storage:** Traces are written directly to local files (`trajectory.json`, `events.jsonl`, `challenge-events.jsonl`) inside a local `ctf-traces/` folder within the selected tasks workspace directory (e.g., `<tasks-dir>/ctf-traces/`).
+- **Browser Artifacts:** Any browser screenshots or DOM snapshot artifacts for CTF tasks are captured and persisted locally into `ctf-traces/` by `packages/ctf-runtime/src/agent.mjs`. Modifications to `w8-haloop` do not affect the CTF agent, and CTF local file requirements do not dictate FUSE or gateway architecture.
+
 ## Experimental Browser Pods
 
 This is a separate browser runtime, not a new persistence path. Kernel and
