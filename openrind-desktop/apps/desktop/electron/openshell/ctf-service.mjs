@@ -905,7 +905,10 @@ async function capturePageScreenshot(url, cookieJar, outputPath) {
           } catch {}
         }
       }
-      await win.loadURL(url, { timeout: 8000 }).catch(() => {});
+      await Promise.race([
+        win.loadURL(url),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 8000)),
+      ]).catch(() => {});
       const img = await win.webContents.capturePage();
       const pngBuffer = img.toPNG();
       if (pngBuffer && pngBuffer.length > 0) {
