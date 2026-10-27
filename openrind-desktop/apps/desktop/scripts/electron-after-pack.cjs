@@ -62,20 +62,36 @@ async function afterPack(context) {
   for (const base of sidecarBases) {
     const aliasName = `${base}${executableSuffix}`;
     const targetName = `${base}-${triple}${executableSuffix}`;
-    copyExecutableTargetToAlias(sidecarsDir, targetName, aliasName);
-    keep.add(aliasName);
-    keep.add(targetName);
+    const aliasPath = path.join(sidecarsDir, aliasName);
+    const targetPath = path.join(sidecarsDir, targetName);
+
+    if (fs.existsSync(aliasPath)) {
+      keep.add(aliasName);
+      if (fs.existsSync(targetPath) && targetName !== aliasName) {
+        fs.rmSync(targetPath, { force: true });
+      }
+    } else if (fs.existsSync(targetPath)) {
+      fs.renameSync(targetPath, aliasPath);
+      keep.add(aliasName);
+    } else {
+      throw new Error(`Missing packaged sidecar: ${aliasName} (or ${targetName})`);
+    }
   }
 
   const versionsAlias = "versions.json";
   const versionsTarget = `versions.json-${triple}${executableSuffix}`;
+  const versionsAliasPath = path.join(sidecarsDir, versionsAlias);
   const versionsTargetPath = path.join(sidecarsDir, versionsTarget);
-  if (!fs.existsSync(versionsTargetPath)) {
-    throw new Error(`Missing packaged sidecar metadata for target: ${versionsTarget}`);
+
+  if (fs.existsSync(versionsAliasPath)) {
+    keep.add(versionsAlias);
+    if (fs.existsSync(versionsTargetPath) && versionsTarget !== versionsAlias) {
+      fs.rmSync(versionsTargetPath, { force: true });
+    }
+  } else if (fs.existsSync(versionsTargetPath)) {
+    fs.renameSync(versionsTargetPath, versionsAliasPath);
+    keep.add(versionsAlias);
   }
-  fs.copyFileSync(versionsTargetPath, path.join(sidecarsDir, versionsAlias));
-  keep.add(versionsAlias);
-  keep.add(versionsTarget);
 
   for (const entry of fs.readdirSync(sidecarsDir)) {
     if (!keep.has(entry)) {

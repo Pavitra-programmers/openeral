@@ -64,6 +64,7 @@ import {
   toWslPath,
   wslRun,
 } from "./openshell/wsl.mjs";
+import { ensureManagedFuseGateway } from "./openshell/fuse-gateway.mjs";
 import { createCtfService } from "./openshell/ctf-service.mjs";
 
 const ctfService = createCtfService();
@@ -2200,6 +2201,51 @@ async function handleDesktopInvoke(event, command, ...args) {
       };
 
       // Path 0 — managed FUSE gateway service (the primary desktop runtime).
+      try {
+        await ensureDistroRunning();
+        await ensureManagedFuseGateway({ force: true });
+        await wslRun(
+          [
+            "-d",
+            OPENSHELL_DISTRO_NAME,
+            "--user",
+            "banker",
+            "--",
+            "/opt/openrind-desktop/fuse-runtime/openshell",
+            "gateway",
+            "add",
+            "http://127.0.0.1:18770",
+            "--local",
+            "--name",
+            "openshell",
+          ],
+          { timeout: 10_000 },
+        ).catch(() => {});
+        await wslRun(
+          [
+            "-d",
+            OPENSHELL_DISTRO_NAME,
+            "--user",
+            "banker",
+            "--",
+            "/opt/openrind-desktop/fuse-runtime/openshell",
+            "gateway",
+            "select",
+            "openshell",
+          ],
+          { timeout: 10_000 },
+        ).catch(() => {});
+        return {
+          ok: true,
+          recoveredVia: "openrind-desktop-fuse-gateway",
+        };
+      } catch (fuseErr) {
+        attempts.push({
+          label: "ensureManagedFuseGateway",
+          r: { exitCode: -1, stderr: fuseErr instanceof Error ? fuseErr.message : String(fuseErr) },
+        });
+      }
+
       const restartFuse = await wslRun(
         [
           "-d",
@@ -3547,12 +3593,14 @@ function buildApplicationMenu() {
 
   template.push({ role: "editMenu" });
 
+  const isDev = !app.isPackaged || process.env.OPENRIND_DESKTOP_DEVTOOLS === "1";
+
   template.push({
     label: "View",
     submenu: [
       { role: "reload" },
       { role: "forceReload" },
-      { role: "toggleDevTools" },
+      ...(isDev ? [{ role: "toggleDevTools" }] : []),
       { type: "separator" },
       { role: "resetZoom" },
       { role: "zoomIn" },
@@ -3605,6 +3653,7 @@ async function createMainWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      devTools: !app.isPackaged || process.env.OPENRIND_DESKTOP_DEVTOOLS === "1",
     },
   });
 
@@ -3683,8 +3732,17 @@ async function createMainWindow() {
   );
 
   mainWindow.once("ready-to-show", () => {
+    if (app.isPackaged && process.env.OPENRIND_DESKTOP_DEVTOOLS !== "1") {
+      mainWindow?.webContents.closeDevTools();
+    }
     mainWindow?.show();
     flushPendingDeepLinks();
+  });
+
+  mainWindow.webContents.on("devtools-opened", () => {
+    if (app.isPackaged && process.env.OPENRIND_DESKTOP_DEVTOOLS !== "1") {
+      mainWindow?.webContents.closeDevTools();
+    }
   });
 
   mainWindow.on("closed", () => {

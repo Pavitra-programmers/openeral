@@ -106,6 +106,14 @@ RUN chmod 0755 /opt/openrind-desktop/fuse-runtime/openshell \
 # default user to `banker`.
 RUN printf '[boot]\nsystemd=true\n[user]\ndefault=banker\n' > /etc/wsl.conf
 
+# Prune docs, man pages, and caches to keep the exported rootfs minimal.
+RUN rm -rf /var/lib/apt/lists/* \
+        /var/cache/apt/* \
+        /usr/share/doc/* \
+        /usr/share/man/* \
+        /tmp/* \
+        /var/tmp/*
+
 # Sanity-check the binaries the installer expects, so a regression in
 # the upstream OpenShell install script breaks the build here instead
 # of breaking a banker laptop weeks later.
