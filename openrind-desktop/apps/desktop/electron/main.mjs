@@ -3595,19 +3595,26 @@ function buildApplicationMenu() {
 
   const isDev = !app.isPackaged || process.env.OPENRIND_DESKTOP_DEVTOOLS === "1";
 
+  /** @type {import("electron").MenuItemConstructorOptions[]} */
+  const viewSubmenu = [
+    { role: "reload" },
+    { role: "forceReload" },
+  ];
+  if (isDev) {
+    viewSubmenu.push({ role: "toggleDevTools" });
+  }
+  viewSubmenu.push(
+    { type: "separator" },
+    { role: "resetZoom" },
+    { role: "zoomIn" },
+    { role: "zoomOut" },
+    { type: "separator" },
+    { role: "togglefullscreen" },
+  );
+
   template.push({
     label: "View",
-    submenu: [
-      { role: "reload" },
-      { role: "forceReload" },
-      ...(isDev ? [{ role: "toggleDevTools" }] : []),
-      { type: "separator" },
-      { role: "resetZoom" },
-      { role: "zoomIn" },
-      { role: "zoomOut" },
-      { type: "separator" },
-      { role: "togglefullscreen" },
-    ],
+    submenu: viewSubmenu,
   });
 
   template.push({ role: "windowMenu" });
