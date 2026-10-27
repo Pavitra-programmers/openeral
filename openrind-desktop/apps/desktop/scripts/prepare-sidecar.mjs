@@ -232,6 +232,7 @@ const chromeDevtoolsTargetName = chromeDevtoolsTargetTriple
   : null;
 const chromeDevtoolsTargetPath = chromeDevtoolsTargetName ? join(sidecarDir, chromeDevtoolsTargetName) : null;
 const chromeDevtoolsShimPath = resolve(__dirname, "chrome-devtools-mcp-shim.ts");
+const chromeDevtoolsRsPath = resolve(__dirname, "chrome-devtools-mcp-shim.rs");
 
 const readHeader = (filePath, length = 256) => {
   const fd = openSync(filePath, "r");
@@ -598,38 +599,57 @@ if (shouldBuildChromeDevtools) {
     }
   }
 
-  if (!existsSync(chromeDevtoolsShimPath)) {
-    console.error(`Chrome DevTools MCP shim source not found at ${chromeDevtoolsShimPath}`);
-    process.exit(1);
+  let builtWithRustc = false;
+  if (existsSync(chromeDevtoolsRsPath)) {
+    const rustcCheck = spawnSync("rustc", ["--version"], { stdio: "ignore" });
+    if (rustcCheck.status === 0) {
+      console.log("[prepare-sidecar] Compiling lightweight chrome-devtools-mcp shim with rustc...");
+      const rustcResult = spawnSync(
+        "rustc",
+        ["-C", "opt-level=z", "-C", "panic=abort", chromeDevtoolsRsPath, "-o", chromeDevtoolsBuildPath],
+        { stdio: "inherit" },
+      );
+      if (rustcResult.status === 0) {
+        builtWithRustc = true;
+        didBuildChromeDevtools = true;
+      }
+    }
   }
 
-  const relativeChromeDevtoolsBuildPath = relative(__dirname, chromeDevtoolsBuildPath);
-  const chromeDevtoolsArgs = [
-    "build",
-    "--compile",
-    chromeDevtoolsShimPath,
-    "--outfile",
-    relativeChromeDevtoolsBuildPath,
-  ];
-  if (bunTarget) {
-    chromeDevtoolsArgs.push("--target", bunTarget);
-  }
+  if (!builtWithRustc) {
+    if (!existsSync(chromeDevtoolsShimPath)) {
+      console.error(`Chrome DevTools MCP shim source not found at ${chromeDevtoolsShimPath}`);
+      process.exit(1);
+    }
 
-  const result = spawnBun(resolveBunCommand(), chromeDevtoolsArgs, {
-    cwd: __dirname,
-    stdio: "inherit",
-    env: {
-      ...process.env,
-      NODE_ENV: "production",
-      BUN_ENV: "production",
-    },
-  });
-  if (result.status !== 0) {
-    console.error(`[prepare-sidecar] chrome-devtools-mcp build failed: status=${result.status}, error=${result.error}`);
-    process.exit(result.status ?? 1);
-  }
+    const relativeChromeDevtoolsBuildPath = relative(__dirname, chromeDevtoolsBuildPath);
+    const chromeDevtoolsArgs = [
+      "build",
+      "--compile",
+      chromeDevtoolsShimPath,
+      "--outfile",
+      relativeChromeDevtoolsBuildPath,
+    ];
+    if (bunTarget) {
+      chromeDevtoolsArgs.push("--target", bunTarget);
+    }
 
-  didBuildChromeDevtools = true;
+    const result = spawnBun(resolveBunCommand(), chromeDevtoolsArgs, {
+      cwd: __dirname,
+      stdio: "inherit",
+      env: {
+        ...process.env,
+        NODE_ENV: "production",
+        BUN_ENV: "production",
+      },
+    });
+    if (result.status !== 0) {
+      console.error(`[prepare-sidecar] chrome-devtools-mcp build failed: status=${result.status}, error=${result.error}`);
+      process.exit(result.status ?? 1);
+    }
+
+    didBuildChromeDevtools = true;
+  }
 }
 
 if (existsSync(chromeDevtoolsBuildPath)) {

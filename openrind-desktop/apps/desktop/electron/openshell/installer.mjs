@@ -451,10 +451,11 @@ async function bringUpGateway({ onProgress, signal }) {
   });
 
   try {
-    await ensureManagedFuseGateway({ onProgress });
+    await ensureManagedFuseGateway({ onProgress, force: true });
     await registerLocalGateway({ signal, onProgress });
     return;
   } catch (err) {
+    console.warn("[installer] ensureManagedFuseGateway failed:", err);
     // Continue to legacy fallback if needed
   }
 

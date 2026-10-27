@@ -66,33 +66,78 @@ function runtimeId(runtime) {
   }).join("|");
 }
 
-// Packaged Windows builds carry the patched binaries inside the imported rootfs.
+function findHostFuseRuntimeArchive() {
+  const candidates = [];
+  if (process.resourcesPath) {
+    candidates.push(join(process.resourcesPath, "openshell", "fuse-runtime.tar.gz"));
+  }
+  candidates.push(resolve(__dirname, "../../resources/openshell/fuse-runtime.tar.gz"));
+  return candidates.find((p) => existsSync(p)) ?? null;
+}
+
+function findHostFuseRuntimeDir() {
+  const candidates = [];
+  const override = process.env.OPENRIND_DESKTOP_FUSE_RUNTIME_DIR?.trim();
+  if (override) candidates.push(override);
+  if (process.resourcesPath) {
+    candidates.push(join(process.resourcesPath, "openshell", "fuse-runtime"));
+  }
+  candidates.push(resolve(__dirname, "../../resources/openshell/fuse-runtime"));
+  candidates.push(resolve(__dirname, "../../../../../vendor/openshell/target/debug"));
+  candidates.push(resolve(__dirname, "../../../../../vendor/openshell/target/release"));
+  return (
+    candidates.find((dir) => existsSync(dir) && RUNTIME_NAMES.every((name) => existsSync(join(dir, name)))) ?? null
+  );
+}
+
+// Packaged Windows builds carry the patched binaries inside the imported rootfs or bundled archive.
 async function resolveDistroRuntime(run = wslRun) {
-  // Ensure runtime directory and binaries exist; auto-heal from /usr/bin if needed
-  await run(
-    [
-      "-d",
-      DISTRO_NAME,
-      "--user",
-      "root",
-      "--",
-      "sh",
-      "-c",
-      `if [ ! -x ${shellQuote(`${RUNTIME_DIR}/openshell`)} ] && command -v openshell >/dev/null 2>&1; then ` +
-        `mkdir -p ${shellQuote(RUNTIME_DIR)} && ` +
-        `(cp -p "$(which openshell)" ${shellQuote(`${RUNTIME_DIR}/openshell`)} 2>/dev/null || ln -sf "$(which openshell)" ${shellQuote(`${RUNTIME_DIR}/openshell`)}); ` +
-        `if command -v openshell-gateway >/dev/null 2>&1; then ` +
-          `(cp -p "$(which openshell-gateway)" ${shellQuote(`${RUNTIME_DIR}/openshell-gateway`)} 2>/dev/null || ln -sf "$(which openshell-gateway)" ${shellQuote(`${RUNTIME_DIR}/openshell-gateway`)}); ` +
-        `fi; ` +
-        `if [ ! -f ${shellQuote(`${RUNTIME_DIR}/openshell-sandbox`)} ]; then ` +
-          `ln -sf ${shellQuote(`${RUNTIME_DIR}/openshell`)} ${shellQuote(`${RUNTIME_DIR}/openshell-sandbox`)}; ` +
-        `fi; ` +
-        `printf 'bundled-fuse-v1' > ${shellQuote(`${RUNTIME_DIR}/source-id`)} && ` +
-        `chmod 0755 ${shellQuote(RUNTIME_DIR)}/* 2>/dev/null || true; ` +
-      `fi`,
-    ],
-    { timeout: 15_000 },
-  ).catch(() => {});
+  const hostArchive = findHostFuseRuntimeArchive();
+  const hostDir = findHostFuseRuntimeDir();
+
+  if (hostArchive) {
+    const wslArchive = toWslPath(hostArchive);
+    await run(
+      [
+        "-d",
+        DISTRO_NAME,
+        "--user",
+        "root",
+        "--",
+        "sh",
+        "-c",
+        `if [ ! -x ${shellQuote(`${RUNTIME_DIR}/openshell-gateway`)} ] || [ ! -f ${shellQuote(`${RUNTIME_DIR}/source-id`)} ] || (${shellQuote(`${RUNTIME_DIR}/openshell-gateway`)} --version 2>&1 | grep -q '0\\.0\\.45'); then ` +
+          `mkdir -p /opt/openrind-desktop && ` +
+          `tar -xzf ${shellQuote(wslArchive)} -C /opt/openrind-desktop/ 2>/dev/null && ` +
+          `chmod 0755 ${shellQuote(RUNTIME_DIR)}/* 2>/dev/null || true; ` +
+          `printf 'bundled-fuse-v1' > ${shellQuote(`${RUNTIME_DIR}/source-id`)} && ` +
+          `ln -sf ${shellQuote(`${RUNTIME_DIR}/openshell`)} /usr/local/bin/openshell 2>/dev/null || true; ` +
+        `fi`,
+      ],
+      { timeout: 30_000 },
+    ).catch(() => {});
+  } else if (hostDir) {
+    const wslDir = toWslPath(hostDir);
+    await run(
+      [
+        "-d",
+        DISTRO_NAME,
+        "--user",
+        "root",
+        "--",
+        "sh",
+        "-c",
+        `if [ ! -x ${shellQuote(`${RUNTIME_DIR}/openshell-gateway`)} ] || [ ! -f ${shellQuote(`${RUNTIME_DIR}/source-id`)} ] || (${shellQuote(`${RUNTIME_DIR}/openshell-gateway`)} --version 2>&1 | grep -q '0\\.0\\.45'); then ` +
+          `mkdir -p ${shellQuote(RUNTIME_DIR)} && ` +
+          `cp -p ${shellQuote(wslDir)}/* ${shellQuote(RUNTIME_DIR)}/ 2>/dev/null && ` +
+          `chmod 0755 ${shellQuote(RUNTIME_DIR)}/* 2>/dev/null || true; ` +
+          `printf 'bundled-fuse-v1' > ${shellQuote(`${RUNTIME_DIR}/source-id`)} && ` +
+          `ln -sf ${shellQuote(`${RUNTIME_DIR}/openshell`)} /usr/local/bin/openshell 2>/dev/null || true; ` +
+        `fi`,
+      ],
+      { timeout: 30_000 },
+    ).catch(() => {});
+  }
 
   const result = await run(
     ["-d", DISTRO_NAME, "--", "sh", "-c", RUNTIME_NAMES.map((name) =>
@@ -287,8 +332,11 @@ async function waitForGateway(runtime, endpoint) {
  * separate from the stock `openshell-gateway.service`, so the compatibility
  * runtime remains untouched.
  */
-/** @param {{ onProgress?: (progress: {phase: string, message: string}) => void }} options */
-export async function ensureManagedFuseGateway({ onProgress } = {}) {
+/** @param {{ onProgress?: (progress: {phase: string, message: string}) => void, force?: boolean }} options */
+export async function ensureManagedFuseGateway({ onProgress, force = false } = {}) {
+  if (force) {
+    startupPromise = null;
+  }
   if (!startupPromise) {
     startupPromise = (async () => {
       await ensureDistroRunning();
@@ -302,17 +350,18 @@ export async function ensureManagedFuseGateway({ onProgress } = {}) {
       const endpoint = resolvedEndpoint();
       activateRuntime(runtime, endpoint);
 
-      const existing = await gatewayInfo(runtime, endpoint);
-      
       let upToDate = false;
-      if (existing.exitCode === 0) {
-        const sourceId = runtimeId(runtime);
-        const checkInstall = await wslRun(
-          ["-d", DISTRO_NAME, "--", "sh", "-c", `cat ${RUNTIME_DIR}/source-id 2>/dev/null || true`],
-          { timeout: 5000 }
-        ).catch(() => null);
-        if (checkInstall && checkInstall.exitCode === 0 && checkInstall.stdout.trim() === sourceId) {
-          upToDate = true;
+      if (!force) {
+        const existing = await gatewayInfo(runtime, endpoint);
+        if (existing.exitCode === 0) {
+          const sourceId = runtimeId(runtime);
+          const checkInstall = await wslRun(
+            ["-d", DISTRO_NAME, "--", "sh", "-c", `cat ${RUNTIME_DIR}/source-id 2>/dev/null || true`],
+            { timeout: 5000 },
+          ).catch(() => null);
+          if (checkInstall && checkInstall.exitCode === 0 && checkInstall.stdout.trim() === sourceId) {
+            upToDate = true;
+          }
         }
       }
 

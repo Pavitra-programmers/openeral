@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, readdirSync } from "node:fs";
+import { copyFileSync, existsSync, readdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -39,6 +39,14 @@ function run(command, args, cwd, env) {
 }
 
 run(nodeCmd, [resolve(__dirname, "prepare-sidecar.mjs"), "--force", "--outdir", electronSidecarDir], desktopRoot);
+
+const openshellDir = resolve(desktopRoot, "resources", "openshell");
+const fuseRuntimeDir = resolve(openshellDir, "fuse-runtime");
+const fuseRuntimeTar = resolve(openshellDir, "fuse-runtime.tar.gz");
+if (existsSync(fuseRuntimeDir) && !existsSync(fuseRuntimeTar)) {
+  run("tar", ["-czf", fuseRuntimeTar, "-C", openshellDir, "fuse-runtime"], desktopRoot);
+}
+
 // Ensure CTF and Harbor generation scripts are bundled directly in electron/openshell
 copyFileSync(
   resolve(repoRoot, "packages/ctf-runtime/bin/generate-harbor-task.mjs"),
