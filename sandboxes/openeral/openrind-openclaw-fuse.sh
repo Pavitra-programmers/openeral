@@ -80,7 +80,29 @@ if [ -f /opt/openrind-shell/haloop-agent-proxy.mjs ]; then
   export OPENRIND_GATEWAY_BASE_URL="http://127.0.0.1:8785"
   export ANTHROPIC_BASE_URL="http://127.0.0.1:8785"
   if [ -f "$HOME/.openclaw/openclaw.json" ]; then
-    node -e 'try { const f=process.env.HOME+"/.openclaw/openclaw.json"; const fs=require("fs"); const c=JSON.parse(fs.readFileSync(f,"utf8")); if (c?.models?.providers?.["openrind-gateway"]) { c.models.providers["openrind-gateway"].baseUrl="http://127.0.0.1:8785"; fs.writeFileSync(f,JSON.stringify(c,null,2)); } } catch {}' 2>/dev/null || true
+    node -e '
+      try {
+        const fs = require("fs");
+        const p = process.env.HOME + "/.openclaw/openclaw.json";
+        const c = JSON.parse(fs.readFileSync(p, "utf8"));
+        c.models = c.models || {};
+        c.models.providers = c.models.providers || {};
+        const key = process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY || "key";
+        for (const prov of ["openrind-gateway", "openai", "openrouter"]) {
+          c.models.providers[prov] = {
+            baseUrl: "http://127.0.0.1:8785",
+            apiKey: key,
+            api: "anthropic-messages",
+            models: [
+              { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+              { id: "gpt-4o", name: "GPT-4o" },
+              { id: "gpt-5.5", name: "GPT-5.5" }
+            ]
+          };
+        }
+        fs.writeFileSync(p, JSON.stringify(c, null, 2));
+      } catch {}
+    ' 2>/dev/null || true
   fi
 fi
 

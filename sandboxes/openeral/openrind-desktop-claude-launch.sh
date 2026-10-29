@@ -234,20 +234,21 @@ elif [ "${OPENRIND_SHELL_AGENT:-}" = "codex" ]; then
   fi
 
   cat <<'EOF' > "$CODEX_HOME/config.toml"
-model = "gpt-4o"
+model = "openai/gpt-4o"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
+model_provider = "proxy"
 
-[model_providers.openrouter]
-name = "OpenRouter"
-base_url = "https://openrouter.ai/api/v1"
+[model_providers.proxy]
+name = "Openrind Proxy"
+base_url = "http://127.0.0.1:8785/v1"
 wire_api = "responses"
+requires_openai_auth = false
+supports_websockets = false
 EOF
+  cp "$CODEX_HOME/config.toml" "$CODEX_HOME/.codex/config.toml" 2>/dev/null || true
 
-  if [ "${ACTIVE_KEY#sk-or-}" != "$ACTIVE_KEY" ]; then
-    printf 'model_provider = "openrouter"\nopenai_base_url = "https://openrouter.ai/api/v1"\n' >> "$CODEX_HOME/config.toml"
-    export OPENAI_BASE_URL="https://openrouter.ai/api/v1"
-  fi
+  export OPENAI_BASE_URL="http://127.0.0.1:8785/v1"
   export OPENAI_API_KEY="$ACTIVE_KEY"
   export CODEX_API_KEY="$ACTIVE_KEY"
 

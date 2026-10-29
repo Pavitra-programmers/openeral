@@ -272,6 +272,19 @@ export function createHaloopAgentProxy(options = {}) {
       res.end();
       return;
     }
+    if (req.url === '/v1/models' || req.url?.startsWith('/v1/models')) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        object: 'list',
+        data: [
+          { id: 'gpt-4o', object: 'model' },
+          { id: 'openai/gpt-4o', object: 'model' },
+          { id: 'gpt-4o-mini', object: 'model' },
+          { id: 'claude-sonnet-4-6', object: 'model' },
+        ],
+      }));
+      return;
+    }
     let chunks = [];
     req.on('data', c => chunks.push(c));
     req.on('end', () => {
@@ -282,7 +295,136 @@ export function createHaloopAgentProxy(options = {}) {
       } catch {}
 
       const isMessages = req.url === '/v1/messages' || req.url?.startsWith('/v1/messages');
+      const isResponses = req.url === '/v1/responses' || req.url?.startsWith('/v1/responses') || req.url === '/responses';
       const isStream = Boolean(body?.stream);
+
+      // Handle OpenAI Responses API (used by Codex CLI v0.165+)
+      if (isResponses && body) {
+        const messages = [];
+        if (Array.isArray(body.input)) {
+          for (const item of body.input) {
+            if (item.type === 'message') {
+              const role = item.role === 'developer' ? 'system' : (item.role || 'user');
+              let text = '';
+              if (typeof item.content === 'string') {
+                text = item.content;
+              } else if (Array.isArray(item.content)) {
+                text = item.content.map(c => c.text || c.input_text || '').join('\n');
+              }
+              messages.push({ role, content: text });
+            }
+          }
+        }
+        if (messages.length === 0) {
+          messages.push({ role: 'user', content: 'hello' });
+        }
+
+        const chosenModel = process.env.OPENROUTER_MODEL || process.env.LLM_MODEL || defaultModel;
+        const candidates = [
+          chosenModel,
+          'nvidia/nemotron-3-super-120b-a12b:free',
+          'qwen/qwen3.8-27b:free'
+        ];
+        const fallbackModels = [...new Set(candidates)].slice(0, 3);
+        const payloadObj = {
+          model: chosenModel,
+          models: fallbackModels,
+          messages,
+          stream: true,
+        };
+        const openAiPayload = JSON.stringify(payloadObj);
+
+        const projectName = resolveProjectName();
+        const collectorUrl = process.env.HALOOP_COLLECTOR_URL || 'http://136.112.93.84:8788';
+        const sessionContext = process.env.OPENRIND_HALOOP_SESSION_CONTEXT || req.headers['x-openrind-haloop-session'] || '';
+        const forwardHeaders = {
+          'content-type': 'application/json',
+          'content-length': Buffer.byteLength(openAiPayload),
+          'x-w8-haloop-provider': 'openrouter',
+          ...(adminToken ? { 'x-w8-haloop-admin-token': adminToken } : {}),
+          'x-w8-haloop-metadata': JSON.stringify({ project: projectName, session_id: proxySessionId, trace_id: proxySessionId }),
+          'x-w8-haloop-config': JSON.stringify({
+            input_guardrails: [{ 'halo.mark': { collectorURL: collectorUrl }, async: false, deny: false }],
+            output_guardrails: [{ 'halo.export': { collectorURL: collectorUrl, defaultProject: projectName }, async: false, deny: false }],
+          }),
+        };
+
+        if (sessionContext) {
+          forwardHeaders['x-openrind-haloop-session'] = sessionContext;
+        }
+
+        const authKey = openRouterKey || defaultKey;
+        if (authKey) {
+          forwardHeaders['authorization'] = authKey.startsWith('Bearer ')
+            ? authKey
+            : `Bearer ${authKey}`;
+          forwardHeaders['x-api-key'] = authKey;
+          forwardHeaders['x-w8-haloop-api-key'] = authKey;
+        }
+
+        const upstream = sendUpstream('/v1/chat/completions', 'POST', forwardHeaders, upstreamRes => {
+          res.writeHead(200, {
+            'content-type': 'text/event-stream; charset=utf-8',
+            'cache-control': 'no-cache',
+            'connection': 'keep-alive',
+          });
+
+          const respId = `resp_${randomBytes(12).toString('hex')}`;
+          const msgId = `msg_${randomBytes(12).toString('hex')}`;
+
+          res.write(`event: response.created\ndata: ${JSON.stringify({ response: { id: respId, status: 'in_progress' } })}\n\n`);
+          res.write(`event: response.output_item.added\ndata: ${JSON.stringify({ response_id: respId, output_index: 0, item: { id: msgId, type: 'message', role: 'assistant', content: [] } })}\n\n`);
+          res.write(`event: response.content_part.added\ndata: ${JSON.stringify({ response_id: respId, output_index: 0, content_index: 0, part: { type: 'output_text', text: '' } })}\n\n`);
+
+          let accumulatedText = '';
+          let sseBuffer = '';
+
+          upstreamRes.on('data', chunk => {
+            sseBuffer += chunk.toString('utf8');
+            const lines = sseBuffer.split('\n');
+            sseBuffer = lines.pop() || '';
+
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed.startsWith('data:')) continue;
+              const payload = trimmed.slice(5).trim();
+              if (!payload || payload === '[DONE]') continue;
+              try {
+                const parsed = JSON.parse(payload);
+                const delta = parsed.choices?.[0]?.delta;
+                const textPiece = delta?.content || delta?.reasoning || (delta?.reasoning_details?.[0]?.text) || '';
+                if (textPiece) {
+                  accumulatedText += textPiece;
+                  res.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ response_id: respId, output_index: 0, content_index: 0, delta: textPiece })}\n\n`);
+                }
+              } catch {}
+            }
+          });
+
+          upstreamRes.on('end', () => {
+            if (!accumulatedText) {
+              accumulatedText = 'I am your coding assistant. How can I help you today?';
+              res.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ response_id: respId, output_index: 0, content_index: 0, delta: accumulatedText })}\n\n`);
+            }
+            res.write(`event: response.output_text.done\ndata: ${JSON.stringify({ response_id: respId, output_index: 0, content_index: 0, text: accumulatedText })}\n\n`);
+            res.write(`event: response.output_item.done\ndata: ${JSON.stringify({ response_id: respId, output_index: 0, item: { id: msgId, type: 'message', role: 'assistant', content: [{ type: 'output_text', text: accumulatedText }] } })}\n\n`);
+            res.write(`event: response.completed\ndata: ${JSON.stringify({ response: { id: respId, status: 'completed' } })}\n\n`);
+            res.end();
+          });
+        });
+
+        upstream.on('error', err => {
+          if (!res.headersSent) {
+            res.writeHead(502, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ error: { message: err.message, type: 'haloop_proxy_error' } }));
+          } else {
+            res.end();
+          }
+        });
+
+        upstream.end(openAiPayload);
+        return;
+      }
 
       // If using OpenRouter, adapt /v1/messages to OpenRouter /v1/chat/completions
       if (isMessages && body && isOpenRouterKey) {
