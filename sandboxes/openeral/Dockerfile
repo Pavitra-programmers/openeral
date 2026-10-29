@@ -73,6 +73,7 @@ RUN /usr/bin/python3.12 -m venv --copies /opt/openrind-openhands \
 COPY openrind-desktop/packages/browser-pods/packaging/ /opt/openrind/browser/
 RUN node /opt/openrind/browser/install-agent-browser.mjs \
     && chown -R root:root /opt/openrind/browser /usr/local/bin/agent-browser \
+    && ln -sf /usr/local/bin/agent-browser /usr/local/bin/browser \
     && chmod -R a+rX /opt/openrind/browser \
     && chmod 0644 /opt/openrind/browser/*.json
 
