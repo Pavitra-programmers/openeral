@@ -61,7 +61,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl gnupg python3 python3-venv \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
-    && SHARP_IGNORE_GLOBAL_LIBVIPS=1 npm install -g --loglevel=error "openclaw@${OPENCLAW_VERSION}" \
+    && SHARP_IGNORE_GLOBAL_LIBVIPS=1 npm install -g --loglevel=error "openclaw@${OPENCLAW_VERSION}" "@openai/codex@0.165.0" \
     && test -x /usr/bin/openclaw \
     && test -f /usr/lib/node_modules/openclaw/openclaw.mjs \
     && rm -rf /var/lib/apt/lists/*
@@ -155,7 +155,7 @@ RUN chmod 755 /usr/local/bin/openrind-shell-fused /usr/local/bin/claude /usr/loc
     && ln -sf /usr/local/bin/openrind-shell-start /usr/local/bin/openeral-start \
     && ln -sf /opt/openrind-shell/openrind-pty-bridge.py /usr/local/bin/openrind-pty-bridge.py \
     && install -d -o sandbox -g sandbox -m 0700 \
-        /var/lib/openrind-shell/runtime /sandbox/claude-home /sandbox/openclaw-home /sandbox/openhands-home \
+        /var/lib/openrind-shell/runtime /sandbox/claude-home /sandbox/openclaw-home /sandbox/codex-home /sandbox/openhands-home \
         /home/agent /home/agent/.openrind-shell
 
 COPY sandboxes/openeral/policy.yaml /etc/openshell/policy.yaml

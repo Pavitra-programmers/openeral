@@ -132,6 +132,61 @@ if [ "$profile" != "$expected_profile" ]; then
   exit 64
 fi
 
+# Prepare browser pod helper, permissions, and socket relay for ALL agents
+chmod 0644 /opt/openrind/browser/*.json 2>/dev/null || true
+mkdir -p /etc/openrind-browser-pods 2>/dev/null || true
+if [ ! -f /etc/openrind-browser-pods/helper.json ]; then
+  printf '{"brokerOrigin":"http://127.0.0.1:19300","generation":"openrind-desktop"}\n' > /etc/openrind-browser-pods/helper.json
+  chmod 0644 /etc/openrind-browser-pods/helper.json 2>/dev/null || true
+fi
+export AGENT_BROWSER_PROVIDER=kernel
+export KERNEL_ENDPOINT=http://127.0.0.1:19300
+export KERNEL_API_KEY=openrind-compat
+export KERNEL_HEADLESS=true
+export KERNEL_STEALTH=false
+export KERNEL_TIMEOUT_SECONDS=300
+export AGENT_BROWSER_ACTION_POLICY=/opt/openrind/browser/agent-browser-policy.json
+export OPENRIND_BROWSER_PODS_EXPERIMENTAL=1
+export BROWSER_POD_NAME="${BROWSER_POD_NAME:-openrind-browser-pod}"
+export BROWSER_POD_HOST="${BROWSER_POD_HOST:-openrind-browser-pod}"
+export BROWSER_POD_PORT="${BROWSER_POD_PORT:-9222}"
+
+if [ -f /opt/openrind-shell/browser-socket-relay.mjs ] && ! pgrep -f "browser-socket-relay" >/dev/null 2>&1; then
+  /usr/bin/node /opt/openrind-shell/browser-socket-relay.mjs >/dev/null 2>&1 &
+fi
+
+if [ -f /opt/openrind-browser-pods/bin/openrind-browser-pod-helper.mjs ]; then
+  pkill -f "openrind-browser-pod-helper" >/dev/null 2>&1 || true
+  /opt/openrind-browser-pods/bin/helper-ensure.sh >/dev/null 2>&1 || true
+fi
+
+# Write workspace guidance for all agents (Claude Code, OpenClaw, Codex CLI, OpenHands)
+if [ -d /sandbox/work ]; then
+  cat <<'EOF' > /sandbox/work/AGENTS.md
+# Openrind Workspace
+
+Active Browser Pod: openrind-browser-pod (Port 9222)
+
+You are a helpful coding and web assistant.
+When asked to visit, search, browse, or interact with any website or URL:
+Always use the Chromium browser tools via `agent-browser`:
+1. Open a page:
+   `agent-browser --session web open "<url>"`  (or `browser_start "<url>"`)
+2. Read the interactive page elements:
+   `agent-browser --session web snapshot -i`  (or `browser_snapshot`)
+3. Click an element:
+   `agent-browser --session web click <ref>`   (or `browser_click <ref>`)
+4. Fill an input:
+   `agent-browser --session web fill <ref> "<text>"`  (or `browser_fill <ref> "<text>"`)
+5. When finished, ALWAYS close the browser:
+   `agent-browser --session web close`        (or `browser_close`)
+
+NEVER use curl, wget, or fetch for interactive websites. Always use the browser tools above.
+EOF
+  cp -f /sandbox/work/AGENTS.md /sandbox/work/CLAUDE.md 2>/dev/null || true
+  cp -f /sandbox/work/AGENTS.md /sandbox/work/CODEX.md 2>/dev/null || true
+fi
+
 # The login shell is transport plumbing only. Replace it with the selected
 # FUSE-aware agent wrapper so Desktop never falls through to an interactive
 # bash prompt and neither agent can bypass its workspace/health setup.
@@ -154,29 +209,6 @@ elif [ "${OPENRIND_SHELL_AGENT:-}" = "openclaw" ]; then
     set -- /usr/local/bin/openrind-openclaw "$session_id"
   fi
 elif [ "${OPENRIND_SHELL_AGENT:-}" = "codex" ]; then
-  # Prepare browser pod helper and permissions for Codex CLI
-  chmod 0644 /opt/openrind/browser/*.json 2>/dev/null || true
-  mkdir -p /etc/openrind-browser-pods 2>/dev/null || true
-  if [ ! -f /etc/openrind-browser-pods/helper.json ]; then
-    printf '{"brokerOrigin":"http://127.0.0.1:19300","generation":"openrind-desktop"}\n' > /etc/openrind-browser-pods/helper.json
-    chmod 0644 /etc/openrind-browser-pods/helper.json 2>/dev/null || true
-  fi
-  export AGENT_BROWSER_PROVIDER=kernel
-  export KERNEL_ENDPOINT=http://127.0.0.1:19300
-  export KERNEL_API_KEY=openrind-compat
-  export KERNEL_HEADLESS=true
-  export KERNEL_STEALTH=false
-  export KERNEL_TIMEOUT_SECONDS=300
-  export AGENT_BROWSER_ACTION_POLICY=/opt/openrind/browser/agent-browser-policy.json
-  export OPENRIND_BROWSER_PODS_EXPERIMENTAL=1
-  export BROWSER_POD_NAME="${BROWSER_POD_NAME:-openrind-browser-pod}"
-  export BROWSER_POD_HOST="${BROWSER_POD_HOST:-openrind-browser-pod}"
-  export BROWSER_POD_PORT="${BROWSER_POD_PORT:-9222}"
-
-  if [ -f /opt/openrind-shell/browser-socket-relay.mjs ] && ! pgrep -f "browser-socket-relay" >/dev/null 2>&1; then
-    /usr/bin/node /opt/openrind-shell/browser-socket-relay.mjs >/dev/null 2>&1 &
-  fi
-
   export OPENRIND_SHELL_CODEX_HOME="${OPENRIND_SHELL_CODEX_HOME:-/sandbox/codex-home}"
   export CODEX_HOME="${OPENRIND_SHELL_CODEX_HOME}"
   if [ -x /usr/local/bin/openrind-codex ]; then
@@ -193,34 +225,6 @@ else
   # Reassert the fixed Haloop endpoint and remove persisted bypass state before
   # every new or resumed Claude process. Failure is fatal: direct inference is
   # not a supported recovery path in this image contract.
-  # Ensure browser pod helper and permissions are ready
-  chmod 0644 /opt/openrind/browser/*.json 2>/dev/null || true
-  mkdir -p /etc/openrind-browser-pods 2>/dev/null || true
-  if [ ! -f /etc/openrind-browser-pods/helper.json ]; then
-    printf '{"brokerOrigin":"http://127.0.0.1:19300","generation":"openrind-desktop"}\n' > /etc/openrind-browser-pods/helper.json
-    chmod 0644 /etc/openrind-browser-pods/helper.json 2>/dev/null || true
-  fi
-  export AGENT_BROWSER_PROVIDER=kernel
-  export KERNEL_ENDPOINT=http://127.0.0.1:19300
-  export KERNEL_API_KEY=openrind-compat
-  export KERNEL_HEADLESS=true
-  export KERNEL_STEALTH=false
-  export KERNEL_TIMEOUT_SECONDS=300
-  export AGENT_BROWSER_ACTION_POLICY=/opt/openrind/browser/agent-browser-policy.json
-  export OPENRIND_BROWSER_PODS_EXPERIMENTAL=1
-  export BROWSER_POD_NAME="${BROWSER_POD_NAME:-openrind-browser-pod}"
-  export BROWSER_POD_HOST="${BROWSER_POD_HOST:-openrind-browser-pod}"
-  export BROWSER_POD_PORT="${BROWSER_POD_PORT:-9222}"
-
-  if [ -f /opt/openrind-shell/browser-socket-relay.mjs ] && ! pgrep -f "browser-socket-relay" >/dev/null 2>&1; then
-    /usr/bin/node /opt/openrind-shell/browser-socket-relay.mjs >/dev/null 2>&1 &
-  fi
-
-  if [ -f /opt/openrind-browser-pods/bin/openrind-browser-pod-helper.mjs ]; then
-    pkill -f "openrind-browser-pod-helper" >/dev/null 2>&1 || true
-    /opt/openrind-browser-pods/bin/helper-ensure.sh >/dev/null 2>&1 || true
-  fi
-
   export OPENRIND_SHELL_CLAUDE_HOME="${OPENRIND_SHELL_CLAUDE_HOME:-/sandbox/claude-home}"
   node /opt/openrind-shell/configure-haloop.mjs >/dev/null 2>&1 || true
   if [ -f "$RUNTIME_DIR/anthropic-base-url" ]; then
