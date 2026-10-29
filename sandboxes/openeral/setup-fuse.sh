@@ -357,6 +357,7 @@ elif [ "$OPENRIND_SHELL_AGENT" = openclaw ]; then
   # interactive launch path.
   HOME="$OPENRIND_SHELL_OPENCLAW_HOME" \
     /usr/bin/node /opt/openrind-shell/configure-haloop.mjs
+  OPENRIND_GATEWAY_BASE_URL="http://127.0.0.1:8785" \
   HOME="$OPENRIND_SHELL_OPENCLAW_HOME" \
     /usr/bin/node /opt/openrind-shell/configure-openclaw-fuse.mjs
 

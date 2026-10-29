@@ -127,6 +127,27 @@ config.models.providers[PROVIDER_ID] = {
   models: [{ id: modelId, name: modelId === DEFAULT_MODEL_ID ? "Claude Sonnet 4.6" : modelId }],
 };
 
+config.models.providers["openai"] = {
+  baseUrl: PROVIDER_BASE_URL,
+  apiKey: "${ANTHROPIC_API_KEY}",
+  api: "anthropic-messages",
+  models: [
+    { id: "gpt-5.5", name: "GPT-5.5" },
+    { id: "gpt-4o", name: "GPT-4o" },
+  ],
+};
+
+config.models.providers["openrouter"] = {
+  baseUrl: PROVIDER_BASE_URL,
+  apiKey: "${ANTHROPIC_API_KEY}",
+  api: "anthropic-messages",
+  models: [
+    { id: "auto", name: "Auto" },
+    { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+    { id: "gpt-4o", name: "GPT-4o" },
+  ],
+};
+
 mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
 mkdirSync(join(home, ".openclaw", "logs"), { recursive: true, mode: 0o700 });
 const temporary = `${configPath}.tmp-${process.pid}`;

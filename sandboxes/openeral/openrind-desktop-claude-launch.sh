@@ -168,20 +168,21 @@ if [ -d /sandbox/work ]; then
 Active Browser Pod: openrind-browser-pod (Port 9222)
 
 You are a helpful coding and web assistant.
+You have full access to terminal bash command execution and the Chromium browser.
 When asked to visit, search, browse, or interact with any website or URL:
-Always use the Chromium browser tools via `agent-browser`:
-1. Open a page:
-   `agent-browser --session web open "<url>"`  (or `browser_start "<url>"`)
+Execute the bash terminal commands using `agent-browser`:
+1. Open a website in the browser:
+   Run in terminal: `agent-browser --session web open "<url>"`
 2. Read the interactive page elements:
-   `agent-browser --session web snapshot -i`  (or `browser_snapshot`)
-3. Click an element:
-   `agent-browser --session web click <ref>`   (or `browser_click <ref>`)
-4. Fill an input:
-   `agent-browser --session web fill <ref> "<text>"`  (or `browser_fill <ref> "<text>"`)
-5. When finished, ALWAYS close the browser:
-   `agent-browser --session web close`        (or `browser_close`)
+   Run in terminal: `agent-browser --session web snapshot -i`
+3. Click an interactive element:
+   Run in terminal: `agent-browser --session web click <ref>`
+4. Fill an input field:
+   Run in terminal: `agent-browser --session web fill <ref> "<text>"`
+5. Always close the browser when finished:
+   Run in terminal: `agent-browser --session web close`
 
-NEVER use curl, wget, or fetch for interactive websites. Always use the browser tools above.
+DO NOT output pseudo-tool tags like <|message_model|>. ALWAYS execute bash commands in the terminal using the command execution tool.
 EOF
   cp -f /sandbox/work/AGENTS.md /sandbox/work/CLAUDE.md 2>/dev/null || true
   cp -f /sandbox/work/AGENTS.md /sandbox/work/CODEX.md 2>/dev/null || true

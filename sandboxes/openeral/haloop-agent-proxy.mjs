@@ -319,15 +319,25 @@ export function createHaloopAgentProxy(options = {}) {
           messages.push({ role: 'user', content: 'hello' });
         }
 
-        const chosenModel = process.env.OPENROUTER_MODEL || process.env.LLM_MODEL || defaultModel;
+        let requested = body?.model || process.env.OPENROUTER_MODEL || process.env.LLM_MODEL || defaultModel;
+        if (!requested || requested === 'default' || requested.includes('openrind-gateway') || requested === 'claude-sonnet-4-6') {
+          requested = 'anthropic/claude-3.5-sonnet';
+        } else if (requested === 'gpt-4o' || requested === 'openai/gpt-4o') {
+          requested = 'openai/gpt-4o';
+        } else if (requested === 'gpt-5.5' || requested === 'openai/gpt-5.5') {
+          requested = 'openai/gpt-4o';
+        }
+
         const candidates = [
-          chosenModel,
-          'nvidia/nemotron-3-super-120b-a12b:free',
-          'qwen/qwen3.8-27b:free'
+          requested,
+          'anthropic/claude-3.5-sonnet',
+          'openai/gpt-4o',
+          'google/gemini-2.0-flash-exp:free',
+          'meta-llama/llama-3.3-70b-instruct:free'
         ];
         const fallbackModels = [...new Set(candidates)].slice(0, 3);
         const payloadObj = {
-          model: chosenModel,
+          model: requested,
           models: fallbackModels,
           messages,
           stream: true,
@@ -451,11 +461,21 @@ export function createHaloopAgentProxy(options = {}) {
       // If using OpenRouter, adapt /v1/messages to OpenRouter /v1/chat/completions
       if (isMessages && body && isOpenRouterKey) {
         const clientToolNames = Array.isArray(body?.tools) ? body.tools.map(t => t.name) : [];
-        const chosenModel = process.env.OPENROUTER_MODEL || process.env.LLM_MODEL || defaultModel;
+        let chosenModel = body?.model || process.env.OPENROUTER_MODEL || process.env.LLM_MODEL || defaultModel;
+        if (!chosenModel || chosenModel === 'default' || chosenModel.includes('openrind-gateway') || chosenModel === 'claude-sonnet-4-6') {
+          chosenModel = 'anthropic/claude-3.5-sonnet';
+        } else if (chosenModel === 'gpt-4o' || chosenModel === 'openai/gpt-4o') {
+          chosenModel = 'openai/gpt-4o';
+        } else if (chosenModel === 'gpt-5.5' || chosenModel === 'openai/gpt-5.5') {
+          chosenModel = 'openai/gpt-4o';
+        }
+
         const candidates = [
           chosenModel,
-          'nvidia/nemotron-3-super-120b-a12b:free',
-          'qwen/qwen3.8-27b:free'
+          'anthropic/claude-3.5-sonnet',
+          'openai/gpt-4o',
+          'google/gemini-2.0-flash-exp:free',
+          'meta-llama/llama-3.3-70b-instruct:free'
         ];
         const fallbackModels = [...new Set(candidates)].slice(0, 3);
         const openAiMessages = anthropicToOpenAiMessages(body);
