@@ -2398,6 +2398,11 @@ export function createHaloopRuntimeManager({
         env,
         optional: true,
       });
+      if (isRemoteGateway()) {
+        const affectedSessions = Number(await options.beforeRevoke?.({ sandboxName })) || 0;
+        const revocation = await revokeProfiles({ sandboxName });
+        return { ...revocation, affectedSessions };
+      }
       await ensureDistro();
 
       const network = await inspectNetwork(run);

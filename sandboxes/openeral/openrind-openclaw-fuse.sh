@@ -87,7 +87,7 @@ if [ -f /opt/openrind-shell/haloop-agent-proxy.mjs ]; then
         const c = JSON.parse(fs.readFileSync(p, "utf8"));
         c.models = c.models || {};
         c.models.providers = c.models.providers || {};
-        const key = process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY || "key";
+        const key = process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY || "key";
         for (const prov of ["openrind-gateway", "openai", "openrouter"]) {
           c.models.providers[prov] = {
             baseUrl: "http://127.0.0.1:8785",

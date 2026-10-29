@@ -372,9 +372,9 @@ export function createHaloopAgentProxy(options = {}) {
           const respId = `resp_${randomBytes(12).toString('hex')}`;
           const msgId = `msg_${randomBytes(12).toString('hex')}`;
 
-          res.write(`event: response.created\ndata: ${JSON.stringify({ response: { id: respId, status: 'in_progress' } })}\n\n`);
-          res.write(`event: response.output_item.added\ndata: ${JSON.stringify({ response_id: respId, output_index: 0, item: { id: msgId, type: 'message', role: 'assistant', content: [] } })}\n\n`);
-          res.write(`event: response.content_part.added\ndata: ${JSON.stringify({ response_id: respId, output_index: 0, content_index: 0, part: { type: 'output_text', text: '' } })}\n\n`);
+          res.write(`event: response.created\ndata: ${JSON.stringify({ type: 'response.created', response: { id: respId, status: 'in_progress' } })}\n\n`);
+          res.write(`event: response.output_item.added\ndata: ${JSON.stringify({ type: 'response.output_item.added', response_id: respId, output_index: 0, item: { id: msgId, type: 'message', role: 'assistant', content: [] } })}\n\n`);
+          res.write(`event: response.content_part.added\ndata: ${JSON.stringify({ type: 'response.content_part.added', response_id: respId, output_index: 0, content_index: 0, part: { type: 'output_text', text: '' } })}\n\n`);
 
           let accumulatedText = '';
           let sseBuffer = '';
@@ -395,21 +395,43 @@ export function createHaloopAgentProxy(options = {}) {
                 const textPiece = delta?.content || delta?.reasoning || (delta?.reasoning_details?.[0]?.text) || '';
                 if (textPiece) {
                   accumulatedText += textPiece;
-                  res.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ response_id: respId, output_index: 0, content_index: 0, delta: textPiece })}\n\n`);
+                  res.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ type: 'response.output_text.delta', response_id: respId, output_index: 0, content_index: 0, delta: textPiece })}\n\n`);
                 }
               } catch {}
             }
           });
 
           upstreamRes.on('end', () => {
-            if (!accumulatedText) {
-              accumulatedText = 'I am your coding assistant. How can I help you today?';
-              res.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ response_id: respId, output_index: 0, content_index: 0, delta: accumulatedText })}\n\n`);
-            }
-            res.write(`event: response.output_text.done\ndata: ${JSON.stringify({ response_id: respId, output_index: 0, content_index: 0, text: accumulatedText })}\n\n`);
-            res.write(`event: response.output_item.done\ndata: ${JSON.stringify({ response_id: respId, output_index: 0, item: { id: msgId, type: 'message', role: 'assistant', content: [{ type: 'output_text', text: accumulatedText }] } })}\n\n`);
-            res.write(`event: response.completed\ndata: ${JSON.stringify({ response: { id: respId, status: 'completed' } })}\n\n`);
-            res.end();
+            const outputText = accumulatedText || 'I am your coding assistant. How can I help you today?';
+            const inTokens = Math.max(1, Math.ceil(Buffer.byteLength(JSON.stringify(messages)) / 4));
+            const outTokens = Math.max(1, Math.ceil(Buffer.byteLength(outputText) / 4));
+            const completedPayload = {
+              type: 'response.completed',
+              response: {
+                id: respId,
+                object: 'response',
+                status: 'completed',
+                output: [
+                  {
+                    id: msgId,
+                    type: 'message',
+                    role: 'assistant',
+                    content: [{ type: 'output_text', text: outputText }]
+                  }
+                ],
+                usage: {
+                  total_tokens: inTokens + outTokens,
+                  input_tokens: inTokens,
+                  output_tokens: outTokens,
+                  input_tokens_details: { cached_tokens: 0 },
+                  output_tokens_details: { reasoning_tokens: 0 }
+                }
+              }
+            };
+            res.write(`event: response.output_text.done\ndata: ${JSON.stringify({ type: 'response.output_text.done', response_id: respId, output_index: 0, content_index: 0, text: outputText })}\n\n`);
+            res.write(`event: response.output_item.done\ndata: ${JSON.stringify({ type: 'response.output_item.done', response_id: respId, output_index: 0, item: { id: msgId, type: 'message', role: 'assistant', content: [{ type: 'output_text', text: outputText }] } })}\n\n`);
+            res.write(`event: response.completed\ndata: ${JSON.stringify(completedPayload)}\n\n`);
+            setTimeout(() => res.end(), 50);
           });
         });
 
