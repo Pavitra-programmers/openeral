@@ -57,7 +57,7 @@ case "$session_context" in
     browser_grant="${session_context#*:}"
     session_context="${session_context%%:*}"
     case "$profile" in
-      openrind-shell-claude|openrind-shell-openhands|openrind-shell-openhands-script|openrind-shell-openclaw) ;;
+      openrind-shell-claude|openrind-shell-openhands|openrind-shell-openhands-script|openrind-shell-openclaw|openrind-shell-codex) ;;
       *)
         echo "Openrind Shell: browser launch grant is invalid. Reconnect the session."
         exit 64
@@ -118,6 +118,8 @@ unset FAST_FIRST_LAUNCH_MARKER
 expected_profile="openrind-shell-claude"
 if [ "${OPENRIND_SHELL_AGENT:-}" = "openclaw" ]; then
   expected_profile="openrind-shell-openclaw"
+elif [ "${OPENRIND_SHELL_AGENT:-}" = "codex" ]; then
+  expected_profile="openrind-shell-codex"
 elif [ "${OPENRIND_SHELL_AGENT:-}" = openhands ]; then
   case "${OPENRIND_SHELL_OPENHANDS_MODE:-}" in
     cli) expected_profile=openrind-shell-openhands ;;
@@ -150,6 +152,41 @@ elif [ "${OPENRIND_SHELL_AGENT:-}" = "openclaw" ]; then
     set -- /usr/local/bin/openrind-openclaw
   else
     set -- /usr/local/bin/openrind-openclaw "$session_id"
+  fi
+elif [ "${OPENRIND_SHELL_AGENT:-}" = "codex" ]; then
+  # Prepare browser pod helper and permissions for Codex CLI
+  chmod 0644 /opt/openrind/browser/*.json 2>/dev/null || true
+  mkdir -p /etc/openrind-browser-pods 2>/dev/null || true
+  if [ ! -f /etc/openrind-browser-pods/helper.json ]; then
+    printf '{"brokerOrigin":"http://127.0.0.1:19300","generation":"openrind-desktop"}\n' > /etc/openrind-browser-pods/helper.json
+    chmod 0644 /etc/openrind-browser-pods/helper.json 2>/dev/null || true
+  fi
+  export AGENT_BROWSER_PROVIDER=kernel
+  export KERNEL_ENDPOINT=http://127.0.0.1:19300
+  export KERNEL_API_KEY=openrind-compat
+  export KERNEL_HEADLESS=true
+  export KERNEL_STEALTH=false
+  export KERNEL_TIMEOUT_SECONDS=300
+  export AGENT_BROWSER_ACTION_POLICY=/opt/openrind/browser/agent-browser-policy.json
+  export OPENRIND_BROWSER_PODS_EXPERIMENTAL=1
+  export BROWSER_POD_NAME="${BROWSER_POD_NAME:-openrind-browser-pod}"
+  export BROWSER_POD_HOST="${BROWSER_POD_HOST:-openrind-browser-pod}"
+  export BROWSER_POD_PORT="${BROWSER_POD_PORT:-9222}"
+
+  if [ -f /opt/openrind-shell/browser-socket-relay.mjs ] && ! pgrep -f "browser-socket-relay" >/dev/null 2>&1; then
+    /usr/bin/node /opt/openrind-shell/browser-socket-relay.mjs >/dev/null 2>&1 &
+  fi
+
+  export OPENRIND_SHELL_CODEX_HOME="${OPENRIND_SHELL_CODEX_HOME:-/sandbox/codex-home}"
+  export CODEX_HOME="${OPENRIND_SHELL_CODEX_HOME}"
+  if [ -x /usr/local/bin/openrind-codex ]; then
+    set -- /usr/local/bin/openrind-codex "$session_id"
+  elif [ -x /usr/local/bin/codex ]; then
+    set -- /usr/local/bin/codex
+  elif [ -x /usr/bin/codex ]; then
+    set -- /usr/bin/codex
+  else
+    set -- codex
   fi
 else
   # Claude's wrapper owns FUSE health checks and the final durability flush.

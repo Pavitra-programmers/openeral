@@ -46,17 +46,23 @@ const CLAUDE_HOME_MOUNT = "/sandbox/claude-home";
 const CLAUDE_HOME_VOLUME_PREFIX = "openrind-claude-home-";
 const OPENCLAW_HOME_MOUNT = "/sandbox/openclaw-home";
 const OPENCLAW_HOME_VOLUME_PREFIX = "openrind-openclaw-home-";
+const CODEX_HOME_MOUNT = "/sandbox/codex-home";
+const CODEX_HOME_VOLUME_PREFIX = "openrind-codex-home-";
 const CLAUDE_SESSION_NAMESPACE = "6f9b1e2a-0c3d-4b7a-9e21-8a4c1d5f7b30";
 const MAX_CAPTURE_BYTES = 2 * 1024 * 1024;
 const sandboxProvisioning = createSandboxProvisioningCoordinator();
 
 export async function requiredHaloopUpstreamApiKey() {
-  const anthropicApiKey = await getCredential("anthropicApiKey");
+  const anthropicApiKey = (await getCredential("openRouterApiKey")) ||
+    (await getCredential("codexApiKey")) ||
+    (await getCredential("anthropicApiKey"));
   return resolveHaloopUpstreamApiKey(anthropicApiKey);
 }
 
 async function optionalHaloopUpstreamApiKey() {
-  const anthropicApiKey = await getCredential("anthropicApiKey");
+  const anthropicApiKey = (await getCredential("openRouterApiKey")) ||
+    (await getCredential("codexApiKey")) ||
+    (await getCredential("anthropicApiKey"));
   return resolveHaloopUpstreamApiKey(anthropicApiKey, { optional: true });
 }
 
@@ -81,6 +87,13 @@ const AGENTS = {
     label: "OpenClaw",
     homeMount: OPENCLAW_HOME_MOUNT,
     volumePrefix: OPENCLAW_HOME_VOLUME_PREFIX,
+    mode: "cli",
+  },
+  "openrind-shell-codex": {
+    id: "codex",
+    label: "Codex CLI",
+    homeMount: CODEX_HOME_MOUNT,
+    volumePrefix: CODEX_HOME_VOLUME_PREFIX,
     mode: "cli",
   },
 };
@@ -650,6 +663,10 @@ export function resolveClaudeHomeVolumeName(sandboxName) {
 
 export function resolveOpenClawHomeVolumeName(sandboxName) {
   return resolveAgentHomeVolumeName(sandboxName, AGENTS["openrind-shell-openclaw"]);
+}
+
+export function resolveCodexHomeVolumeName(sandboxName) {
+  return resolveAgentHomeVolumeName(sandboxName, AGENTS["openrind-shell-codex"]);
 }
 
 function resolveAgentHomeVolumeName(sandboxName, agent) {
@@ -1277,7 +1294,7 @@ function formatUuid(bytes) {
 export function resolveAgentSessionValue(profile, sessionId) {
   const value = String(sessionId ?? "").trim();
   if (!value || profile === "openrind-shell-openhands" || profile === "openrind-shell-openhands-script") return "default";
-  if (profile === "openrind-shell-openclaw") {
+  if (profile === "openrind-shell-openclaw" || profile === "openrind-shell-codex") {
     const normalized = value
       .replace(/[^A-Za-z0-9._-]+/g, "-")
       .replace(/^-+|-+$/g, "")

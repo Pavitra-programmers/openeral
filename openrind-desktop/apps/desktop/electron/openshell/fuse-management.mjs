@@ -120,12 +120,16 @@ export async function validatePrimaryFuseDatabaseUrl() {
  */
 export async function probePrimaryFuseDatabase() {
   await validatePrimaryFuseDatabaseUrl();
-  const [databaseUrl, anthropicApiKey] = await Promise.all([
+  const [databaseUrl, anthropicApiKey, openRouterApiKey, codexApiKey] = await Promise.all([
     getCredential("databaseUrl"),
     getCredential("anthropicApiKey"),
+    getCredential("openRouterApiKey"),
+    getCredential("codexApiKey"),
   ]);
   if (!databaseUrl) throw new Error("DATABASE_URL is not configured.");
-  if (!anthropicApiKey) throw new Error("Configure ANTHROPIC_API_KEY before testing the sandbox database connection.");
+  if (!anthropicApiKey && !openRouterApiKey && !codexApiKey) {
+    throw new Error("Configure an API key (ANTHROPIC_API_KEY, OPENROUTER_API_KEY, or CODEX_API_KEY) before testing the sandbox database connection.");
+  }
 
   await ensureManagedFuseGateway();
   const name = `or-db-${randomUUID().replace(/-/g, "").slice(0, 12)}`;

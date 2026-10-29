@@ -650,11 +650,13 @@ async function buildOpenrindShellPtyEnv(cols, rows, profile) {
       ? "claude"
       : profile === "openrind-shell-openclaw"
         ? "openclaw"
-        : profile === "openrind-shell-openhands" || profile === "openrind-shell-openhands-script"
-          ? "openhands"
-          : null;
+        : profile === "openrind-shell-codex"
+          ? "codex"
+          : profile === "openrind-shell-openhands" || profile === "openrind-shell-openhands-script"
+            ? "openhands"
+            : null;
   if (!agent) {
-    throw new Error("The primary FUSE runtime supports Claude, OpenClaw, and OpenHands profiles only.");
+    throw new Error("The primary FUSE runtime supports Claude, OpenClaw, Codex, and OpenHands profiles only.");
   }
   /** @type {Record<string, string>} */
   const extraEnv = {};
@@ -759,10 +761,10 @@ function openOpenrindShellPtySession(opts) {
     haloopContextId,
     haloopSessionAssertion,
   } = opts;
-  if (!["openrind-shell-claude", "openrind-shell-openclaw", "openrind-shell-openhands", "openrind-shell-openhands-script"].includes(profile)) {
-    throw new Error("The primary FUSE runtime supports Claude, OpenClaw, and OpenHands profiles only.");
+  if (!["openrind-shell-claude", "openrind-shell-openclaw", "openrind-shell-codex", "openrind-shell-openhands", "openrind-shell-openhands-script"].includes(profile)) {
+    throw new Error("The primary FUSE runtime supports Claude, OpenClaw, Codex, and OpenHands profiles only.");
   }
-  const expectedAgent = profile === "openrind-shell-claude" ? "claude" : profile === "openrind-shell-openclaw" ? "openclaw" : "openhands";
+  const expectedAgent = profile === "openrind-shell-claude" ? "claude" : profile === "openrind-shell-openclaw" ? "openclaw" : profile === "openrind-shell-codex" ? "codex" : "openhands";
   const agent = String(extraEnv?.OPENRIND_SHELL_AGENT ?? "").trim();
   if (agent !== expectedAgent) {
     throw new Error("A validated OPENRIND_SHELL_AGENT value is required for agent launch.");
@@ -2849,7 +2851,7 @@ async function handleDesktopInvoke(event, command, ...args) {
       const workspaceId = String(input.workspaceId ?? "").trim();
       const profile = String(input.profile ?? "").trim();
       if (!workspaceId) throw new Error("workspaceId is required");
-      if (!["openrind-shell-claude", "openrind-shell-openclaw", "openrind-shell-openhands", "openrind-shell-openhands-script"].includes(profile)) {
+      if (!["openrind-shell-claude", "openrind-shell-openclaw", "openrind-shell-codex", "openrind-shell-openhands", "openrind-shell-openhands-script"].includes(profile)) {
         throw new Error(`Unsupported Openrind Shell profile: ${profile}`);
       }
       await assertOpenShellReady();
@@ -2996,8 +2998,8 @@ async function handleDesktopInvoke(event, command, ...args) {
       const profile = String(input.profile ?? "").trim();
       const workspaceId = String(input.workspaceId ?? "").trim();
       if (!workspaceId) throw new Error("workspaceId is required");
-      if (!["openrind-shell-claude", "openrind-shell-openclaw", "openrind-shell-openhands", "openrind-shell-openhands-script"].includes(profile)) {
-        throw new Error("The primary FUSE runtime supports Claude, OpenClaw, and OpenHands profiles only.");
+      if (!["openrind-shell-claude", "openrind-shell-openclaw", "openrind-shell-codex", "openrind-shell-openhands", "openrind-shell-openhands-script"].includes(profile)) {
+        throw new Error("The primary FUSE runtime supports Claude, OpenClaw, Codex, and OpenHands profiles only.");
       }
       assertHaloopCredentialNotChanging(sandboxName);
       const existingHaloopSession = openrindPty.findSessionBySandboxAndAgent(
@@ -3052,8 +3054,8 @@ async function handleDesktopInvoke(event, command, ...args) {
       const profile = String(input.profile ?? "").trim();
       const workspaceId = String(input.workspaceId ?? "").trim();
       if (!workspaceId) throw new Error("workspaceId is required");
-      if (!["openrind-shell-claude", "openrind-shell-openclaw", "openrind-shell-openhands", "openrind-shell-openhands-script"].includes(profile)) {
-        throw new Error("The primary FUSE runtime supports Claude, OpenClaw, and OpenHands profiles only.");
+      if (!["openrind-shell-claude", "openrind-shell-openclaw", "openrind-shell-codex", "openrind-shell-openhands", "openrind-shell-openhands-script"].includes(profile)) {
+        throw new Error("The primary FUSE runtime supports Claude, OpenClaw, Codex, and OpenHands profiles only.");
       }
       assertHaloopCredentialNotChanging(sandboxName);
       const existing = openrindPty.findSessionBySandboxAndAgent(
@@ -3080,7 +3082,7 @@ async function handleDesktopInvoke(event, command, ...args) {
         await openrindShell.activateExistingHaloopRoute({
           sandboxName,
           workspaceId: routeWorkspaceId,
-          agentId: profile === "openrind-shell-openclaw" ? "openclaw" : profile === "openrind-shell-claude" ? "claude" : "openhands",
+          agentId: profile === "openrind-shell-openclaw" ? "openclaw" : profile === "openrind-shell-codex" ? "codex" : profile === "openrind-shell-claude" ? "claude" : "openhands",
         });
         return {
           id: existing.id,
@@ -3303,7 +3305,7 @@ async function handleDesktopInvoke(event, command, ...args) {
       const workspaceId = String(input.workspaceId ?? "").trim();
       const profile = String(input.profile ?? "").trim();
       if (!workspaceId) throw new Error("workspaceId is required");
-      if (!["openrind-shell-claude", "openrind-shell-openclaw", "openrind-shell-openhands", "openrind-shell-openhands-script"].includes(profile)) {
+      if (!["openrind-shell-claude", "openrind-shell-openclaw", "openrind-shell-codex", "openrind-shell-openhands", "openrind-shell-openhands-script"].includes(profile)) {
         throw new Error(`Unsupported Openrind Shell profile: ${profile}`);
       }
       await assertOpenShellReady();
@@ -3345,7 +3347,7 @@ async function handleDesktopInvoke(event, command, ...args) {
       const workspaceId = String(input.workspaceId ?? "").trim();
       if (!sandboxName) throw new Error("sandboxName is required");
       if (!workspaceId) throw new Error("workspaceId is required");
-      if (!["openrind-shell-claude", "openrind-shell-openclaw", "openrind-shell-openhands", "openrind-shell-openhands-script"].includes(profile)) {
+      if (!["openrind-shell-claude", "openrind-shell-openclaw", "openrind-shell-codex", "openrind-shell-openhands", "openrind-shell-openhands-script"].includes(profile)) {
         throw new Error(`Unsupported Openrind Shell profile: ${profile}`);
       }
       assertHaloopCredentialNotChanging(sandboxName);

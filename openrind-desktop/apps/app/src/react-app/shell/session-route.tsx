@@ -366,6 +366,7 @@ function isChatWorkspace(workspace: RouteWorkspace): boolean {
   return (
     workspace.sandboxProfile !== "openrind-shell-claude" &&
     workspace.sandboxProfile !== "openrind-shell-openclaw" &&
+    workspace.sandboxProfile !== "openrind-shell-codex" &&
     workspace.sandboxProfile !== "openrind-shell-openhands" &&
     workspace.sandboxProfile !== "openrind-shell-openhands-script"
   );
@@ -1025,7 +1026,7 @@ export function SessionRoute() {
     handleSetSelectedSandbox({
       name: handoff.name,
       profile:
-        handoff.profile === "openrind-shell-openclaw" || handoff.profile === "openrind-shell-openhands" || handoff.profile === "openrind-shell-openhands-script"
+        handoff.profile === "openrind-shell-openclaw" || handoff.profile === "openrind-shell-codex" || handoff.profile === "openrind-shell-openhands" || handoff.profile === "openrind-shell-openhands-script"
           ? handoff.profile
           : "openrind-shell-claude",
     });

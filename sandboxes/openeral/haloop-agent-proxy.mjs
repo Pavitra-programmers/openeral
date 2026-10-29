@@ -36,12 +36,15 @@ export function anthropicToOpenAiMessages(body) {
         if (m.role === 'assistant') {
           let text = '';
           let reasoning = '';
+          let reasoningSignature = null;
+          const unknownBlocks = [];
           const toolCalls = [];
           for (const c of m.content) {
             if (c.type === 'text') {
               text += (c.text || '');
             } else if (c.type === 'thinking') {
               reasoning += (c.thinking || '');
+              if (c.signature) reasoningSignature = c.signature;
             } else if (c.type === 'redacted_thinking') {
               reasoning += '[REDACTED_THINKING]';
             } else if (c.type === 'tool_use') {
@@ -53,14 +56,22 @@ export function anthropicToOpenAiMessages(body) {
                   arguments: typeof c.input === 'string' ? c.input : JSON.stringify(c.input || {}),
                 },
               });
+            } else {
+              unknownBlocks.push(c);
             }
           }
           const msgObj = { role: 'assistant', content: text || null };
           if (reasoning) {
             msgObj.reasoning = reasoning;
           }
+          if (reasoningSignature) {
+            msgObj.reasoning_signature = reasoningSignature;
+          }
           if (toolCalls.length > 0) {
             msgObj.tool_calls = toolCalls;
+          }
+          if (unknownBlocks.length > 0) {
+            msgObj.custom_content_blocks = unknownBlocks;
           }
           messages.push(msgObj);
         } else {
@@ -312,6 +323,29 @@ export function createHaloopAgentProxy(options = {}) {
         if (openAiTools) {
           payloadObj.tools = openAiTools;
         }
+        if (body.tool_choice !== undefined && body.tool_choice !== null) {
+          if (typeof body.tool_choice === 'string') {
+            payloadObj.tool_choice = body.tool_choice;
+          } else if (body.tool_choice.type === 'auto') {
+            payloadObj.tool_choice = 'auto';
+          } else if (body.tool_choice.type === 'any') {
+            payloadObj.tool_choice = 'required';
+          } else if (body.tool_choice.type === 'tool' && body.tool_choice.name) {
+            payloadObj.tool_choice = { type: 'function', function: { name: body.tool_choice.name } };
+          } else {
+            payloadObj.tool_choice = body.tool_choice;
+          }
+        }
+        // Preserve and forward unknown top-level request fields
+        const knownAnthropicKeys = new Set([
+          'model', 'messages', 'system', 'max_tokens', 'temperature', 'top_p', 'top_k',
+          'stop_sequences', 'stream', 'tools', 'tool_choice', 'metadata', 'thinking'
+        ]);
+        for (const [k, v] of Object.entries(body)) {
+          if (!knownAnthropicKeys.has(k) && payloadObj[k] === undefined) {
+            payloadObj[k] = v;
+          }
+        }
         const openAiPayload = JSON.stringify(payloadObj);
 
         const projectName = resolveProjectName();
@@ -408,8 +442,17 @@ export function createHaloopAgentProxy(options = {}) {
                     });
                   }
                 }
+                const reasoningText = msg?.reasoning || (msg?.reasoning_details?.[0]?.text);
+                const reasoningSig = msg?.reasoning_signature || msg?.signature;
+                if (reasoningText) {
+                  content.unshift({
+                    type: 'thinking',
+                    thinking: reasoningText,
+                    ...(reasoningSig ? { signature: reasoningSig } : {}),
+                  });
+                }
                 if (content.length === 0) {
-                  const replyText = msg?.reasoning || (msg?.reasoning_details?.[0]?.text) || msg?.refusal;
+                  const replyText = msg?.refusal;
                   if (replyText) {
                     content.push({ type: 'text', text: replyText });
                   } else {
@@ -438,12 +481,32 @@ export function createHaloopAgentProxy(options = {}) {
                   stopReason = 'tool_use';
                 }
 
-                const promptTokens = typeof resData.usage?.prompt_tokens === 'number'
-                  ? resData.usage.prompt_tokens
-                  : (typeof resData.usage?.input_tokens === 'number' ? resData.usage.input_tokens : 0);
-                const completionTokens = typeof resData.usage?.completion_tokens === 'number'
-                  ? resData.usage.completion_tokens
-                  : (typeof resData.usage?.output_tokens === 'number' ? resData.usage.output_tokens : 0);
+                let usage = null;
+                const hasUsage = resData.usage && (
+                  typeof resData.usage.prompt_tokens === 'number' ||
+                  typeof resData.usage.input_tokens === 'number' ||
+                  typeof resData.usage.completion_tokens === 'number' ||
+                  typeof resData.usage.output_tokens === 'number'
+                );
+
+                if (hasUsage) {
+                  const promptTokens = typeof resData.usage?.prompt_tokens === 'number'
+                    ? resData.usage.prompt_tokens
+                    : (typeof resData.usage?.input_tokens === 'number' ? resData.usage.input_tokens : 0);
+                  const completionTokens = typeof resData.usage?.completion_tokens === 'number'
+                    ? resData.usage.completion_tokens
+                    : (typeof resData.usage?.output_tokens === 'number' ? resData.usage.output_tokens : 0);
+                  usage = {
+                    input_tokens: promptTokens,
+                    output_tokens: completionTokens,
+                  };
+                } else {
+                  usage = {
+                    input_tokens: null,
+                    output_tokens: null,
+                    missing: true,
+                  };
+                }
 
                 const anthropicResponse = {
                   id: `msg_${randomBytes(12).toString('hex')}`,
@@ -452,10 +515,7 @@ export function createHaloopAgentProxy(options = {}) {
                   content,
                   model: resData.model || body.model || defaultModel,
                   stop_reason: stopReason,
-                  usage: {
-                    input_tokens: promptTokens,
-                    output_tokens: completionTokens,
-                  },
+                  usage,
                 };
 
                 const outBytes = Buffer.from(JSON.stringify(anthropicResponse));
@@ -499,6 +559,8 @@ export function createHaloopAgentProxy(options = {}) {
             let accumulatedReasoning = '';
             let sseBuffer = '';
             let providerOutputTokens = null;
+            let providerInputTokens = null;
+            let providerStreamModel = null;
             let rawStreamFinishReason = null;
 
             const wantsThinking = Boolean(body?.thinking && body.thinking.type === 'enabled');
@@ -516,9 +578,20 @@ export function createHaloopAgentProxy(options = {}) {
                 try {
                   const parsed = JSON.parse(payload);
 
+                  if (parsed.model) {
+                    providerStreamModel = parsed.model;
+                  }
+
                   if (parsed.usage) {
+                    if (typeof parsed.usage.prompt_tokens === 'number') {
+                      providerInputTokens = parsed.usage.prompt_tokens;
+                    } else if (typeof parsed.usage.input_tokens === 'number') {
+                      providerInputTokens = parsed.usage.input_tokens;
+                    }
                     if (typeof parsed.usage.completion_tokens === 'number') {
                       providerOutputTokens = parsed.usage.completion_tokens;
+                    } else if (typeof parsed.usage.output_tokens === 'number') {
+                      providerOutputTokens = parsed.usage.output_tokens;
                     }
                   }
 
@@ -694,11 +767,21 @@ export function createHaloopAgentProxy(options = {}) {
               const finalOutputTokens = providerOutputTokens !== null
                 ? providerOutputTokens
                 : Math.max(totalOutputTokens, 1);
+              const usageEstimated = providerOutputTokens === null;
+
+              const deltaUsage = {
+                output_tokens: finalOutputTokens,
+                ...(providerInputTokens !== null ? { input_tokens: providerInputTokens } : {}),
+                ...(usageEstimated ? { estimated: true } : {}),
+              };
 
               res.write(`event: message_delta\ndata: ${JSON.stringify({
                 type: 'message_delta',
-                delta: { stop_reason: streamStopReason },
-                usage: { output_tokens: finalOutputTokens }
+                delta: {
+                  stop_reason: streamStopReason,
+                  ...(providerStreamModel ? { model: providerStreamModel } : {}),
+                },
+                usage: deltaUsage,
               })}\n\n`);
               res.write(`event: message_stop\ndata: ${JSON.stringify({
                 type: 'message_stop'

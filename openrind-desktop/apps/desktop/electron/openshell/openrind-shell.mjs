@@ -69,9 +69,9 @@ const HALOOP_SESSION_ASSERTION_PATTERN =
   /^v1\.[0-9a-f]{32}\.[1-9][0-9]{9,15}\.[1-9][0-9]{9,15}\.[0-9a-f]{64}$/;
 
 export function imageForProfile(profile) {
-  if (!["openrind-shell-claude", "openrind-shell-openclaw", "openrind-shell-openhands", "openrind-shell-openhands-script"].includes(profile)) {
+  if (!["openrind-shell-claude", "openrind-shell-openclaw", "openrind-shell-codex", "openrind-shell-openhands", "openrind-shell-openhands-script"].includes(profile)) {
     throw new Error(
-      `The primary FUSE runtime supports Claude, OpenClaw, and OpenHands profiles only; received ${JSON.stringify(profile)}.`,
+      `The primary FUSE runtime supports Claude, OpenClaw, Codex, and OpenHands profiles only; received ${JSON.stringify(profile)}.`,
     );
   }
   return process.env.OPENRIND_DESKTOP_SANDBOX_IMAGE?.trim() || FUSE_IMAGE;
@@ -102,11 +102,13 @@ function deriveClaudeSessionUuid(sessionId) {
  * transcript for a selected desktop session.
  */
 export function resolveAgentSessionValue(profile, agentSessionId, haloopSessionAssertion) {
-  if (!["openrind-shell-claude", "openrind-shell-openclaw", "openrind-shell-openhands", "openrind-shell-openhands-script"].includes(profile)) {
-    throw new Error("The primary FUSE runtime supports Claude, OpenClaw, and OpenHands profiles only.");
+  if (!["openrind-shell-claude", "openrind-shell-openclaw", "openrind-shell-codex", "openrind-shell-openhands", "openrind-shell-openhands-script"].includes(profile)) {
+    throw new Error("The primary FUSE runtime supports Claude, OpenClaw, Codex, and OpenHands profiles only.");
   }
   const sessionId = String(agentSessionId ?? "").trim();
-  const value = sessionId ? deriveClaudeSessionUuid(sessionId) : "auto";
+  const value = sessionId
+    ? (profile === "openrind-shell-claude" ? deriveClaudeSessionUuid(sessionId) : sessionId.replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 64))
+    : "auto";
   const assertion = String(haloopSessionAssertion ?? "").trim();
   if (!HALOOP_SESSION_ASSERTION_PATTERN.test(assertion)) {
     throw new Error("A signed Haloop conversation context is required for agent launch.");
@@ -157,12 +159,12 @@ export async function writeCurrentSessionMarker(name, value, browserGrant, brows
   if (
     marker &&
     !new RegExp(
-      `^(?:openrind-shell-claude|openrind-shell-openclaw|openrind-shell-openhands|openrind-shell-openhands-script):(?:auto|[0-9a-f]{8}-[0-9a-f-]{27}):${HALOOP_SESSION_ASSERTION_PATTERN.source.slice(1, -1)}$`,
+      `^(?:openrind-shell-claude|openrind-shell-openclaw|openrind-shell-codex|openrind-shell-openhands|openrind-shell-openhands-script):(?:auto|[0-9a-f]{8}-[0-9a-f-]{27}):${HALOOP_SESSION_ASSERTION_PATTERN.source.slice(1, -1)}$`,
     ).test(marker)
   ) {
     throw new Error("Invalid desktop Claude session marker.");
   }
-  if (browserGrant !== undefined && (!/^(?:openrind-shell-claude|openrind-shell-openclaw|openrind-shell-openhands|openrind-shell-openhands-script):/.test(marker) ||
+  if (browserGrant !== undefined && (!/^(?:openrind-shell-claude|openrind-shell-openclaw|openrind-shell-codex|openrind-shell-openhands|openrind-shell-openhands-script):/.test(marker) ||
       typeof browserGrant !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(browserGrant))) {
     throw new Error('Invalid browser launch grant.');
   }

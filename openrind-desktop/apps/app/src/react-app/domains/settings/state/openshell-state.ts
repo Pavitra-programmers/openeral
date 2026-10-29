@@ -49,12 +49,16 @@ export type OpenShellInstallStatus = {
 export type OpenrindShellCredentialKey =
   | "databaseUrl"
   | "anthropicApiKey"
+  | "openRouterApiKey"
+  | "codexApiKey"
   | "openrindGatewayApiKey"
   | "elevenLabsApiKey";
 
 export type OpenrindShellCredentialStatus = {
   databaseUrl: "set" | "unset";
   anthropicApiKey: "set" | "unset";
+  openRouterApiKey?: "set" | "unset";
+  codexApiKey?: "set" | "unset";
   openrindGatewayApiKey: "set" | "unset";
   elevenLabsApiKey: "set" | "unset";
   encryptionAvailable: boolean;
@@ -62,6 +66,10 @@ export type OpenrindShellCredentialStatus = {
   databaseUrl_updatedAt?: number;
   anthropicApiKey_masked?: string;
   anthropicApiKey_updatedAt?: number;
+  openRouterApiKey_masked?: string;
+  openRouterApiKey_updatedAt?: number;
+  codexApiKey_masked?: string;
+  codexApiKey_updatedAt?: number;
   openrindGatewayApiKey_masked?: string;
   openrindGatewayApiKey_updatedAt?: number;
   elevenLabsApiKey_masked?: string;
@@ -89,7 +97,7 @@ export type HaloopRuntimeStatus = {
     profileId: string;
     providerName: string;
     sandboxName: string;
-    agentId: "claude" | "openclaw" | "openhands";
+    agentId: "claude" | "openclaw" | "codex" | "openhands";
   } | null;
   detail: string;
   lastConnectionError: string | null;
@@ -683,7 +691,7 @@ export function useOpenShellState(
   const startOpenrindShellSession = useCallback(
     async (
       workspaceId: string,
-      profile: "openrind-shell-claude" | "openrind-shell-openclaw" | "openrind-shell-openhands" | "openrind-shell-openhands-script",
+      profile: "openrind-shell-claude" | "openrind-shell-openclaw" | "openrind-shell-codex" | "openrind-shell-openhands" | "openrind-shell-openhands-script",
     ): Promise<OpenrindShellSessionResult> => {
       setActionBusy(true);
       setActionError(null);

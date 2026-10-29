@@ -409,8 +409,8 @@ export function buildTrustedHaloopAppSpan(capture, event) {
 
 export function buildHaloopAgentLifecycleEvent(agent, event) {
   const agentId = String(agent ?? "").trim();
-  if (agentId !== "claude" && agentId !== "openclaw" && agentId !== "openhands") {
-    throw new Error("OPENRIND_SHELL_AGENT must be claude, openclaw, or openhands for Haloop lifecycle capture.");
+  if (agentId !== "claude" && agentId !== "openclaw" && agentId !== "codex" && agentId !== "openhands") {
+    throw new Error("OPENRIND_SHELL_AGENT must be claude, openclaw, codex, or openhands for Haloop lifecycle capture.");
   }
   const cause = String(event?.terminationCause || "process-exit");
   const lifecycle =
