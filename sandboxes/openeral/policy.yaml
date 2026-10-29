@@ -161,8 +161,15 @@ network_policies:
           - allow: { method: POST, path: "/v1/messages/count_tokens" }
           - allow: { method: POST, path: "/v1/chat/completions" }
           - allow: { method: POST, path: "/chat/completions" }
+      - host: openrouter.ai
+        port: 443
+      - host: api.openai.com
+        port: 443
     binaries:
       - { path: /usr/bin/node }
+      - { path: /usr/local/bin/codex }
+      - { path: /usr/bin/codex }
+      - { path: /usr/bin/curl }
 
   # --- Socket.dev package registry ---
   # When --provider socket is configured with SOCKET_TOKEN, npm traffic

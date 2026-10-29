@@ -198,7 +198,8 @@ if [ "${OPENRIND_SHELL_AGENT:-}" = openhands ]; then
   fi
   set -- /usr/local/bin/openrind-openhands "$OPENRIND_SHELL_OPENHANDS_MODE"
 elif [ "${OPENRIND_SHELL_AGENT:-}" = "openclaw" ]; then
-  unset ANTHROPIC_BASE_URL
+  export ANTHROPIC_BASE_URL="http://127.0.0.1:8785"
+  export OPENRIND_GATEWAY_BASE_URL="http://127.0.0.1:8785"
   if [ ! -x /usr/local/bin/openrind-openclaw ]; then
     echo "Openrind Shell: FUSE-aware OpenClaw launcher is missing."
     exit 127
@@ -211,15 +212,46 @@ elif [ "${OPENRIND_SHELL_AGENT:-}" = "openclaw" ]; then
 elif [ "${OPENRIND_SHELL_AGENT:-}" = "codex" ]; then
   export OPENRIND_SHELL_CODEX_HOME="${OPENRIND_SHELL_CODEX_HOME:-/sandbox/codex-home}"
   export CODEX_HOME="${OPENRIND_SHELL_CODEX_HOME}"
-  if [ -x /usr/local/bin/openrind-codex ]; then
-    set -- /usr/local/bin/openrind-codex "$session_id"
-  elif [ -x /usr/local/bin/codex ]; then
-    set -- /usr/local/bin/codex
-  elif [ -x /usr/bin/codex ]; then
-    set -- /usr/bin/codex
-  else
-    set -- codex
+  export HOME="${OPENRIND_SHELL_CODEX_HOME}"
+  mkdir -p "$CODEX_HOME/.codex"
+
+  # Start the in-sandbox Haloop agent proxy if needed
+  if [ -f /opt/openrind-shell/haloop-agent-proxy.mjs ] && ! pgrep -f "haloop-agent-proxy.mjs" >/dev/null 2>&1; then
+    nohup /usr/bin/node /opt/openrind-shell/haloop-agent-proxy.mjs </dev/null >"$RUNTIME_DIR/proxy.log" 2>&1 &
+    for _i in $(seq 1 30); do
+      if curl -s -o /dev/null http://127.0.0.1:8785/healthz 2>/dev/null; then
+        break
+      fi
+      sleep 0.05
+    done
   fi
+
+  ACTIVE_KEY="${OPENROUTER_API_KEY:-${OPENAI_API_KEY:-${CODEX_API_KEY:-${ANTHROPIC_API_KEY:-}}}}"
+  if [ -n "$ACTIVE_KEY" ]; then
+    printf '{"auth_mode":"apikey","OPENAI_API_KEY":"%s"}\n' "$ACTIVE_KEY" > "$CODEX_HOME/.codex/auth.json"
+    printf '{"auth_mode":"apikey","OPENAI_API_KEY":"%s"}\n' "$ACTIVE_KEY" > "$CODEX_HOME/auth.json"
+    chmod 600 "$CODEX_HOME/.codex/auth.json" "$CODEX_HOME/auth.json" 2>/dev/null || true
+  fi
+
+  cat <<'EOF' > "$CODEX_HOME/config.toml"
+model = "gpt-4o"
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+
+[model_providers.openrouter]
+name = "OpenRouter"
+base_url = "https://openrouter.ai/api/v1"
+wire_api = "responses"
+EOF
+
+  if [ "${ACTIVE_KEY#sk-or-}" != "$ACTIVE_KEY" ]; then
+    printf 'model_provider = "openrouter"\nopenai_base_url = "https://openrouter.ai/api/v1"\n' >> "$CODEX_HOME/config.toml"
+    export OPENAI_BASE_URL="https://openrouter.ai/api/v1"
+  fi
+  export OPENAI_API_KEY="$ACTIVE_KEY"
+  export CODEX_API_KEY="$ACTIVE_KEY"
+
+  set -- codex --dangerously-bypass-approvals-and-sandbox
 else
   # Claude's wrapper owns FUSE health checks and the final durability flush.
   # Reassert the fixed Haloop endpoint and remove persisted bypass state before

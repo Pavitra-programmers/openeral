@@ -4,6 +4,15 @@ set -uo pipefail
 export HOME=/sandbox/openclaw-home
 export OPENRIND_SHELL_HOME=/sandbox/work
 export OPENRIND_SHELL_OPENCLAW_HOME=/sandbox/openclaw-home
+RUNTIME_DIR="${OPENRIND_SHELL_RUNTIME_DIR:-/var/lib/openrind-shell/runtime}"
+if [ -f "$RUNTIME_DIR/api-key.env" ]; then
+  # shellcheck disable=SC1090
+  . "$RUNTIME_DIR/api-key.env"
+fi
+if [ -f "$RUNTIME_DIR/session.env" ]; then
+  # shellcheck disable=SC1090
+  . "$RUNTIME_DIR/session.env"
+fi
 export NODE_NO_WARNINGS="${NODE_NO_WARNINGS:-1}"
 export OPENCLAW_NO_RESPAWN=1
 export OPENCLAW_SKIP_CHANNELS=1
@@ -60,7 +69,7 @@ if [ -f /opt/openrind-shell/haloop-agent-proxy.mjs ]; then
   export HALOOP_GATEWAY_URL="${HALOOP_GATEWAY_URL:-${HALOOP_UPSTREAM_URL:-http://136.112.93.84:8787}}"
   export HALOOP_UPSTREAM_URL="$HALOOP_GATEWAY_URL"
   export NODE_USE_ENV_PROXY=1
-  /usr/bin/node /opt/openrind-shell/haloop-agent-proxy.mjs &
+  nohup /usr/bin/node /opt/openrind-shell/haloop-agent-proxy.mjs </dev/null >"$RUNTIME_DIR/proxy.log" 2>&1 &
   PROXY_PID=$!
   for _i in $(seq 1 30); do
     if curl -s -o /dev/null http://127.0.0.1:8785/healthz 2>/dev/null; then
@@ -69,6 +78,10 @@ if [ -f /opt/openrind-shell/haloop-agent-proxy.mjs ]; then
     sleep 0.05
   done
   export OPENRIND_GATEWAY_BASE_URL="http://127.0.0.1:8785"
+  export ANTHROPIC_BASE_URL="http://127.0.0.1:8785"
+  if [ -f "$HOME/.openclaw/openclaw.json" ]; then
+    node -e 'try { const f=process.env.HOME+"/.openclaw/openclaw.json"; const fs=require("fs"); const c=JSON.parse(fs.readFileSync(f,"utf8")); if (c?.models?.providers?.["openrind-gateway"]) { c.models.providers["openrind-gateway"].baseUrl="http://127.0.0.1:8785"; fs.writeFileSync(f,JSON.stringify(c,null,2)); } } catch {}' 2>/dev/null || true
+  fi
 fi
 
 # Keep the real terminal on OpenClaw's stdin. The native fixed-target launcher
