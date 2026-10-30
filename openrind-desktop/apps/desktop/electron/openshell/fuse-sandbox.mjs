@@ -1,6 +1,6 @@
 // Openrind Shell FUSE Sandbox Provisioning - Release Build v0.14.0
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -54,6 +54,7 @@ const sandboxProvisioning = createSandboxProvisioningCoordinator();
 
 export async function requiredHaloopUpstreamApiKey() {
   const anthropicApiKey = (await getCredential("openRouterApiKey")) ||
+    (await getCredential("openaiApiKey")) ||
     (await getCredential("codexApiKey")) ||
     (await getCredential("anthropicApiKey"));
   return resolveHaloopUpstreamApiKey(anthropicApiKey);
@@ -61,6 +62,7 @@ export async function requiredHaloopUpstreamApiKey() {
 
 async function optionalHaloopUpstreamApiKey() {
   const anthropicApiKey = (await getCredential("openRouterApiKey")) ||
+    (await getCredential("openaiApiKey")) ||
     (await getCredential("codexApiKey")) ||
     (await getCredential("anthropicApiKey"));
   return resolveHaloopUpstreamApiKey(anthropicApiKey, { optional: true });
@@ -203,7 +205,7 @@ endpoints:
       - allow: { method: POST, path: "/chat/completions" }
       - allow: { method: GET, path: "/health" }
       - allow: { method: GET, path: "/healthz" }
-binaries: [/usr/bin/claude, /usr/local/bin/claude, /usr/local/bin/claude-real, /usr/local/bin/openrind-openclaw-agent, /usr/local/bin/openrind-openhands-agent]
+binaries: [/usr/bin/claude, /usr/local/bin/claude, /usr/local/bin/claude-real, /usr/local/bin/openrind-openclaw-agent, /usr/local/bin/openrind-openhands-agent, /usr/local/bin/codex, /usr/bin/codex, /usr/bin/node]
 `;
 
 export async function ensureHaloopProfileImported() {
@@ -1069,6 +1071,8 @@ export async function ensureBrowserPod(sandboxName, onProgress) {
     const aliasArgs = ["--network-alias", "openrind-browser-pod", "--network-alias", podName];
     if (shortPodName) aliasArgs.push("--network-alias", shortPodName);
 
+    await wslRun(["-d", DISTRO_NAME, "--", "docker", "rm", "-f", podName], { timeout: 10_000 }).catch(() => null);
+
     let start = await wslRun([
       "-d",
       DISTRO_NAME,
@@ -1114,6 +1118,36 @@ export async function ensureBrowserPod(sandboxName, onProgress) {
   return true;
 }
 
+export async function ensureRuntimeScripts(sandboxName) {
+  const scriptsDir = path.resolve(REPOSITORY_ROOT, "sandboxes/openeral");
+  if (!existsSync(scriptsDir)) return;
+
+  const scriptFiles = [
+    { src: path.join(scriptsDir, "haloop-agent-proxy.mjs"), dst: "/opt/openrind-shell/haloop-agent-proxy.mjs" },
+    { src: path.join(scriptsDir, "configure-openclaw-fuse.mjs"), dst: "/opt/openrind-shell/configure-openclaw-fuse.mjs" },
+    { src: path.join(scriptsDir, "openrind-openclaw-fuse.sh"), dst: "/usr/local/bin/openrind-openclaw" },
+    { src: path.join(scriptsDir, "openrind-desktop-claude-launch.sh"), dst: "/usr/local/bin/openrind-desktop-claude-launch" },
+  ];
+
+  const psRes = await wslRun(["-d", DISTRO_NAME, "--", "docker", "ps", "-q", "-f", `name=${sandboxName}`], { timeout: 10_000 }).catch(() => null);
+  const containerId = psRes?.stdout?.trim()?.split(/\s+/)[0];
+  if (!containerId) return;
+
+  for (const { src, dst } of scriptFiles) {
+    if (existsSync(src)) {
+      const content = readFileSync(src, "utf8");
+      await wslRun(
+        ["-d", DISTRO_NAME, "--", "docker", "exec", "-i", containerId, "tee", dst],
+        { timeout: 10_000, stdin: content }
+      ).catch(() => null);
+      await wslRun(
+        ["-d", DISTRO_NAME, "--", "docker", "exec", containerId, "chmod", "755", dst],
+        { timeout: 5_000 }
+      ).catch(() => null);
+    }
+  }
+}
+
 export function createOpenrindShellSandbox(options) {
   const name = String(options?.name ?? "").trim();
   const profile = String(options?.profile ?? "").trim();
@@ -1131,6 +1165,10 @@ export async function deleteOpenrindShellSandbox(name) {
   await ensureFuseRuntime();
   const podName = `openrind-browser-pod-${name}`;
   await wslRun(["-d", DISTRO_NAME, "--", "docker", "rm", "-f", podName], { timeout: 10_000 }).catch(() => null);
+  for (const prefix of [CLAUDE_HOME_VOLUME_PREFIX, OPENCLAW_HOME_VOLUME_PREFIX, CODEX_HOME_VOLUME_PREFIX, "openrind-openhands-home-"]) {
+    const vol = `${prefix}${name.toLowerCase()}`;
+    await wslRun(["-d", DISTRO_NAME, "--", "docker", "volume", "rm", "-f", vol], { timeout: 10_000 }).catch(() => null);
+  }
   return runFuseOpenShell(["sandbox", "delete", name], { ensure: false, timeout: 60_000 });
 }
 

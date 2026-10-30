@@ -9,10 +9,14 @@ if [ -f "$RUNTIME_DIR/api-key.env" ]; then
   # shellcheck disable=SC1090
   . "$RUNTIME_DIR/api-key.env"
 fi
+export OPENAI_API_KEY="${OPENAI_API_KEY:-${ANTHROPIC_API_KEY:-sk-openrind-compat-key}}"
+export CODEX_API_KEY="${CODEX_API_KEY:-$OPENAI_API_KEY}"
 if [ -f "$RUNTIME_DIR/session.env" ]; then
   # shellcheck disable=SC1090
   . "$RUNTIME_DIR/session.env"
 fi
+export OPENRIND_SHELL_OPENCLAW_HOME="${OPENRIND_SHELL_OPENCLAW_HOME:-/sandbox/openclaw-home}"
+export HOME="$OPENRIND_SHELL_OPENCLAW_HOME"
 export NODE_NO_WARNINGS="${NODE_NO_WARNINGS:-1}"
 export OPENCLAW_NO_RESPAWN=1
 export OPENCLAW_SKIP_CHANNELS=1
@@ -79,31 +83,6 @@ if [ -f /opt/openrind-shell/haloop-agent-proxy.mjs ]; then
   done
   export OPENRIND_GATEWAY_BASE_URL="http://127.0.0.1:8785"
   export ANTHROPIC_BASE_URL="http://127.0.0.1:8785"
-  if [ -f "$HOME/.openclaw/openclaw.json" ]; then
-    node -e '
-      try {
-        const fs = require("fs");
-        const p = process.env.HOME + "/.openclaw/openclaw.json";
-        const c = JSON.parse(fs.readFileSync(p, "utf8"));
-        c.models = c.models || {};
-        c.models.providers = c.models.providers || {};
-        const key = process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY || "key";
-        for (const prov of ["openrind-gateway", "openai", "openrouter"]) {
-          c.models.providers[prov] = {
-            baseUrl: "http://127.0.0.1:8785",
-            apiKey: key,
-            api: "anthropic-messages",
-            models: [
-              { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
-              { id: "gpt-4o", name: "GPT-4o" },
-              { id: "gpt-5.5", name: "GPT-5.5" }
-            ]
-          };
-        }
-        fs.writeFileSync(p, JSON.stringify(c, null, 2));
-      } catch {}
-    ' 2>/dev/null || true
-  fi
 fi
 
 # Keep the real terminal on OpenClaw's stdin. The native fixed-target launcher

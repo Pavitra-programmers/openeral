@@ -82,6 +82,11 @@ export async function deletePrimaryFuseSandbox(name) {
       `OpenShell sandbox delete failed: ${redactDatabaseUrl((result.stderr || result.stdout).trim()) || "(no output)"}`,
     );
   }
+  for (const prefix of ["openrind-claude-home-", "openrind-openclaw-home-", "openrind-codex-home-", "openrind-openhands-home-"]) {
+    const vol = `${prefix}${name.toLowerCase()}`;
+    await wslRun(["-d", DISTRO_NAME, "--", "docker", "volume", "rm", "-f", vol], { timeout: 10_000 }).catch(() => null);
+  }
+  await wslRun(["-d", DISTRO_NAME, "--", "docker", "rm", "-f", `openrind-browser-pod-${name}`], { timeout: 10_000 }).catch(() => null);
   return { deleted: true };
 }
 

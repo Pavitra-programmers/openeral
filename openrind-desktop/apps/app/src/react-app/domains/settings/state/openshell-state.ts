@@ -51,6 +51,7 @@ export type OpenrindShellCredentialKey =
   | "anthropicApiKey"
   | "openRouterApiKey"
   | "codexApiKey"
+  | "openaiApiKey"
   | "openrindGatewayApiKey"
   | "elevenLabsApiKey";
 
@@ -59,6 +60,7 @@ export type OpenrindShellCredentialStatus = {
   anthropicApiKey: "set" | "unset";
   openRouterApiKey?: "set" | "unset";
   codexApiKey?: "set" | "unset";
+  openaiApiKey?: "set" | "unset";
   openrindGatewayApiKey: "set" | "unset";
   elevenLabsApiKey: "set" | "unset";
   encryptionAvailable: boolean;
@@ -70,6 +72,8 @@ export type OpenrindShellCredentialStatus = {
   openRouterApiKey_updatedAt?: number;
   codexApiKey_masked?: string;
   codexApiKey_updatedAt?: number;
+  openaiApiKey_masked?: string;
+  openaiApiKey_updatedAt?: number;
   openrindGatewayApiKey_masked?: string;
   openrindGatewayApiKey_updatedAt?: number;
   elevenLabsApiKey_masked?: string;

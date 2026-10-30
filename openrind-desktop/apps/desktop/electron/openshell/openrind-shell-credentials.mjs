@@ -41,13 +41,14 @@ async function getSafeStorage() {
   return safeStorage;
 }
 
-/** @typedef {"databaseUrl" | "anthropicApiKey" | "openRouterApiKey" | "codexApiKey" | "openrindGatewayApiKey" | "elevenLabsApiKey"} CredentialKey */
+/** @typedef {"databaseUrl" | "anthropicApiKey" | "openRouterApiKey" | "codexApiKey" | "openaiApiKey" | "openrindGatewayApiKey" | "elevenLabsApiKey"} CredentialKey */
 
 const CREDENTIAL_KEYS = /** @type {const} */ ([
   "databaseUrl",
   "anthropicApiKey",
   "openRouterApiKey",
   "codexApiKey",
+  "openaiApiKey",
   "openrindGatewayApiKey",
   // ElevenLabs Scribe API key — optional, used for voice dictation
   // in the composer and sandbox terminal.

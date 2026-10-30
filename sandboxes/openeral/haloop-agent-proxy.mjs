@@ -189,6 +189,28 @@ function resolveProjectName() {
   return raw.replace(/^or-/, '') || 'default';
 }
 
+function readRuntimeEnv() {
+  const env = {};
+  const paths = [
+    '/var/lib/openrind-shell/runtime/api-key.env',
+    '/var/lib/openrind-shell/runtime/session.env',
+  ];
+  for (const p of paths) {
+    if (fs.existsSync(p)) {
+      try {
+        const lines = fs.readFileSync(p, 'utf8').split('\n');
+        for (const line of lines) {
+          const match = line.match(/^\s*(?:export\s+)?([A-Za-z0-9_]+)=['"]?(.*?)['"]?\s*$/);
+          if (match) {
+            env[match[1]] = match[2];
+          }
+        }
+      } catch {}
+    }
+  }
+  return env;
+}
+
 export function createHaloopAgentProxy(options = {}) {
   let targetBase = options.targetBase || process.env.HALOOP_UPSTREAM_URL || process.env.HALOOP_GATEWAY_URL || 'http://136.112.93.84:8787';
   if (targetBase.includes(':8785') || targetBase.includes('127.0.0.1:8785')) {
@@ -298,8 +320,76 @@ export function createHaloopAgentProxy(options = {}) {
       const isResponses = req.url === '/v1/responses' || req.url?.startsWith('/v1/responses') || req.url === '/responses';
       const isStream = Boolean(body?.stream);
 
+      const runtimeEnv = readRuntimeEnv();
+      const openRouterKey = (options.openRouterKey || process.env.OPENROUTER_API_KEY || runtimeEnv.OPENROUTER_API_KEY || '').trim();
+      const anthropicKey = (options.anthropicKey || process.env.ANTHROPIC_API_KEY || runtimeEnv.ANTHROPIC_API_KEY || '').trim();
+      const openAiKey = (options.openAiKey || process.env.OPENAI_API_KEY || runtimeEnv.OPENAI_API_KEY || process.env.CODEX_API_KEY || runtimeEnv.CODEX_API_KEY || '').trim();
+
+      function resolveProviderAndAuth(endpointType) {
+        if (endpointType === 'responses') {
+          if (openRouterKey && !openRouterKey.startsWith('sk-ant-')) {
+            return { provider: 'openrouter', key: openRouterKey };
+          }
+          if (openAiKey && !openAiKey.startsWith('sk-ant-') && !openAiKey.startsWith('sk-or-')) {
+            return { provider: 'openai', key: openAiKey };
+          }
+          if (anthropicKey.startsWith('sk-or-')) {
+            return { provider: 'openrouter', key: anthropicKey };
+          }
+          if (anthropicKey.startsWith('sk-proj-') || (anthropicKey.startsWith('sk-') && !anthropicKey.startsWith('sk-ant-'))) {
+            return { provider: 'openai', key: anthropicKey };
+          }
+          if (openRouterKey) return { provider: 'openrouter', key: openRouterKey };
+          if (openAiKey) return { provider: 'openai', key: openAiKey };
+          return { provider: 'anthropic', key: anthropicKey };
+        }
+
+        if (endpointType === 'messages') {
+          if (anthropicKey && anthropicKey.startsWith('sk-ant-')) {
+            return { provider: 'anthropic', key: anthropicKey, format: 'messages' };
+          }
+          if (openRouterKey && !openRouterKey.startsWith('sk-ant-')) {
+            return { provider: 'openrouter', key: openRouterKey, format: 'chat_completions' };
+          }
+          if (openAiKey && !openAiKey.startsWith('sk-ant-') && !openAiKey.startsWith('sk-or-')) {
+            return { provider: 'openai', key: openAiKey, format: 'chat_completions' };
+          }
+          if (anthropicKey.startsWith('sk-or-')) {
+            return { provider: 'openrouter', key: anthropicKey, format: 'chat_completions' };
+          }
+          if (anthropicKey.startsWith('sk-proj-')) {
+            return { provider: 'openai', key: anthropicKey, format: 'chat_completions' };
+          }
+          if (anthropicKey) return { provider: 'anthropic', key: anthropicKey, format: 'messages' };
+          if (openRouterKey) return { provider: 'openrouter', key: openRouterKey, format: 'chat_completions' };
+          if (openAiKey) return { provider: 'openai', key: openAiKey, format: 'chat_completions' };
+          return { provider: 'anthropic', key: '', format: 'messages' };
+        }
+
+        if (openRouterKey && !openRouterKey.startsWith('sk-ant-')) {
+          return { provider: 'openrouter', key: openRouterKey };
+        }
+        if (openAiKey && !openAiKey.startsWith('sk-ant-') && !openAiKey.startsWith('sk-or-')) {
+          return { provider: 'openai', key: openAiKey };
+        }
+        if (anthropicKey && anthropicKey.startsWith('sk-ant-')) {
+          return { provider: 'anthropic', key: anthropicKey };
+        }
+        if (anthropicKey.startsWith('sk-or-')) {
+          return { provider: 'openrouter', key: anthropicKey };
+        }
+        if (anthropicKey.startsWith('sk-proj-') || (anthropicKey.startsWith('sk-') && !anthropicKey.startsWith('sk-ant-'))) {
+          return { provider: 'openai', key: anthropicKey };
+        }
+        if (openRouterKey) return { provider: 'openrouter', key: openRouterKey };
+        if (openAiKey) return { provider: 'openai', key: openAiKey };
+        if (anthropicKey) return { provider: 'anthropic', key: anthropicKey };
+        return { provider: 'openrouter', key: '' };
+      }
+
       // Handle OpenAI Responses API (used by Codex CLI v0.165+)
       if (isResponses && body) {
+        const route = resolveProviderAndAuth('responses');
         const messages = [];
         if (Array.isArray(body.input)) {
           for (const item of body.input) {
@@ -309,9 +399,34 @@ export function createHaloopAgentProxy(options = {}) {
               if (typeof item.content === 'string') {
                 text = item.content;
               } else if (Array.isArray(item.content)) {
-                text = item.content.map(c => c.text || c.input_text || '').join('\n');
+                text = item.content.map(c => c.text || c.input_text || c.output_text || '').join('\n');
               }
               messages.push({ role, content: text });
+            } else if (item.type === 'function_call' || item.type === 'tool_call' || item.type === 'custom_tool_call') {
+              const tc = {
+                id: item.call_id || item.id,
+                type: 'function',
+                function: {
+                  name: item.name,
+                  arguments: typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments || {}),
+                },
+              };
+              const lastMsg = messages[messages.length - 1];
+              if (lastMsg && lastMsg.role === 'assistant') {
+                lastMsg.tool_calls = lastMsg.tool_calls || [];
+                lastMsg.tool_calls.push(tc);
+              } else {
+                messages.push({
+                  role: 'assistant',
+                  tool_calls: [tc],
+                });
+              }
+            } else if (item.type === 'function_call_output' || item.type === 'tool_call_output' || item.type === 'tool_response') {
+              messages.push({
+                role: 'tool',
+                tool_call_id: item.call_id || item.id,
+                content: typeof item.output === 'string' ? item.output : JSON.stringify(item.output || ''),
+              });
             }
           }
         }
@@ -319,29 +434,45 @@ export function createHaloopAgentProxy(options = {}) {
           messages.push({ role: 'user', content: 'hello' });
         }
 
-        let requested = body?.model || process.env.OPENROUTER_MODEL || process.env.LLM_MODEL || defaultModel;
-        if (!requested || requested === 'default' || requested.includes('openrind-gateway') || requested === 'claude-sonnet-4-6') {
-          requested = 'anthropic/claude-3.5-sonnet';
-        } else if (requested === 'gpt-4o' || requested === 'openai/gpt-4o') {
-          requested = 'openai/gpt-4o';
-        } else if (requested === 'gpt-5.5' || requested === 'openai/gpt-5.5') {
-          requested = 'openai/gpt-4o';
+        let tools = undefined;
+        if (Array.isArray(body.tools) && body.tools.length > 0) {
+          tools = body.tools.map(t => {
+            if (t.type === 'function') {
+              if (t.function) return t;
+              return {
+                type: 'function',
+                function: {
+                  name: t.name,
+                  description: t.description || '',
+                  parameters: t.parameters || { type: 'object', properties: {} },
+                  ...(t.strict !== undefined ? { strict: t.strict } : {}),
+                },
+              };
+            }
+            return t;
+          });
         }
 
-        const candidates = [
-          requested,
-          'anthropic/claude-3.5-sonnet',
-          'openai/gpt-4o',
-          'google/gemini-2.0-flash-exp:free',
-          'meta-llama/llama-3.3-70b-instruct:free'
-        ];
-        const fallbackModels = [...new Set(candidates)].slice(0, 3);
+        let requested = body?.model || process.env.OPENROUTER_MODEL || process.env.LLM_MODEL || defaultModel;
+        if (!requested || requested === 'default' || requested.includes('openrind-gateway') || requested === 'claude-sonnet-4-6') {
+          requested = route.provider === 'openai' ? 'gpt-4o' : 'openai/gpt-4o';
+        } else if (route.provider === 'openai' && requested.startsWith('openai/')) {
+          requested = requested.slice(7);
+        } else if (route.provider === 'openrouter' && !requested.includes('/')) {
+          requested = 'openai/' + requested;
+        }
+
         const payloadObj = {
           model: requested,
-          models: fallbackModels,
           messages,
           stream: true,
+          ...(tools ? { tools } : {}),
         };
+        if (body.temperature !== undefined) payloadObj.temperature = body.temperature;
+        if (body.top_p !== undefined) payloadObj.top_p = body.top_p;
+        if (body.max_tokens !== undefined) payloadObj.max_tokens = body.max_tokens;
+        if (body.tool_choice !== undefined) payloadObj.tool_choice = body.tool_choice;
+
         const openAiPayload = JSON.stringify(payloadObj);
 
         const projectName = resolveProjectName();
@@ -350,7 +481,7 @@ export function createHaloopAgentProxy(options = {}) {
         const forwardHeaders = {
           'content-type': 'application/json',
           'content-length': Buffer.byteLength(openAiPayload),
-          'x-w8-haloop-provider': 'openrouter',
+          'x-w8-haloop-provider': route.provider,
           ...(adminToken ? { 'x-w8-haloop-admin-token': adminToken } : {}),
           'x-w8-haloop-metadata': JSON.stringify({ project: projectName, session_id: proxySessionId, trace_id: proxySessionId }),
           'x-w8-haloop-config': JSON.stringify({
@@ -363,16 +494,29 @@ export function createHaloopAgentProxy(options = {}) {
           forwardHeaders['x-openrind-haloop-session'] = sessionContext;
         }
 
-        const authKey = openRouterKey || defaultKey;
-        if (authKey) {
-          forwardHeaders['authorization'] = authKey.startsWith('Bearer ')
-            ? authKey
-            : `Bearer ${authKey}`;
-          forwardHeaders['x-api-key'] = authKey;
-          forwardHeaders['x-w8-haloop-api-key'] = authKey;
+        if (route.key) {
+          if (route.provider === 'anthropic') {
+            forwardHeaders['x-api-key'] = route.key;
+            forwardHeaders['x-w8-haloop-api-key'] = route.key;
+          } else {
+            forwardHeaders['authorization'] = route.key.startsWith('Bearer ') ? route.key : `Bearer ${route.key}`;
+            forwardHeaders['x-api-key'] = route.key;
+            forwardHeaders['x-w8-haloop-api-key'] = route.key;
+          }
         }
 
         const upstream = sendUpstream('/v1/chat/completions', 'POST', forwardHeaders, upstreamRes => {
+          if (upstreamRes.statusCode < 200 || upstreamRes.statusCode >= 300) {
+            let errChunks = [];
+            upstreamRes.on('data', c => errChunks.push(c));
+            upstreamRes.on('end', () => {
+              const errBody = Buffer.concat(errChunks).toString('utf8');
+              res.writeHead(upstreamRes.statusCode || 500, { 'content-type': 'application/json' });
+              res.end(errBody);
+            });
+            return;
+          }
+
           res.writeHead(200, {
             'content-type': 'text/event-stream; charset=utf-8',
             'cache-control': 'no-cache',
@@ -383,10 +527,12 @@ export function createHaloopAgentProxy(options = {}) {
           const msgId = `msg_${randomBytes(12).toString('hex')}`;
 
           res.write(`event: response.created\ndata: ${JSON.stringify({ type: 'response.created', response: { id: respId, status: 'in_progress' } })}\n\n`);
-          res.write(`event: response.output_item.added\ndata: ${JSON.stringify({ type: 'response.output_item.added', response_id: respId, output_index: 0, item: { id: msgId, type: 'message', role: 'assistant', content: [] } })}\n\n`);
-          res.write(`event: response.content_part.added\ndata: ${JSON.stringify({ type: 'response.content_part.added', response_id: respId, output_index: 0, content_index: 0, part: { type: 'output_text', text: '' } })}\n\n`);
 
+          let textStarted = false;
+          let textItemIndex = 0;
           let accumulatedText = '';
+          let activeToolCalls = new Map();
+          let outputIndexCounter = 0;
           let sseBuffer = '';
 
           upstreamRes.on('data', chunk => {
@@ -404,43 +550,126 @@ export function createHaloopAgentProxy(options = {}) {
                 const delta = parsed.choices?.[0]?.delta;
                 const textPiece = delta?.content || delta?.reasoning || (delta?.reasoning_details?.[0]?.text) || '';
                 if (textPiece) {
+                  if (!textStarted) {
+                    textStarted = true;
+                    textItemIndex = outputIndexCounter++;
+                    res.write(`event: response.output_item.added\ndata: ${JSON.stringify({
+                      type: 'response.output_item.added',
+                      response_id: respId,
+                      output_index: textItemIndex,
+                      item: { id: msgId, type: 'message', role: 'assistant', content: [] },
+                    })}\n\n`);
+                    res.write(`event: response.content_part.added\ndata: ${JSON.stringify({
+                      type: 'response.content_part.added',
+                      response_id: respId,
+                      output_index: textItemIndex,
+                      content_index: 0,
+                      part: { type: 'output_text', text: '' },
+                    })}\n\n`);
+                  }
                   accumulatedText += textPiece;
-                  res.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ type: 'response.output_text.delta', response_id: respId, output_index: 0, content_index: 0, delta: textPiece })}\n\n`);
+                  res.write(`event: response.output_text.delta\ndata: ${JSON.stringify({
+                    type: 'response.output_text.delta',
+                    response_id: respId,
+                    output_index: textItemIndex,
+                    content_index: 0,
+                    delta: textPiece,
+                  })}\n\n`);
+                }
+
+                if (Array.isArray(delta?.tool_calls)) {
+                  for (const tc of delta.tool_calls) {
+                    const idx = tc.index ?? 0;
+                    if (!activeToolCalls.has(idx)) {
+                      const toolItemIndex = outputIndexCounter++;
+                      const callId = tc.id || `call_${randomBytes(8).toString('hex')}`;
+                      const name = tc.function?.name || '';
+                      const toolCallInfo = {
+                        id: callId,
+                        call_id: callId,
+                        name,
+                        arguments: '',
+                        outputIndex: toolItemIndex,
+                      };
+                      activeToolCalls.set(idx, toolCallInfo);
+                      res.write(`event: response.output_item.added\ndata: ${JSON.stringify({
+                        type: 'response.output_item.added',
+                        response_id: respId,
+                        output_index: toolItemIndex,
+                        item: { id: callId, type: 'function_call', call_id: callId, name, arguments: '' },
+                      })}\n\n`);
+                    }
+                    const info = activeToolCalls.get(idx);
+                    if (tc.function?.arguments) {
+                      info.arguments += tc.function.arguments;
+                      res.write(`event: response.function_call_arguments.delta\ndata: ${JSON.stringify({
+                        type: 'response.function_call_arguments.delta',
+                        response_id: respId,
+                        output_index: info.outputIndex,
+                        call_id: info.call_id,
+                        delta: tc.function.arguments,
+                      })}\n\n`);
+                    }
+                  }
                 }
               } catch {}
             }
           });
 
           upstreamRes.on('end', () => {
-            const outputText = accumulatedText || 'I am your coding assistant. How can I help you today?';
+            if (textStarted) {
+              res.write(`event: response.output_text.done\ndata: ${JSON.stringify({
+                type: 'response.output_text.done',
+                response_id: respId,
+                output_index: textItemIndex,
+                content_index: 0,
+                text: accumulatedText,
+              })}\n\n`);
+              res.write(`event: response.output_item.done\ndata: ${JSON.stringify({
+                type: 'response.output_item.done',
+                response_id: respId,
+                output_index: textItemIndex,
+                item: { id: msgId, type: 'message', role: 'assistant', content: [{ type: 'output_text', text: accumulatedText }] },
+              })}\n\n`);
+            }
+            for (const info of activeToolCalls.values()) {
+              res.write(`event: response.function_call_arguments.done\ndata: ${JSON.stringify({
+                type: 'response.function_call_arguments.done',
+                response_id: respId,
+                output_index: info.outputIndex,
+                call_id: info.call_id,
+                arguments: info.arguments,
+              })}\n\n`);
+              res.write(`event: response.output_item.done\ndata: ${JSON.stringify({
+                type: 'response.output_item.done',
+                response_id: respId,
+                output_index: info.outputIndex,
+                item: { id: info.id, type: 'function_call', call_id: info.call_id, name: info.name, arguments: info.arguments },
+              })}\n\n`);
+            }
+
+            const outputItems = [];
+            if (textStarted) {
+              outputItems.push({ id: msgId, type: 'message', role: 'assistant', content: [{ type: 'output_text', text: accumulatedText }] });
+            }
+            for (const info of activeToolCalls.values()) {
+              outputItems.push({ id: info.id, type: 'function_call', call_id: info.call_id, name: info.name, arguments: info.arguments });
+            }
+            if (outputItems.length === 0) {
+              outputItems.push({ id: msgId, type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Task completed.' }] });
+            }
             const inTokens = Math.max(1, Math.ceil(Buffer.byteLength(JSON.stringify(messages)) / 4));
-            const outTokens = Math.max(1, Math.ceil(Buffer.byteLength(outputText) / 4));
-            const completedPayload = {
+            const outTokens = Math.max(1, Math.ceil(Buffer.byteLength(accumulatedText) / 4));
+            res.write(`event: response.completed\ndata: ${JSON.stringify({
               type: 'response.completed',
               response: {
                 id: respId,
                 object: 'response',
                 status: 'completed',
-                output: [
-                  {
-                    id: msgId,
-                    type: 'message',
-                    role: 'assistant',
-                    content: [{ type: 'output_text', text: outputText }]
-                  }
-                ],
-                usage: {
-                  total_tokens: inTokens + outTokens,
-                  input_tokens: inTokens,
-                  output_tokens: outTokens,
-                  input_tokens_details: { cached_tokens: 0 },
-                  output_tokens_details: { reasoning_tokens: 0 }
-                }
-              }
-            };
-            res.write(`event: response.output_text.done\ndata: ${JSON.stringify({ type: 'response.output_text.done', response_id: respId, output_index: 0, content_index: 0, text: outputText })}\n\n`);
-            res.write(`event: response.output_item.done\ndata: ${JSON.stringify({ type: 'response.output_item.done', response_id: respId, output_index: 0, item: { id: msgId, type: 'message', role: 'assistant', content: [{ type: 'output_text', text: outputText }] } })}\n\n`);
-            res.write(`event: response.completed\ndata: ${JSON.stringify(completedPayload)}\n\n`);
+                output: outputItems,
+                usage: { total_tokens: inTokens + outTokens, input_tokens: inTokens, output_tokens: outTokens, input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } },
+              },
+            })}\n\n`);
             setTimeout(() => res.end(), 50);
           });
         });
@@ -458,16 +687,20 @@ export function createHaloopAgentProxy(options = {}) {
         return;
       }
 
-      // If using OpenRouter, adapt /v1/messages to OpenRouter /v1/chat/completions
-      if (isMessages && body && isOpenRouterKey) {
+      // If using OpenRouter or OpenAI, adapt /v1/messages to /v1/chat/completions
+      const messagesRoute = isMessages ? resolveProviderAndAuth('messages') : null;
+      if (isMessages && body && messagesRoute && messagesRoute.format === 'chat_completions') {
         const clientToolNames = Array.isArray(body?.tools) ? body.tools.map(t => t.name) : [];
         let chosenModel = body?.model || process.env.OPENROUTER_MODEL || process.env.LLM_MODEL || defaultModel;
         if (!chosenModel || chosenModel === 'default' || chosenModel.includes('openrind-gateway') || chosenModel === 'claude-sonnet-4-6') {
-          chosenModel = 'anthropic/claude-3.5-sonnet';
-        } else if (chosenModel === 'gpt-4o' || chosenModel === 'openai/gpt-4o') {
-          chosenModel = 'openai/gpt-4o';
+          chosenModel = messagesRoute.provider === 'openai' ? 'gpt-4o' : 'anthropic/claude-3.5-sonnet';
         } else if (chosenModel === 'gpt-5.5' || chosenModel === 'openai/gpt-5.5') {
-          chosenModel = 'openai/gpt-4o';
+          chosenModel = messagesRoute.provider === 'openai' ? 'gpt-4o' : 'openai/gpt-4o';
+        } else if (messagesRoute.provider === 'openrouter' && !chosenModel.includes('/')) {
+          if (chosenModel.startsWith('claude-')) chosenModel = 'anthropic/' + chosenModel;
+          else if (chosenModel.startsWith('gpt-')) chosenModel = 'openai/' + chosenModel;
+        } else if (messagesRoute.provider === 'openai' && chosenModel.startsWith('openai/')) {
+          chosenModel = chosenModel.slice(7);
         }
 
         const candidates = [
@@ -538,7 +771,7 @@ export function createHaloopAgentProxy(options = {}) {
         const forwardHeaders = {
           'content-type': 'application/json',
           'content-length': Buffer.byteLength(openAiPayload),
-          'x-w8-haloop-provider': 'openrouter',
+          'x-w8-haloop-provider': messagesRoute.provider,
           ...(adminToken ? { 'x-w8-haloop-admin-token': adminToken } : {}),
           'x-w8-haloop-metadata': JSON.stringify({ project: projectName, session_id: proxySessionId, trace_id: proxySessionId }),
           'x-w8-haloop-config': JSON.stringify({
@@ -551,7 +784,7 @@ export function createHaloopAgentProxy(options = {}) {
           forwardHeaders['x-openrind-haloop-session'] = sessionContext;
         }
 
-        const authKey = openRouterKey || defaultKey;
+        const authKey = messagesRoute.key || openRouterKey || defaultKey;
         if (authKey) {
           forwardHeaders['authorization'] = authKey.startsWith('Bearer ')
             ? authKey
@@ -989,11 +1222,12 @@ export function createHaloopAgentProxy(options = {}) {
       }
 
       // Default passthrough for other routes or if using native anthropic key
+      const passthroughRoute = resolveProviderAndAuth(req.url?.includes('chat/completions') ? 'chat_completions' : (isMessages ? 'messages' : 'chat_completions'));
       const projectName = resolveProjectName();
       const collectorUrl = process.env.HALOOP_COLLECTOR_URL || 'http://136.112.93.84:8788';
       const sessionContext = process.env.OPENRIND_HALOOP_SESSION_CONTEXT || req.headers['x-openrind-haloop-session'] || '';
       const headers = { ...req.headers };
-      headers['x-w8-haloop-provider'] = provider;
+      headers['x-w8-haloop-provider'] = passthroughRoute.provider || provider;
       headers['x-w8-haloop-admin-token'] = adminToken;
       headers['x-w8-haloop-metadata'] = JSON.stringify({ project: projectName, session_id: proxySessionId, trace_id: proxySessionId });
       headers['x-w8-haloop-config'] = JSON.stringify({
@@ -1005,12 +1239,19 @@ export function createHaloopAgentProxy(options = {}) {
         headers['x-openrind-haloop-session'] = sessionContext;
       }
 
-      if (defaultKey) {
-        headers['authorization'] = defaultKey.startsWith('Bearer ')
-          ? defaultKey
-          : `Bearer ${defaultKey}`;
-        headers['x-api-key'] = defaultKey;
-        headers['x-w8-haloop-api-key'] = defaultKey;
+      const passKey = passthroughRoute.key || defaultKey;
+      if (passKey) {
+        if (passthroughRoute.provider === 'anthropic') {
+          headers['x-api-key'] = passKey;
+          headers['x-w8-haloop-api-key'] = passKey;
+          delete headers['authorization'];
+        } else {
+          headers['authorization'] = passKey.startsWith('Bearer ')
+            ? passKey
+            : `Bearer ${passKey}`;
+          headers['x-api-key'] = passKey;
+          headers['x-w8-haloop-api-key'] = passKey;
+        }
       }
 
       const clientReq = sendUpstream(req.url, req.method, headers, clientRes => {

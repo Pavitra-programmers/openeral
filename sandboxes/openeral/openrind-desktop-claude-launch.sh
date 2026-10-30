@@ -170,7 +170,7 @@ Active Browser Pod: openrind-browser-pod (Port 9222)
 You are a helpful coding and web assistant.
 You have full access to terminal bash command execution and the Chromium browser.
 When asked to visit, search, browse, or interact with any website or URL:
-Execute the bash terminal commands using `agent-browser`:
+You can use the `browser` tool (with profile="openclaw"), or execute bash terminal commands using `agent-browser`:
 1. Open a website in the browser:
    Run in terminal: `agent-browser --session web open "<url>"`
 2. Read the interactive page elements:
@@ -182,7 +182,7 @@ Execute the bash terminal commands using `agent-browser`:
 5. Always close the browser when finished:
    Run in terminal: `agent-browser --session web close`
 
-DO NOT output pseudo-tool tags like <|message_model|>. ALWAYS execute bash commands in the terminal using the command execution tool.
+DO NOT output pseudo-tool tags like <|message_model|>. ALWAYS execute real tool calls or bash commands in the terminal using the command execution tool.
 EOF
   cp -f /sandbox/work/AGENTS.md /sandbox/work/CLAUDE.md 2>/dev/null || true
   cp -f /sandbox/work/AGENTS.md /sandbox/work/CODEX.md 2>/dev/null || true
@@ -199,8 +199,26 @@ if [ "${OPENRIND_SHELL_AGENT:-}" = openhands ]; then
   fi
   set -- /usr/local/bin/openrind-openhands "$OPENRIND_SHELL_OPENHANDS_MODE"
 elif [ "${OPENRIND_SHELL_AGENT:-}" = "openclaw" ]; then
+  export OPENRIND_SHELL_OPENCLAW_HOME="${OPENRIND_SHELL_OPENCLAW_HOME:-/sandbox/openclaw-home}"
+  export HOME="${OPENRIND_SHELL_OPENCLAW_HOME}"
   export ANTHROPIC_BASE_URL="http://127.0.0.1:8785"
   export OPENRIND_GATEWAY_BASE_URL="http://127.0.0.1:8785"
+
+  # Start the in-sandbox Haloop agent proxy if needed
+  if [ -f /opt/openrind-shell/haloop-agent-proxy.mjs ] && ! pgrep -f "haloop-agent-proxy.mjs" >/dev/null 2>&1; then
+    nohup /usr/bin/node /opt/openrind-shell/haloop-agent-proxy.mjs </dev/null >"$RUNTIME_DIR/proxy.log" 2>&1 &
+    for _i in $(seq 1 30); do
+      if curl -s -o /dev/null http://127.0.0.1:8785/healthz 2>/dev/null; then
+        break
+      fi
+      sleep 0.05
+    done
+  fi
+
+  if [ -f /opt/openrind-shell/configure-openclaw-fuse.mjs ]; then
+    HOME="$OPENRIND_SHELL_OPENCLAW_HOME" /usr/bin/node /opt/openrind-shell/configure-openclaw-fuse.mjs >/dev/null 2>&1 || true
+  fi
+
   if [ ! -x /usr/local/bin/openrind-openclaw ]; then
     echo "Openrind Shell: FUSE-aware OpenClaw launcher is missing."
     exit 127
@@ -216,8 +234,9 @@ elif [ "${OPENRIND_SHELL_AGENT:-}" = "codex" ]; then
   export HOME="${OPENRIND_SHELL_CODEX_HOME}"
   mkdir -p "$CODEX_HOME/.codex"
 
-  # Start the in-sandbox Haloop agent proxy if needed
-  if [ -f /opt/openrind-shell/haloop-agent-proxy.mjs ] && ! pgrep -f "haloop-agent-proxy.mjs" >/dev/null 2>&1; then
+  # Restart in-sandbox proxy to ensure latest proxy handlers are running
+  pkill -f "haloop-agent-proxy.mjs" >/dev/null 2>&1 || true
+  if [ -f /opt/openrind-shell/haloop-agent-proxy.mjs ]; then
     nohup /usr/bin/node /opt/openrind-shell/haloop-agent-proxy.mjs </dev/null >"$RUNTIME_DIR/proxy.log" 2>&1 &
     for _i in $(seq 1 30); do
       if curl -s -o /dev/null http://127.0.0.1:8785/healthz 2>/dev/null; then
@@ -246,6 +265,9 @@ base_url = "http://127.0.0.1:8785/v1"
 wire_api = "responses"
 requires_openai_auth = false
 supports_websockets = false
+
+[tui]
+screen_reader_detection_done = true
 EOF
   cp "$CODEX_HOME/config.toml" "$CODEX_HOME/.codex/config.toml" 2>/dev/null || true
 
@@ -253,17 +275,36 @@ EOF
   export OPENAI_API_KEY="$ACTIVE_KEY"
   export CODEX_API_KEY="$ACTIVE_KEY"
 
-  set -- codex --dangerously-bypass-approvals-and-sandbox
+  cd "${OPENRIND_SHELL_HOME:-/sandbox/work}" 2>/dev/null || cd /sandbox/work 2>/dev/null || true
+
+  set -- codex -C "${OPENRIND_SHELL_HOME:-/sandbox/work}" --dangerously-bypass-approvals-and-sandbox
 else
   # Claude's wrapper owns FUSE health checks and the final durability flush.
   # Reassert the fixed Haloop endpoint and remove persisted bypass state before
   # every new or resumed Claude process. Failure is fatal: direct inference is
   # not a supported recovery path in this image contract.
   export OPENRIND_SHELL_CLAUDE_HOME="${OPENRIND_SHELL_CLAUDE_HOME:-/sandbox/claude-home}"
+  export HOME="${OPENRIND_SHELL_CLAUDE_HOME}"
   node /opt/openrind-shell/configure-haloop.mjs >/dev/null 2>&1 || true
-  if [ -f "$RUNTIME_DIR/anthropic-base-url" ]; then
-    export ANTHROPIC_BASE_URL="$(cat "$RUNTIME_DIR/anthropic-base-url" 2>/dev/null | tr -d '\r\n ')"
+
+  # Start the in-sandbox Haloop agent proxy if needed so Claude accepts both OpenRouter and Anthropic keys
+  if [ -f /opt/openrind-shell/haloop-agent-proxy.mjs ] && ! pgrep -f "haloop-agent-proxy.mjs" >/dev/null 2>&1; then
+    nohup /usr/bin/node /opt/openrind-shell/haloop-agent-proxy.mjs </dev/null >"$RUNTIME_DIR/proxy.log" 2>&1 &
+    for _i in $(seq 1 30); do
+      if curl -s -o /dev/null http://127.0.0.1:8785/healthz 2>/dev/null; then
+        break
+      fi
+      sleep 0.05
+    done
   fi
+
+  export ANTHROPIC_BASE_URL="http://127.0.0.1:8785"
+  for s_file in "$HOME/.claude/settings.json" "/sandbox/claude-home/.claude/settings.json"; do
+    if [ -f "$s_file" ]; then
+      node -e 'try { const p = process.argv[1]; const f = require("fs"); const s = JSON.parse(f.readFileSync(p, "utf8")); s.env = s.env || {}; s.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:8785"; f.writeFileSync(p, JSON.stringify(s, null, 2)); } catch {}' "$s_file" 2>/dev/null || true
+    fi
+  done
+
   if [ ! -x /usr/local/bin/claude ]; then
     echo "Openrind Shell: FUSE-aware Claude launcher is missing."
     exit 127

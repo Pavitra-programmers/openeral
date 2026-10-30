@@ -811,7 +811,20 @@ function openOpenrindShellPtySession(opts) {
       let upstreamKey = "";
       try { upstreamKey = await openrindShell.requiredHaloopUpstreamApiKey(); } catch {}
       upstreamKey = (upstreamKey || process.env.ANTHROPIC_API_KEY || "").trim();
+      const [anthropicApiKey, openRouterApiKey, codexApiKey, openaiApiKey] = await Promise.all([
+        openrindCredentials.getCredential("anthropicApiKey").catch(() => null),
+        openrindCredentials.getCredential("openRouterApiKey").catch(() => null),
+        openrindCredentials.getCredential("codexApiKey").catch(() => null),
+        openrindCredentials.getCredential("openaiApiKey").catch(() => null),
+      ]);
+      const keyBundle = {
+        anthropicApiKey: anthropicApiKey || (upstreamKey.startsWith("sk-ant-") ? upstreamKey : null),
+        openRouterApiKey: openRouterApiKey || (upstreamKey.startsWith("sk-or-") ? upstreamKey : null),
+        codexApiKey: codexApiKey || (!upstreamKey.startsWith("sk-ant-") && !upstreamKey.startsWith("sk-or-") ? upstreamKey : null),
+        openaiApiKey: openaiApiKey || codexApiKey,
+      };
       await openrindShell.ensureBrowserPod(sandboxName).catch(() => {});
+      await openrindShell.ensureRuntimeScripts(sandboxName).catch(() => {});
       await writeOpenrindShellSessionMarker(
         sandboxName,
         profile,
@@ -819,7 +832,7 @@ function openOpenrindShellPtySession(opts) {
         haloopSessionAssertion,
         undefined,
         undefined,
-        upstreamKey,
+        keyBundle,
       );
       // Even a desktop launch without a session id writes the `auto` marker, so
       // every fresh connect must wait for this marker to be consumed.
@@ -3370,6 +3383,19 @@ async function handleDesktopInvoke(event, command, ...args) {
         let upstreamKey = "";
         try { upstreamKey = await openrindShell.requiredHaloopUpstreamApiKey(); } catch {}
         upstreamKey = (upstreamKey || process.env.ANTHROPIC_API_KEY || "").trim();
+        const [anthropicApiKey, openRouterApiKey, codexApiKey, openaiApiKey] = await Promise.all([
+          openrindCredentials.getCredential("anthropicApiKey").catch(() => null),
+          openrindCredentials.getCredential("openRouterApiKey").catch(() => null),
+          openrindCredentials.getCredential("codexApiKey").catch(() => null),
+          openrindCredentials.getCredential("openaiApiKey").catch(() => null),
+        ]);
+        const keyBundle = {
+          anthropicApiKey: anthropicApiKey || (upstreamKey.startsWith("sk-ant-") ? upstreamKey : null),
+          openRouterApiKey: openRouterApiKey || (upstreamKey.startsWith("sk-or-") ? upstreamKey : null),
+          codexApiKey: codexApiKey || (!upstreamKey.startsWith("sk-ant-") && !upstreamKey.startsWith("sk-or-") ? upstreamKey : null),
+          openaiApiKey: openaiApiKey || codexApiKey,
+        };
+        await openrindShell.ensureRuntimeScripts(sandboxName).catch(() => {});
         await writeOpenrindShellSessionMarker(
           sandboxName,
           profile,
@@ -3377,7 +3403,7 @@ async function handleDesktopInvoke(event, command, ...args) {
           haloop.sessionAssertion,
           undefined,
           undefined,
-          upstreamKey,
+          keyBundle,
         );
         const terminal = await launchExternalTerminalToSandbox(sandboxName);
         return terminal;

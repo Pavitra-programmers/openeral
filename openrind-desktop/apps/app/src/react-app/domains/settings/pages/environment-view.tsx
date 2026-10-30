@@ -83,6 +83,14 @@ const PREDEFINED_CREDENTIALS: PredefinedCredentialDef[] = [
     placeholder: "sk-...",
   },
   {
+    statusKey: "openaiApiKey",
+    envVarName: "OPENAI_API_KEY",
+    label: "OPENAI_API_KEY",
+    description:
+      "OpenAI API key for OpenClaw, OpenHands, and Codex CLI.",
+    placeholder: "sk-proj-...",
+  },
+  {
     statusKey: "openrindGatewayApiKey",
     envVarName: "OPENRIND_GATEWAY_API_KEY",
     label: "OPENRIND_GATEWAY_API_KEY",

@@ -25,6 +25,7 @@ type CredentialStatus = {
   anthropicApiKey: "set" | "unset" | "unknown";
   openRouterApiKey?: "set" | "unset" | "unknown";
   codexApiKey?: "set" | "unset" | "unknown";
+  openaiApiKey?: "set" | "unset" | "unknown";
   openrindShellAgent: string | null;
   openrindGatewayApiBase: string | null;
 };
@@ -58,7 +59,7 @@ export function CreateSandboxModal(props: CreateSandboxModalProps) {
   }, [props.open]);
 
   const dbReady = creds?.databaseUrl === "set";
-  const apiReady = creds?.anthropicApiKey === "set" || creds?.openRouterApiKey === "set" || creds?.codexApiKey === "set";
+  const apiReady = creds?.anthropicApiKey === "set" || creds?.openRouterApiKey === "set" || creds?.codexApiKey === "set" || creds?.openaiApiKey === "set";
   const dbBlocked = !dbReady;
   const authBlocked = !apiReady;
   
