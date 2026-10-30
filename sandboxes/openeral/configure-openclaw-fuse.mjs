@@ -149,23 +149,8 @@ config.models.providers[PROVIDER_ID] = {
   models: [{ id: modelId, name: modelId === DEFAULT_MODEL_ID ? "Claude Sonnet 4.6" : modelId }],
 };
 
-function resolveSandboxName() {
-  let raw = (
-    process.env.OPENRIND_SANDBOX_NAME ||
-    process.env.OPENRIND_SHELL_SANDBOX_NAME ||
-    process.env.OPENRIND_SHELL_WORKSPACE_ID ||
-    process.env.WORKSPACE_ID ||
-    ""
-  ).trim();
-  if (!raw && existsSync("/var/lib/openrind-shell/runtime/sandbox-name")) {
-    try { raw = readFileSync("/var/lib/openrind-shell/runtime/sandbox-name", "utf8").trim(); } catch {}
-  }
-  return raw;
-}
-
-const sName = resolveSandboxName();
-const podHost = process.env.BROWSER_POD_HOST || (sName ? `openrind-browser-pod-${sName}` : (process.env.BROWSER_POD_NAME || "openrind-browser-pod"));
-const podPort = process.env.BROWSER_POD_PORT || "9222";
+const podHost = "openrind-browser-pod";
+const podPort = "9222";
 config.browser = isObject(config.browser) ? config.browser : {};
 config.browser.enabled = true;
 config.browser.defaultProfile = "openclaw";

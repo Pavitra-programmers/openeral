@@ -32,6 +32,7 @@ on:
     branches:
       - nemo
       - browser-pods
+      - feature/codex
 
     paths:
       - openrind-desktop/apps/app/**
