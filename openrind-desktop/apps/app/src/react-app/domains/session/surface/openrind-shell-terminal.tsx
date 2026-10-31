@@ -1698,6 +1698,7 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
               onRetry={reconnect}
               onDeleteAndReconnect={deleteAndReconnect}
               onOpenSettings={props.onOpenSettings}
+              onDismiss={props.onSandboxDeleted}
             />
           </div>
         ) : isFreshBootstrap &&
@@ -2019,6 +2020,7 @@ type BootstrapErrorCardProps = {
   onRetry: () => void;
   onDeleteAndReconnect?: () => void;
   onOpenSettings?: (target: "environment" | "sandbox") => void;
+  onDismiss?: () => void;
 };
 
 function BootstrapErrorCard(props: BootstrapErrorCardProps) {
@@ -2123,6 +2125,11 @@ function BootstrapErrorCard(props: BootstrapErrorCardProps) {
         <Button variant="outline" onClick={props.onRetry}>
           Retry
         </Button>
+        {props.onDismiss ? (
+          <Button variant="ghost" onClick={props.onDismiss}>
+            Close
+          </Button>
+        ) : null}
       </div>
     </div>
   );
