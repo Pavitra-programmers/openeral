@@ -2972,7 +2972,7 @@ async function handleDesktopInvoke(event, command, ...args) {
           await openrindShell.deleteOpenrindShellSandbox(name).catch((err) => {
             console.warn(`[DeleteSandbox] OpenShell delete error for ${name}:`, err.message);
           });
-          await wslRun(["-d", DISTRO_NAME, "--", "docker", "rm", "-f", `openrind-browser-pod-${name}`]).catch(() => undefined);
+          await wslRun(["-d", OPENSHELL_DISTRO_NAME, "--", "docker", "rm", "-f", `openrind-browser-pod-${name}`]).catch(() => undefined);
           return result;
         })());
         emitOpenrindShellSessionProgress({

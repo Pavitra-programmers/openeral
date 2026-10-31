@@ -164,14 +164,9 @@ def install_session_transport(context, base_url=None):
                 })
                 
                 if auth_key:
-                    if provider == 'anthropic':
-                        request.headers['x-api-key'] = auth_key
-                        request.headers['x-w8-haloop-api-key'] = auth_key
-                        request.headers.pop('authorization', None)
-                    else:
-                        request.headers['authorization'] = auth_key if auth_key.startswith('Bearer ') else f"Bearer {auth_key}"
-                        request.headers['x-api-key'] = auth_key
-                        request.headers['x-w8-haloop-api-key'] = auth_key
+                    request.headers['authorization'] = auth_key if auth_key.startswith('Bearer ') else f"Bearer {auth_key}"
+                    request.headers['x-api-key'] = auth_key
+                    request.headers['x-w8-haloop-api-key'] = auth_key
                 return True
             elif 'openrouter.ai' in getattr(url, 'host', ''):
                 openrouter_key = os.environ.get('OPENROUTER_API_KEY') or ''
