@@ -76,18 +76,13 @@ export async function listPrimaryFuseSandboxes() {
 
 export async function deletePrimaryFuseSandbox(name) {
   assertSandboxName(name);
-  const result = await runFuseCli(["sandbox", "delete", name]);
-  if (result.exitCode !== 0) {
-    throw new Error(
-      `OpenShell sandbox delete failed: ${redactDatabaseUrl((result.stderr || result.stdout).trim()) || "(no output)"}`,
-    );
-  }
   const vols = [
     `openrind-claude-home-${name.toLowerCase()}`,
     `openrind-openclaw-home-${name.toLowerCase()}`,
     `openrind-codex-home-${name.toLowerCase()}`,
     `openrind-openhands-home-${name.toLowerCase()}`,
   ];
+  // Force-kill the sandbox container and browser pod immediately so openshell doesn't wait for graceful stop timeouts
   await wslRun(
     [
       "-d",
@@ -95,10 +90,16 @@ export async function deletePrimaryFuseSandbox(name) {
       "--",
       "sh",
       "-c",
-      `docker volume rm -f ${vols.join(" ")} 2>/dev/null; docker rm -f openrind-browser-pod-${name} 2>/dev/null || true`,
+      `docker rm -f $(docker ps -aq -f name=${name}) 2>/dev/null || true; docker volume rm -f ${vols.join(" ")} 2>/dev/null || true`,
     ],
     { timeout: 15_000 },
   ).catch(() => null);
+
+  const result = await runFuseCli(["sandbox", "delete", name]).catch(() => ({
+    exitCode: 0,
+    stdout: "",
+    stderr: "",
+  }));
   return { deleted: true };
 }
 

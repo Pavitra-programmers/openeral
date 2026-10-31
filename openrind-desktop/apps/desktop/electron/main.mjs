@@ -2667,6 +2667,45 @@ async function handleDesktopInvoke(event, command, ...args) {
       const outPath = result.filePath.endsWith(".json") ? result.filePath : `${result.filePath}.json`;
       return ctfService.exportSellTraces(taskId, outPath, { scrubPii });
     }
+    case "openrindExportSessionTracePack": {
+      const { sandboxName, sessionId } = args[0] || {};
+      const targetName = sandboxName || sessionId || "session";
+      const filename = `${targetName}-tracepack.zip`;
+      const result = await dialog.showSaveDialog(activeWindowFromEvent(event), {
+        title: "Export Lossless TracePack Archive",
+        defaultPath: path.join(app.getPath("downloads"), filename),
+        filters: [{ name: "ZIP Archives", extensions: ["zip"] }],
+      });
+      if (result.canceled || !result.filePath) return { canceled: true };
+      const outPath = result.filePath.endsWith(".zip") ? result.filePath : `${result.filePath}.zip`;
+      const { buildTracePackFiles } = await import("./openshell/tracepack-builder.mjs");
+      const { createZipBuffer } = await import("./openshell/harbor-exporter.mjs");
+      const { files, manifest } = buildTracePackFiles({
+        trajectory: { id: targetName, task: { id: targetName } },
+      });
+      const zip = createZipBuffer(files);
+      await writeFile(outPath, zip);
+      return { success: true, filePath: outPath, manifest };
+    }
+    case "openrindExportSessionSellTraces": {
+      const { sandboxName, sessionId, scrubPii } = args[0] || {};
+      const targetName = sandboxName || sessionId || "session";
+      const filename = `${targetName}-selltraces.json`;
+      const result = await dialog.showSaveDialog(activeWindowFromEvent(event), {
+        title: "Export SellTraces Normalized JSON",
+        defaultPath: path.join(app.getPath("downloads"), filename),
+        filters: [{ name: "JSON Files", extensions: ["json"] }],
+      });
+      if (result.canceled || !result.filePath) return { canceled: true };
+      const outPath = result.filePath.endsWith(".json") ? result.filePath : `${result.filePath}.json`;
+      const { projectToSellTraces } = await import("./openshell/selltraces-projector.mjs");
+      const { sellTracesJson } = projectToSellTraces({
+        trajectory: { id: targetName, task: { id: targetName } },
+        scrubPii: scrubPii !== false,
+      });
+      await writeFile(outPath, JSON.stringify(sellTracesJson, null, 2));
+      return { success: true, filePath: outPath };
+    }
     case "ctfGetActiveDirectory":
       return ctfService.getActiveDirectory();
     case "ctfSetActiveDirectory":

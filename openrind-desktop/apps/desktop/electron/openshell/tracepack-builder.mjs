@@ -281,6 +281,23 @@ export function buildTracePackFiles({
     });
   }
 
+  // Integrate Haloop Model Spans if provided
+  if (Array.isArray(haloopSpans) && haloopSpans.length > 0) {
+    for (const hSpan of haloopSpans) {
+      otlpSpans.push({
+        traceId,
+        spanId: hSpan.spanId || hSpan.span_id || stableSpanId(`haloop-${sequenceNumber++}`),
+        parentSpanId: rootSpanId,
+        name: hSpan.name || "haloop.model_call",
+        kind: 3, // SPAN_KIND_CLIENT
+        startTimeUnixNano: hSpan.startTimeUnixNano || String(BigInt(Date.now()) * 1000000n),
+        endTimeUnixNano: hSpan.endTimeUnixNano || String(BigInt(Date.now() + 500) * 1000000n),
+        attributes: Array.isArray(hSpan.attributes) ? hSpan.attributes : [],
+        status: hSpan.status || { code: 1 },
+      });
+    }
+  }
+
   // 3. Challenge Server & Judge Events (Independent Provenance)
   if (Array.isArray(challengeEvents) && challengeEvents.length > 0) {
     for (const chEvt of challengeEvents) {

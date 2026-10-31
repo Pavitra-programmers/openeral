@@ -74,7 +74,6 @@ export function SandboxPanel(props: SandboxPanelProps) {
   const [renamingFor, setRenamingFor] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
-  const [isDeletingTarget, setIsDeletingTarget] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
@@ -424,20 +423,11 @@ export function SandboxPanel(props: SandboxPanelProps) {
       {deleteTarget ? (
         <DeleteDialog
           name={deleteTarget}
-          isDeleting={isDeletingTarget}
-          onCancel={() => {
-            if (isDeletingTarget) return;
-            setDeleteTarget(null);
-          }}
-          onConfirm={async () => {
+          onCancel={() => setDeleteTarget(null)}
+          onConfirm={() => {
             const name = deleteTarget;
-            setIsDeletingTarget(true);
-            try {
-              await props.state.remove(name);
-            } finally {
-              setIsDeletingTarget(false);
-              setDeleteTarget(null);
-            }
+            setDeleteTarget(null);
+            void props.state.remove(name);
           }}
         />
       ) : null}
@@ -530,12 +520,7 @@ function RenameDialog(props: {
  * memory survive and are restored into the next sandbox. Without saying so, a
  * user reasonably assumes Delete throws their work away.
  */
-function DeleteDialog(props: {
-  name: string;
-  isDeleting?: boolean;
-  onCancel: () => void;
-  onConfirm: () => void | Promise<void>;
-}) {
+function DeleteDialog(props: { name: string; onCancel: () => void; onConfirm: () => void }) {
   return (
     <DialogShell>
       <h3 className="text-lg font-semibold text-gray-12">{t("sandbox.delete_title")}</h3>
@@ -553,18 +538,11 @@ function DeleteDialog(props: {
         </li>
       </ul>
       <div className="mt-5 flex justify-end gap-2">
-        <Button variant="outline" disabled={props.isDeleting} onClick={props.onCancel}>
+        <Button variant="outline" onClick={props.onCancel}>
           {t("common.cancel")}
         </Button>
-        <Button variant="danger" disabled={props.isDeleting} onClick={props.onConfirm}>
-          {props.isDeleting ? (
-            <span className="flex items-center gap-1.5">
-              <Loader2 size={13} className="animate-spin" />
-              {t("sandbox.status_deleting") || "Deleting…"}
-            </span>
-          ) : (
-            t("sandbox.delete_confirm")
-          )}
+        <Button variant="danger" onClick={props.onConfirm}>
+          {t("sandbox.delete_confirm")}
         </Button>
       </div>
     </DialogShell>

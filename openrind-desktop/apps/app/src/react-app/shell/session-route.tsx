@@ -973,9 +973,8 @@ export function SessionRoute() {
     } catch {}
   }, []);
 
-  // Openrind Shell sandbox sessions are first-class sidebar entries, fully
-  // decoupled from workspaces (workspaces are always the regular chat UI).
-  // Selecting one swaps the session surface for that sandbox's terminal.
+  const pendingCreationRef = React.useRef<string | null>(null);
+
   // The /sandboxes manager hands off a freshly created/opened sandbox via
   // location.state so it lands here already selected.
   const [selectedSandbox, setSelectedSandbox] = React.useState<SelectedSandbox | null>(
@@ -1023,6 +1022,7 @@ export function SessionRoute() {
     }
 
     if (!handoff?.name) return;
+    pendingCreationRef.current = handoff.name;
     handleSetSelectedSandbox({
       name: handoff.name,
       profile:
@@ -1033,6 +1033,23 @@ export function SessionRoute() {
     // Consume the handoff so refresh / back never re-selects the sandbox.
     navigate(location.pathname, { replace: true, state: null });
   }, [location.pathname, location.state, navigate, handleSetSelectedSandbox]);
+
+  useEffect(() => {
+    if (pendingCreationRef.current && sandboxRows.rows.some((r) => r.name === pendingCreationRef.current)) {
+      pendingCreationRef.current = null;
+    }
+  }, [sandboxRows.rows]);
+
+  useEffect(() => {
+    if (!sandboxRows.loaded) return;
+    if (
+      selectedSandbox &&
+      selectedSandbox.name !== pendingCreationRef.current &&
+      !sandboxRows.rows.some((r) => r.name === selectedSandbox.name)
+    ) {
+      handleSetSelectedSandbox(null);
+    }
+  }, [sandboxRows.loaded, sandboxRows.rows, selectedSandbox, handleSetSelectedSandbox]);
 
   // Once workspaces + sessions are loaded and the URL has no sessionId, try to
   // restore the last session the user opened in the active workspace.
