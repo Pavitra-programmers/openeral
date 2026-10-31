@@ -133,6 +133,9 @@ if (effectiveApiKey.startsWith("openshell:") || effectiveApiKey.startsWith("${")
 config.env.OPENAI_API_KEY = effectiveApiKey;
 config.env.ANTHROPIC_API_KEY = effectiveApiKey;
 config.env.OPENRIND_HALOOP_SESSION_CONTEXT = process.env.OPENRIND_HALOOP_SESSION_CONTEXT || "v1.00000000000000000000000000000000.1700000000.1800000000.0000000000000000000000000000000000000000000000000000000000000000";
+config.env.OPENCLAW_CHILD_OOM_SCORE_ADJ = "0";
+config.plugins = isObject(config.plugins) ? config.plugins : {};
+config.plugins.deny = ["browser"];
 delete config.models.providers.openrouter;
 delete config.models.providers["openrind-haloop"];
 delete config.models.providers.stringcost;
@@ -147,19 +150,6 @@ config.models.providers[PROVIDER_ID] = {
     "x-openrind-haloop-session": "${OPENRIND_HALOOP_SESSION_CONTEXT}",
   },
   models: [{ id: modelId, name: modelId === DEFAULT_MODEL_ID ? "Claude Sonnet 4.6" : modelId }],
-};
-
-const podHost = "openrind-browser-pod";
-const podPort = "9222";
-config.browser = isObject(config.browser) ? config.browser : {};
-config.browser.enabled = true;
-config.browser.defaultProfile = "openclaw";
-config.browser.ssrfPolicy = { dangerouslyAllowPrivateNetwork: true };
-config.browser.profiles = isObject(config.browser.profiles) ? config.browser.profiles : {};
-config.browser.profiles.openclaw = {
-  cdpUrl: `http://${podHost}:${podPort}`,
-  attachOnly: true,
-  color: "#FF4500",
 };
 
 mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });

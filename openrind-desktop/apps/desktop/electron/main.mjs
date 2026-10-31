@@ -106,6 +106,7 @@ async function assertOpenShellReady() {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+let lastCachedSandboxList = [];
 const NATIVE_DEEP_LINK_EVENT = "openrind-desktop:deep-link-native";
 const TAURI_APP_IDENTIFIER = "com.differentai.openrind-desktop";
 const DESKTOP_PROTOCOL_SCHEME = "openrind-desktop";
@@ -2924,16 +2925,19 @@ async function handleDesktopInvoke(event, command, ...args) {
       // Returns the Openrind Desktop subset of the primary FUSE gateway's JSON
       // list. Structured output retains the lifecycle phase and creation time;
       // the names-only form intentionally omits both.
-      // Failures PROPAGATE to the renderer so a cold gateway at boot reads as
-      // "still loading, retry" rather than "no sandboxes exist".
-      const list = await openrindShell.listSandboxes();
-      return Array.isArray(list)
-        ? list.filter(
+      try {
+        const list = await openrindShell.listSandboxes();
+        if (Array.isArray(list)) {
+          lastCachedSandboxList = list.filter(
             (s) =>
               typeof s?.name === "string" &&
               (s.name.startsWith("openrind-shell-") || s.name.startsWith("or-")),
-          )
-        : [];
+          );
+        }
+      } catch (err) {
+        console.warn("[listSandboxes] Warning:", err?.message || err);
+      }
+      return lastCachedSandboxList;
     }
     case "openrindEndSession": {
       // Per spec: Openrind Shell sandboxes persist across sessions for the

@@ -23,7 +23,7 @@ import {
   FUSE_IMAGE_PULL_POLICY,
   runFuseOpenShell,
 } from "./fuse-runtime.mjs";
-import { DISTRO_NAME, ensureWslKeepalive, toWslPath, wslRun, wslSpawn } from "./wsl.mjs";
+import { DISTRO_NAME, ensureDistroRunning, ensureWslKeepalive, toWslPath, wslRun, wslSpawn } from "./wsl.mjs";
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(MODULE_DIR, "../../../../../");
@@ -862,7 +862,7 @@ async function provisionOpenrindShellSandbox(options) {
     fallbackWorkspaceId: requestedWorkspaceId,
   });
 
-  ensureWslKeepalive();
+  await ensureDistroRunning();
   onProgress?.({ phase: "control-plane", message: "Checking the paired OpenShell FUSE gateway…" });
   await ensureFuseRuntime({ onProgress });
 

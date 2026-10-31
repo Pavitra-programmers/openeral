@@ -1206,14 +1206,14 @@ export function createHaloopRuntimeManager({
   async function persistReadyRoute(route) {
     const result = await run(["-d", DISTRO_NAME, "--", "sh", "-c",
       `mkdir -p $(dirname ${HALOOP_READY_ROUTE_FILE}) && umask 077; cat > ${HALOOP_READY_ROUTE_FILE}.tmp && mv ${HALOOP_READY_ROUTE_FILE}.tmp ${HALOOP_READY_ROUTE_FILE}`],
-      { stdin: JSON.stringify(route), timeout: 10_000, user: "root" });
+      { stdin: JSON.stringify(route), timeout: 30_000, user: "root" });
     if (result.exitCode !== 0) throw new Error("Could not persist the ready Haloop route.");
   }
 
   async function recoverReadyRoute(gateway) {
     if (lastReadyRoute || !gateway?.managed) return;
     const result = await run(["-d", DISTRO_NAME, "--", "cat", HALOOP_READY_ROUTE_FILE],
-      { timeout: 10_000, user: "root" }).catch(() => null);
+      { timeout: 30_000, user: "root" }).catch(() => null);
     try {
       const route = JSON.parse(result?.stdout || "null");
       if (!route || route.gatewayProfileHash !== gateway.profileHash) return;

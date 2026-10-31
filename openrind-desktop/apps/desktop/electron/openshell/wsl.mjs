@@ -44,7 +44,23 @@ function injectUser(args, user) {
   return ["--user", user, ...args];
 }
 
-export async function wslRun(args, options = {}) {
+function killWslProcess(child) {
+  try {
+    if (process.platform === "win32" && typeof child.pid === "number") {
+      const killer = spawn(
+        "taskkill",
+        ["/pid", String(child.pid), "/T", "/F"],
+        { windowsHide: true, stdio: "ignore" },
+      );
+      killer.on("error", () => {});
+    }
+  } catch {}
+  try {
+    child.kill("SIGKILL");
+  } catch {}
+}
+
+function wslRunSingle(args, options = {}) {
   const {
     timeout = DEFAULT_TIMEOUT_MS,
     user,
@@ -84,7 +100,7 @@ export async function wslRun(args, options = {}) {
       bufferedBytes += chunk.length;
       if (bufferedBytes > MAX_WSLRUN_OUTPUT_BYTES) {
         overflowed = true;
-        child.kill("SIGKILL");
+        killWslProcess(child);
         return;
       }
       chunks.push(chunk);
@@ -106,7 +122,7 @@ export async function wslRun(args, options = {}) {
       timeout > 0
         ? setTimeout(() => {
             timedOut = true;
-            child.kill("SIGKILL");
+            killWslProcess(child);
           }, timeout)
         : null;
 
@@ -145,6 +161,40 @@ export async function wslRun(args, options = {}) {
       child.stdin.end();
     }
   });
+}
+
+export async function wslRun(args, options = {}) {
+  const maxAttempts = options.retries ?? 3;
+  let lastResult;
+  let lastError;
+
+  for (let attempt = 0; attempt <= maxAttempts; attempt++) {
+    try {
+      const result = await wslRunSingle(args, options);
+      const output = `${result.stderr}\n${result.stdout}`;
+      const isTransientFailure =
+        result.exitCode !== 0 &&
+        (/WSAETIMEDOUT|Wsl\/Service/i.test(output) ||
+          result.exitCode === 4294967295 ||
+          result.exitCode === -1);
+
+      if (isTransientFailure && attempt < maxAttempts) {
+        await delay(1000 * (attempt + 1));
+        continue;
+      }
+      return result;
+    } catch (err) {
+      lastError = err;
+      const isTransientTimeout = /timed out|WSAETIMEDOUT|Wsl\/Service/i.test(err?.message || "");
+      if (isTransientTimeout && attempt < maxAttempts) {
+        await delay(1000 * (attempt + 1));
+        continue;
+      }
+      throw err;
+    }
+  }
+  if (lastError) throw lastError;
+  return lastResult;
 }
 
 export function wslSpawn(args, options = {}) {
