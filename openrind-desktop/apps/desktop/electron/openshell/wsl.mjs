@@ -21,7 +21,7 @@ function resolveWslExe() {
 // Older wsl.exe emits UTF-16 LE for `--list` etc.; newer versions emit
 // UTF-8. Detect the encoding from the buffer rather than trusting the
 // version, since users will run a mix in the field.
-function decodeWslOutput(buf) {
+export function decodeWslOutput(buf) {
   if (!buf || buf.length === 0) return "";
   if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) {
     return buf.subarray(2).toString("utf16le");

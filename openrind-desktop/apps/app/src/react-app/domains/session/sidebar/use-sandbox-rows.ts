@@ -274,7 +274,7 @@ export function useSandboxRows(options?: {
         displayName: sandboxDisplayName(row.name),
         created: row.created,
         phase: row.phase,
-        status: resolveSandboxStatus({ phase: row.phase, hasLiveSession }),
+        status: busyName === row.name ? "deleting" : resolveSandboxStatus({ phase: row.phase, hasLiveSession }),
         profile,
         hasLiveSession,
         busy: busyName === row.name,

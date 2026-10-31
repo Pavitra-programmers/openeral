@@ -1007,6 +1007,13 @@ export function SessionRoute() {
     if (selectedSandbox) handleSetSidebarTab("sandboxes");
   }, [selectedSandbox, handleSetSidebarTab]);
 
+  useEffect(() => {
+    if (!sandboxRows.loaded) return;
+    if (selectedSandbox && !sandboxRows.rows.some((r) => r.name === selectedSandbox.name)) {
+      handleSetSelectedSandbox(null);
+    }
+  }, [sandboxRows.loaded, sandboxRows.rows, selectedSandbox, handleSetSelectedSandbox]);
+
   const location = useLocation();
   useEffect(() => {
     const handoff = (

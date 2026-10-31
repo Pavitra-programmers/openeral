@@ -1,4 +1,5 @@
 // Openrind Shell FUSE Sandbox Provisioning - Release Build v0.14.0
+import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -23,7 +24,7 @@ import {
   FUSE_IMAGE_PULL_POLICY,
   runFuseOpenShell,
 } from "./fuse-runtime.mjs";
-import { DISTRO_NAME, ensureDistroRunning, ensureWslKeepalive, toWslPath, wslRun, wslSpawn } from "./wsl.mjs";
+import { DISTRO_NAME, decodeWslOutput, ensureDistroRunning, ensureWslKeepalive, toWslPath, wslRun, wslSpawn } from "./wsl.mjs";
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(MODULE_DIR, "../../../../../");
@@ -807,7 +808,7 @@ function streamCreate({ script, env, databaseUrl, timeoutMs, onProgress }) {
     let finished = false;
 
     const add = (target, chunk) => {
-      const text = chunk.toString("utf8");
+      const text = decodeWslOutput(chunk);
       if (target === "stdout") stdout = (stdout + text).slice(-MAX_CAPTURE_BYTES);
       else stderr = (stderr + text).slice(-MAX_CAPTURE_BYTES);
       pending += text;
@@ -824,6 +825,11 @@ function streamCreate({ script, env, databaseUrl, timeoutMs, onProgress }) {
     const timer = setTimeout(() => {
       if (finished) return;
       finished = true;
+      if (process.platform === "win32" && typeof child.pid === "number") {
+        try {
+          spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+        } catch {}
+      }
       child.kill("SIGKILL");
       reject(new Error(`OpenShell FUSE sandbox creation timed out after ${Math.round(timeoutMs / 1000)} seconds.`));
     }, timeoutMs);
@@ -980,13 +986,32 @@ async function provisionOpenrindShellSandbox(options) {
   ].join("\n");
 
   onProgress?.({ phase: "create", message: `Creating ${name}, mounting /sandbox/work, and initializing it once…` });
-  const result = await streamCreate({
-    script: create,
-    env: buildFuseWslEnv(),
-    databaseUrl,
-    timeoutMs: options.createTimeoutMs ?? 5 * 60_000,
-    onProgress,
-  });
+  const maxCreateAttempts = 3;
+  let result;
+  for (let attempt = 1; attempt <= maxCreateAttempts; attempt++) {
+    result = await streamCreate({
+      script: create,
+      env: buildFuseWslEnv(),
+      databaseUrl,
+      timeoutMs: options.createTimeoutMs ?? 5 * 60_000,
+      onProgress,
+    });
+    if (result.exitCode === 0) break;
+    const combined = `${result.stderr}\n${result.stdout}`;
+    const isWsaTimeout =
+      result.exitCode === 4294967295 ||
+      result.exitCode === -1 ||
+      /WSAETIMEDOUT|Wsl\/Service/i.test(combined);
+    if (isWsaTimeout && attempt < maxCreateAttempts) {
+      onProgress?.({
+        phase: "create",
+        message: `WSL connection timed out under memory load; retrying automatically (${attempt}/${maxCreateAttempts})…`,
+      });
+      await new Promise((r) => setTimeout(r, 2000 * attempt));
+      continue;
+    }
+    break;
+  }
   if (result.exitCode !== 0) {
     const diagnostics = await collectFailedSandboxDiagnostics(name);
     await deleteIfPresent(name).catch(() => {});
