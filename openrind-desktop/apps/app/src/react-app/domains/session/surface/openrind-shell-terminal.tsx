@@ -963,6 +963,10 @@ export function OpenrindShellTerminal(props: OpenrindShellTerminalProps) {
           // one renderer view. Ignore activity from sandboxes that are running
           // concurrently after the user switches sessions.
           if (evt.sandboxName && evt.sandboxName !== authoritativeName) return;
+          if (evt.phase === "deleted") {
+            props.onSandboxDeleted?.();
+            return;
+          }
           const message = String(evt.message ?? "").trim();
           if (!message) return;
           const timestamp = Date.now();

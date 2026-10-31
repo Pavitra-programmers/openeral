@@ -115,7 +115,7 @@ export function useSandboxRows(options?: {
   const [liveSessions, setLiveSessions] = useState<Set<string>>(() => new Set());
   const [loaded, setLoaded] = useState(() => memoryLoaded || memoryCachedRaw.length > 0);
   const [error, setError] = useState<string | null>(null);
-  const [busyName, setBusyName] = useState<string | null>(null);
+  const [busyNames, setBusyNames] = useState<Set<string>>(() => new Set());
   // Bumped on rename so the memo below recomputes; display names live in
   // localStorage rather than in this state.
   const [labelVersion, setLabelVersion] = useState(0);
@@ -228,11 +228,11 @@ export function useSandboxRows(options?: {
     async (name: string) => {
       const currentBridge = getBridge();
       if (!currentBridge?.invokeDesktop) return;
-      setBusyName(name);
+      setBusyNames((prev) => new Set([...prev, name]));
       setError(null);
       try {
-        await currentBridge.invokeDesktop("openrindDeleteSandbox", name);
         onDeletedRef.current?.(name);
+        await currentBridge.invokeDesktop("openrindDeleteSandbox", name);
         setRaw((prev) => {
           const updated = prev.filter((r) => r.name !== name);
           memoryCachedRaw = updated;
@@ -243,7 +243,11 @@ export function useSandboxRows(options?: {
       } catch (err) {
         setError(userFacingDesktopError(err));
       } finally {
-        setBusyName(null);
+        setBusyNames((prev) => {
+          const next = new Set(prev);
+          next.delete(name);
+          return next;
+        });
       }
     },
     [refresh],
@@ -274,14 +278,14 @@ export function useSandboxRows(options?: {
         displayName: sandboxDisplayName(row.name),
         created: row.created,
         phase: row.phase,
-        status: busyName === row.name ? "deleting" : resolveSandboxStatus({ phase: row.phase, hasLiveSession }),
+        status: busyNames.has(row.name) ? "deleting" : resolveSandboxStatus({ phase: row.phase, hasLiveSession }),
         profile,
         hasLiveSession,
-        busy: busyName === row.name,
+        busy: busyNames.has(row.name),
       };
     });
     return sortByStatus(mapped, (row) => row.status);
-  }, [raw, liveSessions, busyName, labelVersion, options?.workspaces]);
+  }, [raw, liveSessions, busyNames, labelVersion, options?.workspaces]);
 
   const warningCount = useMemo(
     () => rows.filter((row) => needsUserAttention(row.status)).length,
